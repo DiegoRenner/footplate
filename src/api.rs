@@ -834,6 +834,13 @@ pub struct Secret {
     /// asker's: shown as it is.
     #[serde(default)]
     pub line: String,
+    /// What the value reaches once it is given, in short lines for the card
+    /// to carry under the line: where it lands, which reads use it, and
+    /// which do not. Absent from a yard from before the field, and from a
+    /// harness-key ask and a waiting login's input, whose line says where
+    /// the value goes already: the card then has none.
+    #[serde(default, deserialize_with = "or_default")]
+    pub reach: Vec<String>,
 }
 
 /// What `SessionScreen` answers: a running session's visible screen,
@@ -7079,6 +7086,15 @@ mod tests {
         let yard = Yard::start();
         let secret = json!({"source": "books", "env": ["BOOKS_TOKEN"],
             "line": "a secret: BOOKS_TOKEN, for the source books (https://books.example.com)"});
+        // What a yard that says what the value reaches sends with it: its
+        // lines, in their order.
+        let reach = [
+            "lands in: the source's env_file, or sources/books.env in the yard's home when it has none",
+            "read by: declared calls (yardr call books ...) and the source's check, from the file at each call",
+            "not reached: thread commands (yardr reply, thread open, thread state), which read the speaker's own file; a crew member's is given with --for-crew",
+        ];
+        let reached = json!({"source": "books", "env": ["BOOKS_TOKEN"], "reach": reach,
+            "line": "a secret: BOOKS_TOKEN, for the source books (https://books.example.com)"});
         yard.answer(
             "UserAsks",
             &json!({"result": {
@@ -7088,7 +7104,10 @@ mod tests {
                              "asker": "yardmaster", "state": "answered",
                              "secret": secret, "concealed": false, "given": ["BOOKS_TOKEN"]},
                             {"bead": "yd-crm", "ask": 16, "question": "Move them now?",
-                             "asker": "yardmaster", "state": "answered", "option": 1}]
+                             "asker": "yardmaster", "state": "answered", "option": 1},
+                            {"bead": "yd-crm", "ask": 15, "question": "The token for the books",
+                             "asker": "yardmaster", "state": "answered",
+                             "secret": reached, "given": ["BOOKS_TOKEN"]}]
             }})
             .to_string(),
         );
@@ -7106,6 +7125,10 @@ mod tests {
         // Any other ask has neither.
         assert_eq!(asks.decided[1].secret, None);
         assert!(asks.decided[1].given.is_empty());
+        // The reach is the yard's lines in the order it sent them; a secret
+        // it sent none for has none, as an ask from before the field has.
+        assert!(asked.reach.is_empty());
+        assert_eq!(asks.decided[2].secret.as_ref().unwrap().reach, reach);
         // An ask the yard says nothing of is concealed, in the queue and
         // on the bead; one it marks unconcealed is not.
         assert!(asks.open[0].concealed);
@@ -7119,7 +7142,9 @@ mod tests {
                  "state": "open", "secret": secret},
                 {"ask": 17, "question": "The token for the books", "options": [],
                  "state": "answered", "secret": secret, "concealed": false, "given": ["BOOKS_TOKEN"]},
-                {"ask": 16, "question": "Move them now?", "state": "answered", "option": 1}
+                {"ask": 16, "question": "Move them now?", "state": "answered", "option": 1},
+                {"ask": 15, "question": "The token for the books", "options": [],
+                 "state": "answered", "secret": reached, "given": ["BOOKS_TOKEN"]}
             ]}})
             .to_string(),
         );
@@ -7128,6 +7153,7 @@ mod tests {
         assert!(bead.asks[0].given.is_empty());
         assert_eq!(bead.asks[1].given, ["BOOKS_TOKEN"]);
         assert_eq!(bead.asks[2].secret, None);
+        assert_eq!(bead.asks[3].secret.as_ref().unwrap().reach, reach);
         assert!(bead.asks[0].concealed);
         assert!(!bead.asks[1].concealed);
         assert!(bead.asks[2].concealed);

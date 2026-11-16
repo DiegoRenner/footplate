@@ -253,8 +253,13 @@ later and decline stay ungated.
 **A secret ask** (`yardr bead ask --secret`) asks for a credential of a
 source, and its card has no options and no line for words. In their place
 it shows the yard's own line of what is asked for, made from the source's
-declaration and never from the asker's words, and a field that draws a mark
-for each character. `i` or a click types in it. What is pasted goes in;
+declaration and never from the asker's words. Under it stand the yard's
+lines of what the value reaches once it is given: where it lands, which
+reads use it and which do not. A yard from before it sent them has none to
+show, and nor has an ask for a harness key or a waiting login's input,
+whose line says where the value goes already. Then come the card's own line
+of where the value goes and a field that draws a mark for each character.
+`i` or a click types in it. What is pasted goes in;
 copy and cut take nothing out. Enter sends the value to the yard in
 `GiveSecret` and empties the field, whatever the yard answers; an ask for
 several names takes them one after the other and sends them together. `esc`

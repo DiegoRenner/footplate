@@ -3755,8 +3755,11 @@ impl Footplate {
     }
 
     /// What a secret ask asks for: the yard's line, which is made from the
-    /// source's declaration and never from the asker's words, and where
-    /// the value goes.
+    /// source's declaration and never from the asker's words, what the
+    /// value reaches where the yard says (its lines stand directly under
+    /// the line, so that the specifics are read before the generic go-line
+    /// that ends them), and where the value goes. Where the yard sends no
+    /// reach, nothing stands between the two.
     pub(crate) fn secret_lines(
         &self,
         bead: &str,
@@ -3766,16 +3769,33 @@ impl Footplate {
     ) -> impl IntoElement + use<> {
         let card_key = select::key((bead, ask));
         let key = expanded_text_key(card_key, "secret", 0, &secret.line);
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .debug_selector(|| secret.line.clone())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(select::text(key, secret.line.clone(), &self.selection)),
-            )
-            .child(div().text_xs().text_color(palette.faint).child(SECRET_GOES))
+        let mut lines = div().flex().flex_col().child(
+            div()
+                .debug_selector(|| secret.line.clone())
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(select::text(key, secret.line.clone(), &self.selection)),
+        );
+        if !secret.reach.is_empty() {
+            // A gap between the lines tells a new one from a wrapped row.
+            let mut reach = div().flex().flex_col().gap_1().my_1();
+            for (ix, line) in secret.reach.iter().enumerate() {
+                let key = expanded_text_key(card_key, "secret reach", ix, line);
+                reach = reach.child(
+                    div()
+                        .debug_selector(|| line.clone())
+                        .text_xs()
+                        .child(select::text(key, line.clone(), &self.selection)),
+                );
+            }
+            lines = lines.child(reach);
+        }
+        lines.child(
+            div()
+                .debug_selector(|| SECRET_GOES.to_string())
+                .text_xs()
+                .text_color(palette.faint)
+                .child(SECRET_GOES),
+        )
     }
 
     /// The head of a teammate invite or removal ask's block: which it is,

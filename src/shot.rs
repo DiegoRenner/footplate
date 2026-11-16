@@ -3134,10 +3134,19 @@ fn bead_teammate() -> String {
     .to_string()
 }
 
-/// What the secret ask asks for, in the yard's words.
+/// What the secret ask asks for, and what its value reaches, in the yard's
+/// words: the lines it gives a source's credential.
 fn secret_of() -> serde_json::Value {
-    json!({"source": "books", "env": ["BOOKS_TOKEN"],
-           "line": "a secret: BOOKS_TOKEN, for the source books (https://books.example.com)"})
+    json!({
+        "source": "books", "env": ["BOOKS_TOKEN"],
+        "line": "a secret: BOOKS_TOKEN, for the source books (https://books.example.com)",
+        "reach": [
+            "lands in: the source's env_file, or sources/books.env in the yard's home when it has none",
+            "read by: declared calls (yardr call books ...) and the source's check, from the file at each call",
+            "not reached: thread commands (yardr reply, thread open, thread state), which read the speaker's own file; a crew member's is given with --for-crew",
+            "mint: where the source mints, these names are its inputs; a static token beside them is left as it is, and not used while they are set"
+        ]
+    })
 }
 
 /// The secret ask 7 on bead-s as the queue lists it, marked no secret
@@ -3922,7 +3931,14 @@ mod tests {
                 }
                 "secret" | "secret-shown" | "secret-refused" => {
                     assert_eq!(loaded.asks.open.len(), 1, "{state}");
-                    assert!(loaded.asks.open[0].secret.is_some(), "{state}");
+                    // The card is drawn from the queue's secret, which
+                    // carries the yard's four lines of what it reaches.
+                    let secret = loaded.asks.open[0]
+                        .secret
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{state}: no secret"));
+                    assert_eq!(secret.reach.len(), 4, "{state}");
+                    assert!(secret.reach[0].starts_with("lands in: "), "{state}");
                     assert_eq!(
                         loaded.asks.open[0].concealed,
                         *state != "secret-shown",

@@ -17644,6 +17644,7 @@ mod tests {
             source: "books".into(),
             env: vec!["BOOKS_TOKEN".into()],
             line: "a secret: BOOKS_TOKEN, for the source books (https://books.example.com)".into(),
+            ..Default::default()
         }
     }
 

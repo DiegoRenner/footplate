@@ -391,7 +391,8 @@ its row, with a pairing's QR, code and minutes left), `pair-ask` (a
 pairing run ask's card, with the door its approval crosses), `pair-qr`
 (that approval's QR screen, with its QR, code, minutes and End),
 `pair-ended` (its ended state), `secret` (an open card of a
-secret ask, posed with a value typed and hidden), `secret-shown`
+secret ask, with the yard's lines of what its value reaches, posed
+with a value typed and hidden), `secret-shown`
 (that card where the yard marks the value no secret: typed and
 shown), `secret-refused` (that card with the yard's refusal of
 its answer), `setup-host` (an open card of a setup ask whose account
