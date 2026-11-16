@@ -350,7 +350,11 @@ Setup, release and tests:
   stands up (`view_up`). One that is down it stands up as well
   (`view_down`): a listener that lets every connection go with no answer,
   which holds its port until `view_serve` has it answer there, since a
-  port let go is free to any other test that asks for one.
+  port let go is free to any other test that asks for one. A debug
+  selector's debug bounds stay in the frame buffer they reached for the
+  window's life (gpui 0.2.2 never clears them). The buffers alternate, so a
+  selector drawn in one frame may be absent on a later lookup; a test asserts
+  absence only of a selector the window never drew.
 - Windows is remote only: it has no yard of its own, so the unix socket,
   file modes, symlinks, the shell stand-in for yardr and the Linux
   desktop's taskbar sit behind `cfg(unix)` (or the OS), and so do the tests

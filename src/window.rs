@@ -4076,7 +4076,8 @@ mod tests {
         assert!(!drawn(cx, &format!("clock 30 {time}")));
     }
 
-    /// Where the text of the mail `seq` is drawn.
+    /// Where the text of the mail `seq` is drawn. A text that has gone can
+    /// still answer with its last bounds (see `drawn`).
     fn text_bounds(cx: &mut VisualTestContext, seq: u64) -> gpui::Bounds<gpui::Pixels> {
         cx.run_until_parked();
         cx.update(|window, _| window.refresh());
@@ -9193,7 +9194,15 @@ yardr.dev
         cx.simulate_mouse_up(bounds.center(), MouseButton::Right, none);
     }
 
-    /// Whether `selector` is drawn.
+    /// Whether `selector` is drawn in the rendered frame. gpui 0.2.2 never
+    /// clears debug_bounds from either reused frame buffer, so its bounds
+    /// stay in the buffer they reached for the window's life. Since the
+    /// buffers alternate, a selector drawn in only one frame may be absent
+    /// on every other read after it goes. Assert `!drawn` only of a selector
+    /// the window never drew. Pin a disappearance with a fresh window per
+    /// case, as `a_yard_from_before_the_call_has_no_waiting_section` does, or
+    /// with another witness (the model, a text read). Revisit at the gpui
+    /// bump (footplate-b7q6).
     fn drawn(cx: &mut VisualTestContext, selector: &str) -> bool {
         cx.run_until_parked();
         cx.update(|window, _| window.refresh());
@@ -9202,6 +9211,8 @@ yardr.dev
         cx.debug_bounds(at).is_some()
     }
 
+    /// Where `selector` is drawn. An element that has gone can still return
+    /// stale bounds, depending on which reused frame is read (see `drawn`).
     fn bounds_of(cx: &mut VisualTestContext, selector: &str) -> Bounds<Pixels> {
         cx.run_until_parked();
         cx.update(|window, _| window.refresh());
@@ -9213,7 +9224,9 @@ yardr.dev
 
     /// Where `selector` stands in the frame last drawn, with no redraw:
     /// for a test that reads many bounds of one frame, where `bounds_of`
-    /// would draw the whole window again for each.
+    /// would draw the whole window again for each. Both read debug_bounds,
+    /// so an element that has gone can still return stale bounds, depending
+    /// on which reused frame is read (see `drawn`).
     fn bounds_now(cx: &mut VisualTestContext, selector: &str) -> Bounds<Pixels> {
         let at: &'static str = Box::leak(selector.to_string().into_boxed_str());
         cx.debug_bounds(at)
