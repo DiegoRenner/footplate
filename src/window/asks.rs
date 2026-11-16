@@ -13,13 +13,13 @@ use super::Expanded;
 use super::Footplate;
 use super::ask::{
     ANSWER_WORDS, APPROVE_ELSEWHERE, Approval, DECLINE_IS_NO_PICK, RUN_PROPOSED, RunText,
-    SECRET_GOES, SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate,
-    answer_label, approval, approve_button, ask_line, asked_age, candidate_choice_line, card_head,
-    carried_texts, decided_keys, decision_head, description_line, fenced, fold_head, give_label,
+    SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate, answer_label, approval,
+    approve_button, ask_line, asked_age, candidate_choice_line, card_head, carried_texts,
+    decided_keys, decision_head, description_line, fenced, fold_head, give_label,
     give_unlock_label, is_device_pair_run, pair_door, recommended_line, run_keys, run_runs,
-    run_texts, secret_keys, section_head, send_button, setup_keys, setup_runs, show_button,
-    take_back_label, teammate_email, teammate_kind, teammate_of, teammate_role, teammate_user,
-    texts_label, typeback_line, typeback_mismatch, words_send,
+    run_texts, secret_goes, secret_keys, section_head, send_button, setup_keys, setup_runs,
+    show_button, take_back_label, teammate_email, teammate_kind, teammate_of, teammate_role,
+    teammate_user, texts_label, typeback_line, typeback_mismatch, words_send,
 };
 use super::expanded_text_key;
 use super::keys::{APPROVE_KEY, SETUP_SECRET_CONTEXT};
@@ -105,7 +105,7 @@ impl Footplate {
             #[cfg(debug_assertions)]
             if matches!(
                 std::env::var("FOOTPLATE_SHOT").as_deref(),
-                Ok("secret" | "secret-shown")
+                Ok("secret" | "secret-shown" | "secret-harness")
             ) {
                 self.secret
                     .update(cx, |field, cx| field.set_text("bk-live-3f9a-7Qx", cx));
@@ -3758,8 +3758,9 @@ impl Footplate {
     /// source's declaration and never from the asker's words, what the
     /// value reaches where the yard says (its lines stand directly under
     /// the line, so that the specifics are read before the generic go-line
-    /// that ends them), and where the value goes. Where the yard sends no
-    /// reach, nothing stands between the two.
+    /// that ends them), and where the value goes, in the words of the
+    /// ask's kind. Where the yard sends no reach, nothing stands between
+    /// the two: a harness key and a waiting login's input never have any.
     pub(crate) fn secret_lines(
         &self,
         bead: &str,
@@ -3789,12 +3790,13 @@ impl Footplate {
             }
             lines = lines.child(reach);
         }
+        let goes = secret_goes(secret);
         lines.child(
             div()
-                .debug_selector(|| SECRET_GOES.to_string())
+                .debug_selector(|| goes.to_string())
                 .text_xs()
                 .text_color(palette.faint)
-                .child(SECRET_GOES),
+                .child(goes),
         )
     }
 

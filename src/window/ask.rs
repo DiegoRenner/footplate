@@ -167,9 +167,37 @@ pub(crate) const DECLINE_IS_NO_PICK: &str = "Say no to all options. The asker fi
 pub(crate) const PAIRING_GIVES: &str = "A paired yard is called with this device's own token, so your picks and approvals there count as yours, where over a peer link you only see what the link carries and an approval never crosses.";
 
 /// What a secret ask's card says under the yard's line of what is asked
-/// for: where the value goes, in the words `yardr chat` has for it.
+/// for: where the value goes, in the words `yardr chat` has for it. The
+/// words are the yard's, by the kind of secret (`cardLines` in yardr's
+/// `internal/store/secretreach.go`), and are copied as they stand: a card
+/// that gave a harness key or a login's input a file's words would say
+/// what the yard does not. These are a source's credential's, and any ask
+/// whose kind the yard did not say gets them.
 pub(crate) const SECRET_GOES: &str =
     "it goes to a file only the yard's server reads; no agent is shown it";
+
+/// A harness's API key is read by every session of its kind that burns the
+/// operator's login, which the yard's line above it names, so its card must
+/// not say that no agent is shown it.
+pub(crate) const HARNESS_GOES: &str = "the value is kept out of notes, events and logs; each such session receives it in its environment";
+
+/// A waiting login's input is handed to the login in the yard's memory, and
+/// kept in no file and no note.
+pub(crate) const LOGIN_GOES: &str =
+    "it goes to the waiting login only; it is kept nowhere, and no agent is shown it";
+
+/// Which words a secret ask's card says where its value goes in, by its
+/// kind, in the order the yard tests it: a harness key's, then a waiting
+/// login's, then a file's.
+pub(crate) fn secret_goes(secret: &api::Secret) -> &'static str {
+    if !secret.harness.is_empty() {
+        HARNESS_GOES
+    } else if !secret.login.is_empty() {
+        LOGIN_GOES
+    } else {
+        SECRET_GOES
+    }
+}
 
 /// The keys of a secret ask's card, with the way for a person without the
 /// field: the same answer in a terminal on the yard's machine. Where the
@@ -941,5 +969,32 @@ mod tests {
             pair_door(false, true),
             "approving shows the pairing's code on this screen: show it to the device and to nobody else, since whoever has it within its minutes, the carrier of this approval included, could spend it first"
         );
+    }
+
+    /// A secret ask's card says where the value goes in the yard's words
+    /// for its kind (the three `cardLines` of yardr's secretreach.go, which
+    /// are written out here, so that a slip in a constant shows): a harness
+    /// key's, then a waiting login's, else a file's. An ask whose kind the
+    /// yard did not say is a file's, as one from before the two fields is.
+    #[test]
+    fn a_secret_card_says_where_the_value_goes_in_the_words_of_its_kind() {
+        let file_goes = "it goes to a file only the yard's server reads; no agent is shown it";
+        let key_goes = "the value is kept out of notes, events and logs; each such session receives it in its environment";
+        let login_goes =
+            "it goes to the waiting login only; it is kept nowhere, and no agent is shown it";
+        let cases = [
+            ("claude", "", key_goes),
+            ("", "claude-example1", login_goes),
+            ("claude", "claude-example1", key_goes),
+            ("", "", file_goes),
+        ];
+        for (harness, login, goes) in cases {
+            let secret = api::Secret {
+                harness: harness.to_string(),
+                login: login.to_string(),
+                ..api::Secret::default()
+            };
+            assert_eq!(secret_goes(&secret), goes, "{harness:?} {login:?}");
+        }
     }
 }

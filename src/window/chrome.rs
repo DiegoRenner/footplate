@@ -6928,14 +6928,14 @@ fn shot_section() -> Option<Section> {
 /// The row a screenshot state opens on instead of the yard's own: the
 /// refused mail's conversation for the undelivered shot, the open card
 /// for the plain, plain-select, page, run, teammates, weighty-mapping,
-/// secret, setup-host and pair-ask shots (the refused shot's with its refusal), the
-/// decided pairing card for the pair-qr and pair-ended shots, the board for the
-/// arrivals and departures shots, one arrival's bead for the arrival
-/// shot, yardr's line for the flow shot, the first parked bead's card for
-/// the waiting shots, the arrivals pane for the lines-panel and
-/// lines-departures shots, the many-move bead's card for the waiting-many
-/// shots and the yard row for the delivery shot, else none. A
-/// debug build's alone.
+/// secret, secret-harness, setup-host and pair-ask shots (the refused
+/// shot's with its refusal), the decided pairing card for the pair-qr and
+/// pair-ended shots, the board for the arrivals and departures shots, one
+/// arrival's bead for the arrival shot, yardr's line for the flow shot,
+/// the first parked bead's card for the waiting shots, the arrivals pane
+/// for the lines-panel and lines-departures shots, the many-move bead's
+/// card for the waiting-many shots and the yard row for the delivery shot,
+/// else none. A debug build's alone.
 fn shot_selected() -> Option<Selected> {
     // The card shots open their cards, in decisions: a debug build's
     // alone, as the settings and the draft of Footplate::opened.
@@ -6971,6 +6971,7 @@ fn shot_selected() -> Option<Selected> {
         | Ok("secret")
         | Ok("secret-shown")
         | Ok("secret-refused")
+        | Ok("secret-harness")
         | Ok("setup-host")
         | Ok("pair-ask") => {
             return Some(Selected::Decision("bead-s".into()));

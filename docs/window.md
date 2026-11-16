@@ -257,9 +257,16 @@ declaration and never from the asker's words. Under it stand the yard's
 lines of what the value reaches once it is given: where it lands, which
 reads use it and which do not. A yard from before it sent them has none to
 show, and nor has an ask for a harness key or a waiting login's input,
-whose line says where the value goes already. Then come the card's own line
-of where the value goes and a field that draws a mark for each character.
-`i` or a click types in it. What is pasted goes in;
+whose card says where the value goes in words of their own. Then come the
+card's own line of where the value goes and a field that draws a mark for
+each character. The line is the yard's, by the kind of ask: for a source's
+credential, and for an ask whose kind the yard does not say, "it goes to a
+file only the yard's server reads; no agent is shown it"; for a harness's
+API key, which every session of that kind receives, "the value is kept out
+of notes, events and logs; each such session receives it in its
+environment"; for a waiting login's input, "it goes to the waiting login
+only; it is kept nowhere, and no agent is shown it".
+`i` or a click types in the field. What is pasted goes in;
 copy and cut take nothing out. Enter sends the value to the yard in
 `GiveSecret` and empties the field, whatever the yard answers; an ask for
 several names takes them one after the other and sends them together. `esc`

@@ -88,7 +88,8 @@ use crate::yard::Env;
 /// its QR, code, minutes and End, and its ended state, an open card of a
 /// secret ask posed
 /// with a value typed, hidden and shown, that card with the yard's
-/// refusal of its answer, an open card of a setup ask whose account
+/// refusal of its answer, the card of a harness key's ask, which says where
+/// the value goes in the harness's words, an open card of a setup ask whose account
 /// stands, posed with a host typed above it, the switcher's list open over four yards, one
 /// of them away, that list shut a second after it drew, as a click
 /// outside it shuts it, that list over an own and a member hosted yard,
@@ -226,6 +227,7 @@ pub const STATES: &[&str] = &[
     "secret",
     "secret-shown",
     "secret-refused",
+    "secret-harness",
     "setup-host",
     "switcher",
     "switcher-shut",
@@ -2334,13 +2336,17 @@ fn populate(yard: &Yard, state: &str) {
             );
             yard.answer("Bead", &bead_setup_host());
         }
-        "secret" | "secret-shown" | "secret-refused" => {
+        "secret" | "secret-shown" | "secret-refused" | "secret-harness" => {
             // An open card of a secret ask, posed with a value typed:
             // hidden, with the toggle to Show, or shown where the yard
             // marks the value no secret, with the toggle to Hide. The
             // refused shot poses the same ask with the yard's refusal
-            // of its answer on the card instead, the field empty.
+            // of its answer on the card instead, the field empty. The
+            // harness shot poses the ask for a harness's API key instead
+            // of a source's credential: the yard sends it no reach, and
+            // its card says where the value goes in the harness's words.
             let unconcealed = state == "secret-shown";
+            let harness = state == "secret-harness";
             yard.answer(
                 "UserInbox",
                 r#"{"result": {"mail": [{"seq": 12, "from": "yardmaster", "to": "jo", "text": "Shall I land it?", "read": false}], "unread": 1, "last": 12, "from": ["yardmaster"]}}"#,
@@ -2351,10 +2357,10 @@ fn populate(yard: &Yard, state: &str) {
             );
             yard.answer(
                 "UserAsks",
-                &json!({"result": {"open": [queued_secret(unconcealed)], "decided": []}})
+                &json!({"result": {"open": [queued_secret(unconcealed, harness)], "decided": []}})
                     .to_string(),
             );
-            yard.answer("Bead", &bead_secret(unconcealed));
+            yard.answer("Bead", &bead_secret(unconcealed, harness));
         }
         "decisions" | "decisions-filtered" | "decisions-more" => {
             // One open ask with a question that wraps, and a history of
@@ -3149,13 +3155,51 @@ fn secret_of() -> serde_json::Value {
     })
 }
 
+/// What the ask for a harness's API key asks for, in the yard's words and
+/// as its docs show it (api.md, `UserAsks`): no source and no reach, since
+/// its card says where the value goes in the words of its kind.
+fn harness_secret_of() -> serde_json::Value {
+    json!({
+        "source": "", "env": ["ANTHROPIC_API_KEY"], "crew": "yardmaster", "harness": "claude",
+        "line": "a secret: ANTHROPIC_API_KEY, the API key Claude Code runs with, asked for crew member yardmaster; it is read by every Claude Code session that burns the operator's login (the crew, groups without login_for, the operator's conversations), from its next start"
+    })
+}
+
+/// What a secret shot's ask says: its bead's title, its question, the
+/// context under it and the yard's secret. The credential of a source, or
+/// the API key a harness runs with.
+struct SecretAsked {
+    title: &'static str,
+    question: &'static str,
+    context: &'static [&'static str],
+    secret: serde_json::Value,
+}
+
+fn secret_asked(harness: bool) -> SecretAsked {
+    match harness {
+        true => SecretAsked {
+            title: "Read the CRM",
+            question: "The API key Claude Code will use",
+            context: &[],
+            secret: harness_secret_of(),
+        },
+        false => SecretAsked {
+            title: "The books",
+            question: "The token for the books",
+            context: &["The books were moved to the declared source."],
+            secret: secret_of(),
+        },
+    }
+}
+
 /// The secret ask 7 on bead-s as the queue lists it, marked no secret
-/// where the state shows it.
-fn queued_secret(unconcealed: bool) -> serde_json::Value {
+/// where the state shows it, and for a harness's key where it is.
+fn queued_secret(unconcealed: bool, harness: bool) -> serde_json::Value {
+    let asked = secret_asked(harness);
     let mut ask = json!({
-        "bead": "bead-s", "bead_title": "The books", "topic": "", "ask": 7,
-        "question": "The token for the books", "asker": "yardmaster",
-        "since": "2026-10-10T10:00:00Z", "secret": secret_of()
+        "bead": "bead-s", "bead_title": asked.title, "topic": "", "ask": 7,
+        "question": asked.question, "asker": "yardmaster",
+        "since": "2026-10-10T10:00:00Z", "secret": asked.secret
     });
     if unconcealed {
         ask["concealed"] = json!(false);
@@ -3164,17 +3208,18 @@ fn queued_secret(unconcealed: bool) -> serde_json::Value {
 }
 
 /// The bead of that ask, marked as the queue marks it.
-fn bead_secret(unconcealed: bool) -> String {
+fn bead_secret(unconcealed: bool, harness: bool) -> String {
+    let asked = secret_asked(harness);
     let mut ask = json!(
         {"ask": 7, "to": "jo", "asker": "yardmaster",
          "since": "2026-10-10T10:00:00Z",
-         "question": "The token for the books",
-         "context": ["The books were moved to the declared source."],
-         "options": [], "state": "open", "secret": secret_of()});
+         "question": asked.question,
+         "context": asked.context,
+         "options": [], "state": "open", "secret": asked.secret});
     if unconcealed {
         ask["concealed"] = json!(false);
     }
-    json!({"result": {"id": "bead-s", "title": "The books", "body": "The body.",
+    json!({"result": {"id": "bead-s", "title": asked.title, "body": "The body.",
         "stage": "new", "labels": [], "notes": [], "asks": [ask]}})
     .to_string()
 }
@@ -3948,6 +3993,23 @@ mod tests {
                     assert_eq!(bead.asks.len(), 1, "{state}");
                     assert!(bead.asks[0].secret.is_some(), "{state}");
                     assert_eq!(bead.asks[0].concealed, *state != "secret-shown", "{state}");
+                }
+                "secret-harness" => {
+                    assert_eq!(loaded.asks.open.len(), 1, "{state}");
+                    // The card is drawn from the queue's secret, which
+                    // names the harness and carries no reach: its words of
+                    // where the value goes stand directly under its line.
+                    let secret = loaded.asks.open[0]
+                        .secret
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{state}: no secret"));
+                    assert_eq!(secret.harness, "claude", "{state}");
+                    assert!(secret.login.is_empty(), "{state}");
+                    assert!(secret.reach.is_empty(), "{state}");
+                    assert!(loaded.asks.open[0].concealed, "{state}");
+                    let bead = yard.client().bead("bead-s").unwrap();
+                    assert_eq!(bead.asks.len(), 1, "{state}");
+                    assert!(bead.asks[0].secret.is_some(), "{state}");
                 }
                 "page" => {
                     assert_eq!(loaded.asks.open.len(), 1, "{state}");

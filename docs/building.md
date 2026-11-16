@@ -395,7 +395,9 @@ secret ask, with the yard's lines of what its value reaches, posed
 with a value typed and hidden), `secret-shown`
 (that card where the yard marks the value no secret: typed and
 shown), `secret-refused` (that card with the yard's refusal of
-its answer), `setup-host` (an open card of a setup ask whose account
+its answer), `secret-harness` (the card of a harness key's ask, with
+no reach: its go-line is the harness's words, not a file's),
+`setup-host` (an open card of a setup ask whose account
 stands, posed with a host typed above it), `switcher` (the switcher's
 list open over four yards, one of them away), `switcher-shut` (that
 list, shut a second after

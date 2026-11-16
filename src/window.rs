@@ -1367,12 +1367,12 @@ fn expanded_text_key(card_key: u64, section: &str, index: usize, text: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::ask::{
-        ANSWER_WORDS, Approval, DECLINE_IS_NO_PICK, PAIRING_GIVES, SECRET_GOES, SEND_WORDS,
-        answer_label, approval, approve_label, approve_unlock_label, ask_line, asked_age,
-        candidate_choice_line, card_head, decided_keys, decision_head, description_line, fenced,
-        give_label, give_unlock_label, recommended_line, run_keys, run_runs, run_texts,
-        secret_keys, setup_keys, take_back_label, texts_label, typeback_line, typeback_mismatch,
-        words_send,
+        ANSWER_WORDS, Approval, DECLINE_IS_NO_PICK, HARNESS_GOES, LOGIN_GOES, PAIRING_GIVES,
+        SECRET_GOES, SEND_WORDS, answer_label, approval, approve_label, approve_unlock_label,
+        ask_line, asked_age, candidate_choice_line, card_head, decided_keys, decision_head,
+        description_line, fenced, give_label, give_unlock_label, recommended_line, run_keys,
+        run_runs, run_texts, secret_keys, setup_keys, take_back_label, texts_label, typeback_line,
+        typeback_mismatch, words_send,
     };
     use super::asks::{dir_url, file_url};
     use super::bead::{Button, bar_top, hover_clock};
@@ -28957,20 +28957,41 @@ yardr.dev
         "not reached: thread commands (yardr reply, thread open, thread state), which read the speaker's own file; a crew member's is given with --for-crew",
     ];
 
-    /// The lines of a secret ask's card stand top down as the yard's line,
-    /// the `reach` lines in the order the yard sent them, and the go-line,
-    /// each clear of the one before. With none, nothing stands between the
-    /// line and the go-line: the card as it was. It is told by where the
-    /// lines stand, not by whether `reach` lines are drawn: a window keeps
-    /// the bounds of every selector it ever drew (gpui never clears them),
-    /// so a line of another card would still read as drawn.
-    fn secret_lines_stand_in_order(cx: &mut VisualTestContext, reach: &[&str]) {
-        let order: Vec<&str> = std::iter::once(BOOKS_LINE)
+    /// What the yard says a harness key's ask asks for, and a waiting
+    /// login's input: asks of no source, which the yard sends no reach for.
+    const KEY_LINE: &str = "a secret: ANTHROPIC_API_KEY, the API key Claude Code runs with, asked for crew member yardmaster; it is read by every Claude Code session that burns the operator's login (the crew, groups without login_for, the operator's conversations), from its next start";
+    const LOGIN_LINE: &str = "a secret: INPUT, for the waiting login claude-example1";
+
+    /// The secret of a harness key's ask, as the yard sends it.
+    fn key_of() -> Value {
+        json!({"source": "", "env": ["ANTHROPIC_API_KEY"], "crew": "yardmaster",
+               "harness": "claude", "line": KEY_LINE})
+    }
+
+    /// The secret of a waiting login's input, as the yard sends it.
+    fn login_of() -> Value {
+        json!({"source": "", "env": ["INPUT"], "login": "claude-example1", "line": LOGIN_LINE})
+    }
+
+    /// The lines of a secret ask's card stand top down as the yard's `line`,
+    /// the `reach` lines in the order the yard sent them, and the go-line
+    /// `goes`, each clear of the one before. With none, nothing stands
+    /// between the line and the go-line: the card as it was. It is told by
+    /// where the lines stand, not by whether `reach` lines are drawn: a
+    /// window keeps the bounds of every selector it ever drew (gpui never
+    /// clears them), so a line of another card would still read as drawn.
+    fn secret_lines_stand_in_order(
+        cx: &mut VisualTestContext,
+        line: &str,
+        reach: &[&str],
+        goes: &str,
+    ) {
+        let order: Vec<&str> = std::iter::once(line)
             .chain(reach.iter().copied())
-            .chain(std::iter::once(SECRET_GOES))
+            .chain(std::iter::once(goes))
             .collect();
         // One draw for all of them, the first of which is on every card.
-        bounds_of(cx, BOOKS_LINE);
+        bounds_of(cx, line);
         let stands: Vec<_> = order.iter().map(|s| bounds_now(cx, s)).collect();
         for (at, named) in stands.windows(2).zip(order.windows(2)) {
             assert!(
@@ -28979,9 +29000,13 @@ yardr.dev
             );
         }
         if reach.is_empty() {
+            // A wrapped line's height is a fraction of a pixel, which its
+            // bounds round apart from where the next line starts: half a
+            // pixel is that rounding. A line between them would stand
+            // clear of both by more than it, as a reach's rows do.
             let gap = stands[1].top() - stands[0].bottom();
             assert!(
-                gap.abs() < px(0.5),
+                gap.abs() <= px(0.5),
                 "{gap:?} between the line and the go-line"
             );
         }
@@ -29176,7 +29201,7 @@ yardr.dev
         assert!(!drawn(cx, "words bead-s 7"));
         // What the yard says the value reaches stands under the line, in
         // its order, and above the go-line.
-        secret_lines_stand_in_order(cx, &BOOKS_REACH);
+        secret_lines_stand_in_order(cx, BOOKS_LINE, &BOOKS_REACH, SECRET_GOES);
         assert_eq!(
             secret_field(&view, cx),
             (
@@ -29324,6 +29349,41 @@ yardr.dev
                 assert!(!asked.contains(VALUE), "{call}: {asked}");
             }
         }
+    }
+
+    /// A harness key's card and a waiting login's say where the value goes
+    /// in the yard's words for their kind, not a file's: every session of
+    /// the harness receives the key, and the login's input is kept nowhere.
+    /// The yard sends neither a reach, so the go-line stands under the line.
+    /// This window draws no file's card, so that go-line is drawn on
+    /// neither: a window keeps the bounds of every selector it ever drew, so
+    /// no test that opens a file's card first can say as much.
+    #[gpui::test]
+    fn a_harness_key_and_a_waiting_login_say_where_the_value_goes_in_the_words_of_their_kind(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("footplate/settings.json");
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        // The card is drawn from the queue's ask, as for a file's.
+        let mut key = queued_secret(&["ANTHROPIC_API_KEY"], 7, "", &[]);
+        key["secret"] = key_of();
+        let mut login = queued_secret(&["INPUT"], 8, "", &[]);
+        login["secret"] = login_of();
+        yard.answer(
+            "UserAsks",
+            &json!({"result": {"open": [key, login], "decided": []}}).to_string(),
+        );
+        yard.answer("Bead", &bead_secret(&["ANTHROPIC_API_KEY"], &[7, 8]));
+        let at = env_on(&yard, &file);
+        let (_view, cx) = opened_on_the_ask(at, &file, cx);
+
+        assert!(drawn(cx, KEY_LINE));
+        assert!(drawn(cx, LOGIN_LINE));
+        secret_lines_stand_in_order(cx, KEY_LINE, &[], HARNESS_GOES);
+        secret_lines_stand_in_order(cx, LOGIN_LINE, &[], LOGIN_GOES);
+        assert!(!drawn(cx, SECRET_GOES));
     }
 
     /// A refused answer says why on its card, in place: the yard's
@@ -33310,7 +33370,9 @@ yardr.dev
     }
 
     /// One that was given has the field to give it again, and no line for
-    /// words; one that was declined has neither.
+    /// words; one that was declined has neither. The card of a harness key
+    /// that was given says where its value goes in the harness's words, as
+    /// its open card does.
     #[gpui::test]
     fn a_secret_given_is_given_again_from_its_card_and_a_declined_one_takes_none(
         cx: &mut TestAppContext,
@@ -33318,25 +33380,33 @@ yardr.dev
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         // The one given has the reach its yard said on its card; the yard
-        // said none for the declined one.
+        // said none for the declined one, nor for the harness key.
         let mut given = queued_secret(&["BOOKS_TOKEN"], 7, "answered", &["BOOKS_TOKEN"]);
         given["secret"]["reach"] = json!(BOOKS_REACH);
+        let mut key = queued_secret(
+            &["ANTHROPIC_API_KEY"],
+            9,
+            "answered",
+            &["ANTHROPIC_API_KEY"],
+        );
+        key["secret"] = key_of();
         yard.answer(
             "UserAsks",
             &json!({"result": {"open": [], "decided": [
                 given,
-                queued_secret(&["BOOKS_TOKEN"], 8, "declined", &[])
+                queued_secret(&["BOOKS_TOKEN"], 8, "declined", &[]),
+                key
             ]}})
             .to_string(),
         );
-        yard.answer("Bead", &bead_secret(&["BOOKS_TOKEN"], &[7, 8]));
+        yard.answer("Bead", &bead_secret(&["BOOKS_TOKEN"], &[7, 8, 9]));
         yard.answer(
             "GiveSecret",
             r#"{"result": {"given": ["BOOKS_TOKEN"], "file": "/home/jo/.yardr/sources/books.env"}}"#,
         );
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         wait(cx, "the decided", |cx| {
-            view.read_with(cx, |v, _| v.model.as_ref().unwrap().decided_count() == 2)
+            view.read_with(cx, |v, _| v.model.as_ref().unwrap().decided_count() == 3)
         });
 
         open_decided(&view, cx, "bead-s", 7);
@@ -33344,7 +33414,7 @@ yardr.dev
         assert!(drawn(cx, BOOKS_LINE));
         assert!(drawn(cx, "secret bead-s 7"));
         assert!(!drawn(cx, "words bead-s 7"));
-        secret_lines_stand_in_order(cx, &BOOKS_REACH);
+        secret_lines_stand_in_order(cx, BOOKS_LINE, &BOOKS_REACH, SECRET_GOES);
         cx.simulate_keystrokes("escape");
         cx.simulate_keystrokes("i");
         cx.simulate_input(VALUE);
@@ -33362,12 +33432,19 @@ yardr.dev
         assert!(drawn(cx, BOOKS_LINE));
         assert!(!drawn(cx, "secret bead-s 8"));
         assert!(!drawn(cx, "words bead-s 8"));
-        secret_lines_stand_in_order(cx, &[]);
+        secret_lines_stand_in_order(cx, BOOKS_LINE, &[], SECRET_GOES);
         cx.simulate_keystrokes("escape");
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert_eq!(yard.asked("GiveSecret").len(), 1);
         assert_eq!(yard.asked("AnswerAsk"), Vec::<Value>::new());
+
+        // The harness key that was given: its go-line is the harness's,
+        // directly under the yard's line, where the file's stood on the
+        // others.
+        open_decided(&view, cx, "bead-s", 9);
+        assert!(drawn(cx, KEY_LINE));
+        secret_lines_stand_in_order(cx, KEY_LINE, &[], HARNESS_GOES);
     }
 
     /// A secret ask its asker took back says who took it back and why, as
@@ -33744,7 +33821,7 @@ yardr.dev
         let marks = |n: usize| "\u{2022}".repeat(n);
 
         // This yard sends no reach: the card is the line and the go-line.
-        secret_lines_stand_in_order(cx, &[]);
+        secret_lines_stand_in_order(cx, BOOKS_LINE, &[], SECRET_GOES);
 
         // Starts shown: what is typed is drawn as typed.
         assert!(drawn(cx, "show bead-s 7"));

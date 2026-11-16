@@ -827,6 +827,17 @@ pub struct Secret {
     /// The declared source the secret is the credential of.
     #[serde(default)]
     pub source: String,
+    /// The harness kind whose API key is asked for (`claude`): set on a
+    /// harness-key ask alone, and empty on any other, which is also what a
+    /// yard from before the field sends. The card says where the value goes
+    /// in the words of its kind, so a yard that does not say the kind is
+    /// taken for one that asks for a file's.
+    #[serde(default)]
+    pub harness: String,
+    /// The waiting login the value goes to: set on a waiting login's input
+    /// alone, and empty on any other, as `harness` is.
+    #[serde(default)]
+    pub login: String,
     /// The names to ask the person a value for.
     #[serde(default, deserialize_with = "or_default")]
     pub env: Vec<String>,
@@ -837,8 +848,9 @@ pub struct Secret {
     /// What the value reaches once it is given, in short lines for the card
     /// to carry under the line: where it lands, which reads use it, and
     /// which do not. Absent from a yard from before the field, and from a
-    /// harness-key ask and a waiting login's input, whose line says where
-    /// the value goes already: the card then has none.
+    /// harness-key ask and a waiting login's input (`harness`, `login`),
+    /// whose card says where the value goes in the words of their kind
+    /// already: the card then has none.
     #[serde(default, deserialize_with = "or_default")]
     pub reach: Vec<String>,
 }
@@ -7095,6 +7107,15 @@ mod tests {
         ];
         let reached = json!({"source": "books", "env": ["BOOKS_TOKEN"], "reach": reach,
             "line": "a secret: BOOKS_TOKEN, for the source books (https://books.example.com)"});
+        // What a yard that says the kind of a secret sends: the harness
+        // whose API key is asked for (with the crew member at whose login
+        // screen it is asked, which the window does not read), and the
+        // waiting login whose input it is. Neither has a source or a reach.
+        let key = json!({"source": "", "env": ["ANTHROPIC_API_KEY"],
+            "crew": "yardmaster", "harness": "claude",
+            "line": "a secret: ANTHROPIC_API_KEY, the API key Claude Code runs with, asked for crew member yardmaster; it is read by every Claude Code session that burns the operator's login (the crew, groups without login_for, the operator's conversations), from its next start"});
+        let waiting = json!({"source": "", "env": ["INPUT"], "login": "claude-example1",
+            "line": "a secret: INPUT, for the waiting login claude-example1"});
         yard.answer(
             "UserAsks",
             &json!({"result": {
@@ -7107,7 +7128,13 @@ mod tests {
                              "asker": "yardmaster", "state": "answered", "option": 1},
                             {"bead": "yd-crm", "ask": 15, "question": "The token for the books",
                              "asker": "yardmaster", "state": "answered",
-                             "secret": reached, "given": ["BOOKS_TOKEN"]}]
+                             "secret": reached, "given": ["BOOKS_TOKEN"]},
+                            {"bead": "yd-crm", "ask": 14, "question": "The key it runs with",
+                             "asker": "yardmaster", "state": "answered",
+                             "secret": key, "given": ["ANTHROPIC_API_KEY"]},
+                            {"bead": "yd-crm", "ask": 13, "question": "The code the sign-in showed",
+                             "asker": "yardmaster", "state": "answered",
+                             "secret": waiting, "given": ["INPUT"]}]
             }})
             .to_string(),
         );
@@ -7129,6 +7156,17 @@ mod tests {
         // it sent none for has none, as an ask from before the field has.
         assert!(asked.reach.is_empty());
         assert_eq!(asks.decided[2].secret.as_ref().unwrap().reach, reach);
+        // The kind is the yard's to say: a harness key names its harness, a
+        // waiting login's input its login, and any other secret, as one
+        // from a yard from before the two fields, names neither.
+        fn kind(secret: &Option<Secret>) -> (&str, &str) {
+            let secret = secret.as_ref().unwrap();
+            (secret.harness.as_str(), secret.login.as_str())
+        }
+        assert_eq!(kind(&asks.open[0].secret), ("", ""));
+        assert_eq!(kind(&asks.decided[2].secret), ("", ""));
+        assert_eq!(kind(&asks.decided[3].secret), ("claude", ""));
+        assert_eq!(kind(&asks.decided[4].secret), ("", "claude-example1"));
         // An ask the yard says nothing of is concealed, in the queue and
         // on the bead; one it marks unconcealed is not.
         assert!(asks.open[0].concealed);
@@ -7144,7 +7182,11 @@ mod tests {
                  "state": "answered", "secret": secret, "concealed": false, "given": ["BOOKS_TOKEN"]},
                 {"ask": 16, "question": "Move them now?", "state": "answered", "option": 1},
                 {"ask": 15, "question": "The token for the books", "options": [],
-                 "state": "answered", "secret": reached, "given": ["BOOKS_TOKEN"]}
+                 "state": "answered", "secret": reached, "given": ["BOOKS_TOKEN"]},
+                {"ask": 14, "question": "The key it runs with", "options": [],
+                 "state": "answered", "secret": key, "given": ["ANTHROPIC_API_KEY"]},
+                {"ask": 13, "question": "The code the sign-in showed", "options": [],
+                 "state": "answered", "secret": waiting, "given": ["INPUT"]}
             ]}})
             .to_string(),
         );
@@ -7154,6 +7196,9 @@ mod tests {
         assert_eq!(bead.asks[1].given, ["BOOKS_TOKEN"]);
         assert_eq!(bead.asks[2].secret, None);
         assert_eq!(bead.asks[3].secret.as_ref().unwrap().reach, reach);
+        assert_eq!(kind(&bead.asks[0].secret), ("", ""));
+        assert_eq!(kind(&bead.asks[4].secret), ("claude", ""));
+        assert_eq!(kind(&bead.asks[5].secret), ("", "claude-example1"));
         assert!(bead.asks[0].concealed);
         assert!(!bead.asks[1].concealed);
         assert!(bead.asks[2].concealed);
