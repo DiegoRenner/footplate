@@ -307,6 +307,42 @@ pub(crate) fn keys_hint(
         .child("? all keys")
 }
 
+/// The row of keys under a card: its `keys` in words, a dot, and the
+/// cheatsheet's hint (`keys_hint`, named `hint`). A card that carries each
+/// key on its control lists none, and its hint stands alone. `words` names
+/// the words' bounds for a test, as `hint` names the hint's.
+pub(crate) fn keys_row(
+    keys: String,
+    words: &'static str,
+    hint: &'static str,
+    palette: Palette,
+    cx: &mut Context<Footplate>,
+) -> Div {
+    let prose = !keys.is_empty();
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_baseline()
+        .gap_1()
+        .text_xs()
+        .text_color(palette.faint)
+        .children(prose.then(|| {
+            div()
+                .debug_selector(move || words.to_string())
+                // gpui measures a text it has no width for as its whole line,
+                // and a flex item does not shrink under what it measures: with
+                // no bound the words keep that width, the row wraps between its
+                // items, and a long line runs past the card's edge. No flex_1
+                // with it, which would spread the row and push the hint to the
+                // right edge.
+                .min_w_0()
+                .child(keys)
+        }))
+        .children(prose.then(|| div().child("·")))
+        .child(keys_hint(hint, palette, cx))
+}
+
 /// One segment of a segmented control: the choice `label`, filled with
 /// the accent where it is chosen, quiet text otherwise. The caller joins
 /// the segments with [`segmented`] and puts the clicks on them.

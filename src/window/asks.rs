@@ -26,7 +26,7 @@ use super::keys::{APPROVE_KEY, SETUP_SECRET_CONTEXT};
 use super::metrics::ASK_QUESTION_MIN;
 use super::rail::{RailTip, UnsentNote, post_note};
 use super::state::{Adding, ApprovalPairing};
-use super::ui::{field, keys_hint, send_held, small_button};
+use super::ui::{field, keys_row, send_held, small_button};
 use super::words::{bead_words, decide_words, decided_words, left_words};
 use super::{AskAbout, Decline, Expand, FocusFilter, FocusWords};
 use crate::api::{self};
@@ -3682,20 +3682,13 @@ impl Footplate {
                 }
                 (None, None, None) => String::new(),
             };
-            let prose = !keys.is_empty();
-            card = card.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_baseline()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .children(prose.then(|| div().child(keys)))
-                    .children(prose.then(|| div().child("·")))
-                    .child(keys_hint("keys hint card", palette, cx)),
-            );
+            card = card.child(keys_row(
+                keys,
+                "keys text card",
+                "keys hint card",
+                palette,
+                cx,
+            ));
         } else {
             let bead_click = bead_id.clone();
             card = card.child(
@@ -4732,20 +4725,13 @@ impl Footplate {
                     None => decided_keys(&detail),
                 },
             };
-            let prose = !keys.is_empty();
-            body = body.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_baseline()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .children(prose.then(|| div().child(keys)))
-                    .children(prose.then(|| div().child("·")))
-                    .child(keys_hint("keys hint decided", palette, cx)),
-            );
+            body = body.child(keys_row(
+                keys,
+                "keys text decided",
+                "keys hint decided",
+                palette,
+                cx,
+            ));
             let expand_label = if detail.expanded { "fold" } else { "expand" };
             let bead_click = bead.to_string();
             body = body.child(

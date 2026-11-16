@@ -29025,6 +29025,24 @@ yardr.dev
         }
     }
 
+    /// The keys under a secret ask's card wrap inside the card. At the window
+    /// as it opens the card is narrower than the line, which ends in the
+    /// terminal's command, so a line that did not wrap would stand past the
+    /// card's right edge, as far as the window's. The window is put back as
+    /// it was found, and a pixel is the rounding of the bounds.
+    fn keys_stand_in_the_card(cx: &mut VisualTestContext, card: &str, keys: &str) {
+        let window = cx.update(|window, _| window.viewport_size());
+        cx.simulate_resize(gpui::size(px(960.), px(640.)));
+        // One draw for both.
+        bounds_of(cx, card);
+        let (card, keys) = (bounds_now(cx, card), bounds_now(cx, keys));
+        assert!(
+            keys.right() <= card.right() + px(1.),
+            "the keys run out of the card: {keys:?} in {card:?}"
+        );
+        cx.simulate_resize(window);
+    }
+
     /// A value as a person has it on the clipboard.
     const VALUE: &str = "bk-live-3f9a-7Qx";
 
@@ -29215,6 +29233,9 @@ yardr.dev
         // What the yard says the value reaches stands under the line, in
         // its order, and above the go-line.
         secret_lines_stand_in_order(cx, BOOKS_LINE, &BOOKS_REACH, SECRET_GOES);
+        // The keys under the card, with the terminal's command at their end,
+        // stay within it.
+        keys_stand_in_the_card(cx, "card bead-s 7", "keys text card");
         assert_eq!(
             secret_field(&view, cx),
             (
@@ -33444,6 +33465,9 @@ yardr.dev
         assert!(drawn(cx, "secret bead-s 7"));
         assert!(!drawn(cx, "words bead-s 7"));
         secret_lines_stand_in_order(cx, BOOKS_LINE, &BOOKS_REACH, SECRET_GOES);
+        // The keys of the one to give again, with the terminal's command,
+        // stay within its card as an open card's do.
+        keys_stand_in_the_card(cx, "decided card bead-s 7", "keys text decided");
         cx.simulate_keystrokes("escape");
         cx.simulate_keystrokes("i");
         cx.simulate_input(VALUE);
