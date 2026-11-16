@@ -29025,20 +29025,28 @@ yardr.dev
         }
     }
 
-    /// The keys under a secret ask's card wrap inside the card. At the window
-    /// as it opens the card is narrower than the line, which ends in the
-    /// terminal's command, so a line that did not wrap would stand past the
-    /// card's right edge, as far as the window's. The window is put back as
-    /// it was found, and a pixel is the rounding of the bounds.
-    fn keys_stand_in_the_card(cx: &mut VisualTestContext, card: &str, keys: &str) {
+    /// A keys line wraps inside what holds it. At a window of `size` (width
+    /// and height in pixels) the container is narrower than the line: a
+    /// secret ask's card at the window as it opens, whose line ends in the
+    /// terminal's command, or the yard row's pane at the window's floor. A
+    /// line that did not wrap would stand past the container's right edge,
+    /// as far as the window's. The window is put back as it was found, and a
+    /// pixel is the rounding of the bounds.
+    fn keys_stand_within(
+        cx: &mut VisualTestContext,
+        container: &str,
+        keys: &str,
+        size: (f32, f32),
+    ) {
         let window = cx.update(|window, _| window.viewport_size());
-        cx.simulate_resize(gpui::size(px(960.), px(640.)));
+        let (width, height) = size;
+        cx.simulate_resize(gpui::size(px(width), px(height)));
         // One draw for both.
-        bounds_of(cx, card);
-        let (card, keys) = (bounds_now(cx, card), bounds_now(cx, keys));
+        bounds_of(cx, container);
+        let (container, keys) = (bounds_now(cx, container), bounds_now(cx, keys));
         assert!(
-            keys.right() <= card.right() + px(1.),
-            "the keys run out of the card: {keys:?} in {card:?}"
+            keys.right() <= container.right() + px(1.),
+            "the keys run out of their container: {keys:?} in {container:?}"
         );
         cx.simulate_resize(window);
     }
@@ -29235,7 +29243,7 @@ yardr.dev
         secret_lines_stand_in_order(cx, BOOKS_LINE, &BOOKS_REACH, SECRET_GOES);
         // The keys under the card, with the terminal's command at their end,
         // stay within it.
-        keys_stand_in_the_card(cx, "card bead-s 7", "keys text card");
+        keys_stand_within(cx, "card bead-s 7", "keys text card", (960., 640.));
         assert_eq!(
             secret_field(&view, cx),
             (
@@ -33467,7 +33475,12 @@ yardr.dev
         secret_lines_stand_in_order(cx, BOOKS_LINE, &BOOKS_REACH, SECRET_GOES);
         // The keys of the one to give again, with the terminal's command,
         // stay within its card as an open card's do.
-        keys_stand_in_the_card(cx, "decided card bead-s 7", "keys text decided");
+        keys_stand_within(
+            cx,
+            "decided card bead-s 7",
+            "keys text decided",
+            (960., 640.),
+        );
         cx.simulate_keystrokes("escape");
         cx.simulate_keystrokes("i");
         cx.simulate_input(VALUE);
@@ -34831,6 +34844,19 @@ yardr.dev
         let yard = Yard::start();
         let (_view, cx) = opened_on_the_yard_row(&yard, 0, cx);
         assert!(!drawn(cx, "mark all read"));
+    }
+
+    /// The yard row's keys line wraps inside its pane. At the window's floor
+    /// the pane is narrower than the line, whose end says that mail is read
+    /// when shown here, so a line that did not wrap would stand past the
+    /// pane's right edge and that end could not be read. The line stands
+    /// under the notices' scroll, so a yard row with a few of them is pose
+    /// enough: no delivery's files are needed.
+    #[gpui::test]
+    fn the_yard_row_s_keys_line_wraps_within_the_pane_at_the_floor(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        let (_view, cx) = opened_on_the_yard_row(&yard, 3, cx);
+        keys_stand_within(cx, "yard pane", "keys text yard", (WINDOW_MIN, 360.));
     }
 
     /// A hook delivery's photo comes after its notice. The yard row shows

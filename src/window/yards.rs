@@ -2598,7 +2598,13 @@ impl Footplate {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let pane = div().flex_1().min_w_0().h_full().flex().flex_col();
+        let pane = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .debug_selector(|| "yard pane".to_string());
         let unread = model.notices().iter().filter(|n| !n.read).count();
         let head = div()
             .p_3()
@@ -2707,6 +2713,15 @@ impl Footplate {
                     .into_any_element()
             }))
         };
+        // The words are bounded where they stand, as `ui::keys_row`'s are (the
+        // reason is there): with no bound they keep the width of their whole
+        // line and run past the pane's right edge at the window's floor. No
+        // flex_1, which would push the hint to the right edge. The row keeps
+        // its own text size and padding, so it does not call `keys_row`.
+        let keys = div()
+            .debug_selector(|| "keys text yard".to_string())
+            .min_w_0()
+            .child("x marks one notice read, X all of them; mail is read when shown here");
         pane.children(self.reconnect_strip(palette))
             .child(head)
             .child(list)
@@ -2731,7 +2746,7 @@ impl Footplate {
                     .gap_1()
                     .text_sm()
                     .text_color(palette.faint)
-                    .child("x marks one notice read, X all of them; mail is read when shown here")
+                    .child(keys)
                     .child("·")
                     .child(keys_hint("keys hint yard", palette, cx)),
             )
