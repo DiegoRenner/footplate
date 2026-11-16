@@ -29370,7 +29370,10 @@ yardr.dev
     /// The yard sends neither a reach, so the go-line stands under the line.
     /// This window draws no file's card, so that go-line is drawn on
     /// neither: a window keeps the bounds of every selector it ever drew, so
-    /// no test that opens a file's card first can say as much.
+    /// no test that opens a file's card first can say as much. Each field
+    /// says what it takes in the words of its kind as well, the harness the
+    /// key is of and the login the input is for, since the yard sends no
+    /// source on either for the field to name.
     #[gpui::test]
     fn a_harness_key_and_a_waiting_login_say_where_the_value_goes_in_the_words_of_their_kind(
         cx: &mut TestAppContext,
@@ -29390,13 +29393,26 @@ yardr.dev
         );
         yard.answer("Bead", &bead_secret(&["ANTHROPIC_API_KEY"], &[7, 8]));
         let at = env_on(&yard, &file);
-        let (_view, cx) = opened_on_the_ask(at, &file, cx);
+        let (view, cx) = opened_on_the_ask(at, &file, cx);
 
         assert!(drawn(cx, KEY_LINE));
         assert!(drawn(cx, LOGIN_LINE));
         secret_lines_stand_in_order(cx, KEY_LINE, &[], HARNESS_GOES);
         secret_lines_stand_in_order(cx, LOGIN_LINE, &[], LOGIN_GOES);
         assert!(!drawn(cx, SECRET_GOES));
+
+        // The open card is the key's, the oldest ask; the login's is the
+        // current one once it is picked. Neither field reads "for the
+        // source " with no source after it.
+        assert_eq!(
+            secret_field(&view, cx).2,
+            "ANTHROPIC_API_KEY for the claude key"
+        );
+        view.update(cx, |v, cx| v.select_ask("bead-s".into(), 8, cx));
+        assert_eq!(
+            secret_field(&view, cx).2,
+            "INPUT for the waiting login claude-example1"
+        );
     }
 
     /// A refused answer says why on its card, in place: the yard's

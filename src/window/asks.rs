@@ -101,7 +101,8 @@ impl Footplate {
             self.set_secret_shown(shown, cx);
             // The secret shots pose a value in the field, hidden and
             // shown: a debug build's alone, as the settings and the
-            // draft of Footplate::opened.
+            // draft of Footplate::opened. The harness-empty shot poses
+            // none, so that the field says what it takes.
             #[cfg(debug_assertions)]
             if matches!(
                 std::env::var("FOOTPLATE_SHOT").as_deref(),
@@ -238,7 +239,19 @@ impl Footplate {
                     0 | 1 => String::new(),
                     n => format!(" ({} of {n})", at + 1),
                 };
-                format!("{name} for the source {}{of}", secret.source)
+                // What the value is for, in the order `secret_goes` tests
+                // the kinds. The yard sends no source on a harness key's
+                // ask or a waiting login's input, so each names its own:
+                // the harness as the yard writes it, since the card's line
+                // above has its label and a table of labels here would
+                // fall behind every kind the yard adds.
+                if !secret.harness.is_empty() {
+                    format!("{name} for the {} key{of}", secret.harness)
+                } else if !secret.login.is_empty() {
+                    format!("{name} for the waiting login {}{of}", secret.login)
+                } else {
+                    format!("{name} for the source {}{of}", secret.source)
+                }
             })
             .or_else(|| {
                 self.setup_account().map(|(names, pack)| {

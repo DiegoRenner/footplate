@@ -230,6 +230,7 @@ pub const STATES: &[&str] = &[
     "secret-shown",
     "secret-refused",
     "secret-harness",
+    "secret-harness-empty",
     "setup-host",
     "switcher",
     "switcher-shut",
@@ -2339,7 +2340,11 @@ fn populate(yard: &Yard, state: &str) {
             );
             yard.answer("Bead", &bead_setup_host());
         }
-        "secret" | "secret-shown" | "secret-refused" | "secret-harness" => {
+        "secret"
+        | "secret-shown"
+        | "secret-refused"
+        | "secret-harness"
+        | "secret-harness-empty" => {
             // An open card of a secret ask, posed with a value typed:
             // hidden, with the toggle to Show, or shown where the yard
             // marks the value no secret, with the toggle to Hide. The
@@ -2348,8 +2353,11 @@ fn populate(yard: &Yard, state: &str) {
             // harness shot poses the ask for a harness's API key instead
             // of a source's credential: the yard sends it no reach, and
             // its card says where the value goes in the harness's words.
+            // The harness-empty shot poses the same ask with nothing
+            // typed, so that the field says what it takes: the harness
+            // the key is of, where the yard sends no source to name.
             let unconcealed = state == "secret-shown";
-            let harness = state == "secret-harness";
+            let harness = matches!(state, "secret-harness" | "secret-harness-empty");
             yard.answer(
                 "UserInbox",
                 r#"{"result": {"mail": [{"seq": 12, "from": "yardmaster", "to": "jo", "text": "Shall I land it?", "read": false}], "unread": 1, "last": 12, "from": ["yardmaster"]}}"#,
@@ -4008,7 +4016,7 @@ mod tests {
                     assert!(bead.asks[0].secret.is_some(), "{state}");
                     assert_eq!(bead.asks[0].concealed, *state != "secret-shown", "{state}");
                 }
-                "secret-harness" => {
+                "secret-harness" | "secret-harness-empty" => {
                     assert_eq!(loaded.asks.open.len(), 1, "{state}");
                     // The card is drawn from the queue's secret, which
                     // names the harness and carries no reach: its words of
@@ -4020,6 +4028,12 @@ mod tests {
                     assert_eq!(secret.harness, "claude", "{state}");
                     assert!(secret.login.is_empty(), "{state}");
                     assert!(secret.reach.is_empty(), "{state}");
+                    // The empty field says what it takes from the same
+                    // secret: the name, and the harness it is the key of,
+                    // with no source to name. That sentence is pinned in
+                    // window.rs, where the window draws it.
+                    assert_eq!(secret.env, ["ANTHROPIC_API_KEY"], "{state}");
+                    assert!(secret.source.is_empty(), "{state}");
                     assert!(loaded.asks.open[0].concealed, "{state}");
                     let bead = yard.client().bead("bead-s").unwrap();
                     assert_eq!(bead.asks.len(), 1, "{state}");

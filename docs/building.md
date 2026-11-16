@@ -397,6 +397,8 @@ with a value typed and hidden), `secret-shown`
 shown), `secret-refused` (that card with the yard's refusal of
 its answer), `secret-harness` (the card of a harness key's ask, with
 no reach: its go-line is the harness's words, not a file's),
+`secret-harness-empty` (that card with nothing typed: its field says
+what it takes, naming the harness the key is of),
 `setup-host` (an open card of a setup ask whose account
 stands, posed with a host typed above it), `switcher` (the switcher's
 list open over four yards, one of them away), `switcher-shut` (that
