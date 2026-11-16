@@ -32,8 +32,10 @@ you have not read. The beads to move stand in words, as `6 to move`, in the
 tile's tooltip, the switcher's row and the menu bar's. The keys that step
 through the list skip the rows of a folded section, and a parked bead's
 card that is open stays open. A yard from before the call has no
-section and says nothing about one. Under them, folded, "Decided" with the
-answered, declined and put-aside asks and the ones taken back, newest
+section: where it would stand, one quiet line says the yard's yardr is older
+than the beads-to-move view and the date it needs (9 Nov 2026 or later), in no
+red and with none of the yard's own words. Under them, folded, "Decided" with
+the answered, declined and put-aside asks and the ones taken back, newest
 first. Open, the history stands grouped by the day it was asked, with the
 outcome's icon first on every row, and look-alikes folded into one row with
 their count. It draws the newest fifty asks, and under them one quiet row,

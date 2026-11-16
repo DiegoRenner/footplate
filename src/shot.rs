@@ -125,7 +125,9 @@ use crate::yard::Env;
 /// the move back picked and its note typed, and the same details on a yard
 /// from before the call, which say in one line who moves the stage, and one
 /// bead served ten plain moves, open on its card stood at its end, folded
-/// behind the one control and unfolded,
+/// behind the one control and unfolded, and the Decide list on a yard whose
+/// yardr refuses the call that names its arguments, with the words that the
+/// yard is too old where the section would stand,
 /// The stopped yard answers nothing, as the refused one answers nowhere:
 /// both open on a yard that is down, as the posed setup does. The yard at
 /// an address is opened from the settings the shot script writes; the
@@ -242,6 +244,7 @@ pub const STATES: &[&str] = &[
     "waiting-end",
     "waiting-many",
     "waiting-many-open",
+    "old-waiting",
     "lines-waiting",
     "lines-waiting-end",
     "lines-help",
@@ -2390,8 +2393,8 @@ fn populate(yard: &Yard, state: &str) {
             );
             yard.answer("Bead", &bead_links());
         }
-        "waiting" | "waiting-folded" | "waiting-end" | "lines-waiting" | "lines-waiting-end"
-        | "lines-help" | "lines-panel" | "lines-departures" => {
+        "waiting" | "waiting-folded" | "waiting-end" | "old-waiting" | "lines-waiting"
+        | "lines-waiting-end" | "lines-help" | "lines-panel" | "lines-departures" => {
             // The Decide list: one open ask, and under it three beads
             // parked for jo's move, the longest waiting first: a bead with
             // a move forward and a move back that wants a note, one with
@@ -2405,7 +2408,11 @@ fn populate(yard: &Yard, state: &str) {
             // serves no `Waiting`, the one line that says who moves its
             // stage. The panel and departures shots open the arrivals pane
             // over the same yard instead: its summary line and its banner
-            // count the open ask with the three parked beads after it.
+            // count the open ask with the three parked beads after it. The
+            // old-waiting shot is the Decide list on a yard whose yardr
+            // refuses the call by name, as one from before the call was a
+            // stable one does: no section, the words that the yard is too
+            // old in its place, and the open ask's card open.
             yard.answer(
                 "UserInbox",
                 r#"{"result": {"mail": [{"seq": 12, "from": "yardmaster", "to": "jo", "text": "Shall I land it?", "read": false}], "unread": 1, "last": 12, "from": ["yardmaster"]}}"#,
@@ -2427,8 +2434,15 @@ fn populate(yard: &Yard, state: &str) {
             );
             yard.answer("Bead", &bead_links());
             let midnight = shot_midnight();
-            // The yard from before the call answers no such method.
-            if state != "lines-help" {
+            // The yard from before the call answers no such method. One from
+            // before it was a stable one refuses the call that names its
+            // arguments, with yardr's own sentence.
+            if state == "old-waiting" {
+                yard.answer(
+                    "Waiting",
+                    r#"{"error": {"code": "error", "message": "arguments: Waiting takes them as a JSON array: only the calls docs/api.md names take them by name"}}"#,
+                );
+            } else if state != "lines-help" {
                 yard.answer(
                     "Waiting",
                     &json!({"result": [
@@ -3519,7 +3533,7 @@ mod tests {
                 "decisions" | "decisions-filtered" | "decisions-more" => {
                     assert_eq!(loaded.asks.decided.len(), 156, "{state}")
                 }
-                "waiting" | "waiting-folded" | "waiting-end" | "lines-waiting"
+                "waiting" | "waiting-folded" | "waiting-end" | "old-waiting" | "lines-waiting"
                 | "lines-waiting-end" | "lines-help" | "lines-panel" | "lines-departures" => {
                     assert_eq!(loaded.asks.decided.len(), 12, "{state}")
                 }
@@ -4277,6 +4291,37 @@ mod tests {
                     let bead = yard.client().bead("lead-5gvp").unwrap();
                     assert_eq!(bead.stage, "backlog", "{state}");
                     assert_eq!(bead.notes.len(), 1, "{state}");
+                }
+                "old-waiting" => {
+                    // The same yard, its yardr refusing the call by name as
+                    // one from before the call was a stable one does, with
+                    // its own sentence and not no such method: no beads
+                    // parked, no notice, and the call too old, so that
+                    // Decide says so in the section's place.
+                    assert_eq!(loaded.asks.open.len(), 1, "{state}");
+                    assert!(loaded.waiting_too_old, "{state}");
+                    assert!(loaded.parked.is_empty(), "{state}");
+                    assert_eq!(loaded.parked_notice, None, "{state}");
+                    let refused = yard.client().waiting("jo").unwrap_err();
+                    assert!(
+                        refused
+                            .to_string()
+                            .starts_with("arguments: Waiting takes them as a JSON array"),
+                        "{state}: {refused}"
+                    );
+                    assert!(crate::model::waiting_too_old(&refused), "{state}");
+                    // The words the window then draws are the model's, with
+                    // none of the yard's.
+                    let (model, _) = crate::model::Model::new(
+                        loaded.clone(),
+                        crate::model::Mode::Decisions,
+                        None,
+                    );
+                    assert!(model.waiting_too_old(), "{state}");
+                    assert!(
+                        crate::model::WAITING_TOO_OLD.contains("older than the beads-to-move view"),
+                        "{state}"
+                    );
                 }
                 "lines-help" => {
                     // The same yard from before the call: no beads parked

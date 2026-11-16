@@ -35632,33 +35632,56 @@ yardr.dev
         );
     }
 
-    /// A yard from before the call has no Waiting section, and nothing is
-    /// said of one: the asks stand alone, as they did.
+    /// A yard from before the call has no Waiting section, and says in its
+    /// place that its yardr is too old, in plain words and never in the
+    /// yard's own: no notice is raised, whichever way it refuses the call.
+    /// One from before the parked queue says it has no such method (the
+    /// stand-in's answer to a call it was given none for); one from before
+    /// the call was a stable one refuses the window's call that names its
+    /// arguments, with a sentence of its own, and that is the refusal a new
+    /// yard's first read of the queue meets. The asks stand above the words,
+    /// as they did. A window keeps the selector of what it has drawn, so
+    /// each refusal has a window of its own to say what is not drawn.
     #[gpui::test]
     fn a_yard_from_before_the_call_has_no_waiting_section(cx: &mut TestAppContext) {
-        let yard = Yard::start();
-        a_yard_of_jo(&yard);
-        yard.answer("UserAsks", &asks_three());
-        yard.answer("Bead", &bead_three());
-        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
-        to_decisions(&view, cx);
-        wait(cx, "the asks", |cx| drawn(cx, "decision row bead-a"));
-        assert!(!drawn(cx, "section Beads to move"));
-        assert!(!drawn(cx, "section Beads to move count"));
-        assert_eq!(notice(&view, cx), "");
-        view.read_with(cx, |v, _| {
-            let m = v.model.as_ref().unwrap();
-            assert!(m.waiting_too_old());
-            assert_eq!(m.parked_count(), 0);
-        });
-        // A yard that serves it, with no bead parked, has the head and says
-        // so.
-        yard.answer("Waiting", r#"{"result": []}"#);
-        yard.emit(r#"{"seq": 30, "kind": "advanced", "actor": "yardmaster", "bead": "bead-z", "at": "2026-10-08T09:30:00Z", "data": {}}"#);
-        wait(cx, "the section's head", |cx| {
-            drawn(cx, "section Beads to move")
-        });
-        assert_eq!(words::bead_words(0), "0 beads");
+        for refusal in [
+            None,
+            // yardr's sentence, as its api.go words it.
+            Some(
+                r#"{"error": {"code": "error", "message": "arguments: Waiting takes them as a JSON array: only the calls docs/api.md names take them by name"}}"#,
+            ),
+        ] {
+            let yard = Yard::start();
+            a_yard_of_jo(&yard);
+            yard.answer("UserAsks", &asks_three());
+            yard.answer("Bead", &bead_three());
+            if let Some(refusal) = refusal {
+                yard.answer("Waiting", refusal);
+            }
+            let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+            to_decisions(&view, cx);
+            wait(cx, "the asks", |cx| drawn(cx, "decision row bead-a"));
+            assert!(!drawn(cx, "section Beads to move"));
+            assert!(!drawn(cx, "section Beads to move count"));
+            assert!(drawn(cx, "waiting too old"));
+            assert_eq!(notice(&view, cx), "");
+            view.read_with(cx, |v, _| {
+                let m = v.model.as_ref().unwrap();
+                assert!(m.waiting_too_old());
+                assert_eq!(m.parked_count(), 0);
+            });
+            // A yard that serves it, with no bead parked, has the head and
+            // says so, and is no longer too old.
+            yard.answer("Waiting", r#"{"result": []}"#);
+            yard.emit(r#"{"seq": 30, "kind": "advanced", "actor": "yardmaster", "bead": "bead-z", "at": "2026-10-08T09:30:00Z", "data": {}}"#);
+            wait(cx, "the section's head", |cx| {
+                drawn(cx, "section Beads to move")
+            });
+            view.read_with(cx, |v, _| {
+                assert!(!v.model.as_ref().unwrap().waiting_too_old());
+            });
+            assert_eq!(words::bead_words(0), "0 beads");
+        }
     }
 
     /// The board and the flows the beads of `a_yard_with_parked_beads`

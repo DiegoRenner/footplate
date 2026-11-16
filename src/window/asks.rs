@@ -2347,7 +2347,8 @@ impl Footplate {
     /// Decisions' list: the open questions, each with what it wants,
     /// grouped by topic where a topic has two asks or more, with the
     /// "Beads to move" section under them (the rows of the beads parked
-    /// for the person's move), which folds to its head, and the
+    /// for the person's move), which folds to its head, or on a yard too
+    /// old for the call one quiet line in its place, and the
     /// Decided toggle at the list's end: decided asks are unbounded
     /// history, and without the toggle they would push open decisions
     /// off a short list. Open, the history has its filter with its chips,
@@ -2393,8 +2394,9 @@ impl Footplate {
         // named for what the person does with them, "Beads to move". The
         // head above it counts what is "to decide", and one word,
         // "waiting", would name both. A yard from before the call has no
-        // section, and nothing said of it. Folded, the head stands with its
-        // count, and the rows go.
+        // section: its words say so in its place, faint and in no red, as the
+        // Lines pane does, and the yard's own refusal is never shown. Folded,
+        // the head stands with its count, and the rows go.
         if !model.waiting_too_old() {
             let folded = model.waiting_folded();
             body = body.child(
@@ -2412,6 +2414,16 @@ impl Footplate {
                     body = body.child(self.waiting_row(row, palette, cx));
                 }
             }
+        } else {
+            body = body.child(
+                div()
+                    .debug_selector(|| "waiting too old".to_string())
+                    .px_3()
+                    .py_1()
+                    .text_sm()
+                    .text_color(palette.faint)
+                    .child(model::WAITING_TOO_OLD),
+            );
         }
         if decided > 0 {
             let open = model.decided_expanded();

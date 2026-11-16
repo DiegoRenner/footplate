@@ -6932,7 +6932,8 @@ fn shot_section() -> Option<Section> {
 /// shot's with its refusal), the decided pairing card for the pair-qr and
 /// pair-ended shots, the board for the arrivals and departures shots, one
 /// arrival's bead for the arrival shot, yardr's line for the flow shot,
-/// the first parked bead's card for the waiting shots, the arrivals pane
+/// the first parked bead's card for the waiting shots, the open ask's card
+/// for the old-waiting shot, whose yard parks none, the arrivals pane
 /// for the lines-panel and lines-departures shots, the many-move bead's
 /// card for the waiting-many shots and the yard row for the delivery shot,
 /// else none. A debug build's alone.
@@ -6951,7 +6952,7 @@ fn shot_selected() -> Option<Selected> {
         | Ok("keys") => {
             return Some(Selected::Decision("bead-a".into()));
         }
-        Ok("decisions") | Ok("decisions-filtered") | Ok("decisions-more") => {
+        Ok("decisions") | Ok("decisions-filtered") | Ok("decisions-more") | Ok("old-waiting") => {
             return Some(Selected::Decision("bead-a".into()));
         }
         Ok("waiting") | Ok("waiting-folded") | Ok("waiting-end") => {

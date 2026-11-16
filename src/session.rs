@@ -906,6 +906,16 @@ mod tests {
         assert!(state.parked.is_empty());
         assert_eq!(state.parked_notice, None);
         assert!(state.waiting_too_old);
+        // So is one from before the call was a stable one, which refuses the
+        // call that names its arguments with yardr's own sentence.
+        old.answer(
+            "Waiting",
+            r#"{"error": {"code": "error", "message": "arguments: Waiting takes them as a JSON array: only the calls docs/api.md names take them by name"}}"#,
+        );
+        let state = load(&old.client(), "jo").unwrap();
+        assert!(state.parked.is_empty());
+        assert_eq!(state.parked_notice, None);
+        assert!(state.waiting_too_old);
         // A queue that reads, none waiting, carries neither.
         yard.answer("Waiting", r#"{"result": []}"#);
         let state = load(&yard.client(), "jo").unwrap();

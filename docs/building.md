@@ -420,7 +420,10 @@ with the "Beads to move" section folded to its head and count, the card still
 open), `waiting-end` (that card at its end, where the moves and
 the line for their note are), `waiting-many` (one bead served ten plain
 moves, open on its card at its end, folded behind the one control),
-`waiting-many-open` (that card with the moves unfolded), `lines-waiting`
+`waiting-many-open` (that card with the moves unfolded), `old-waiting` (the
+Decide list on a yard whose yardr refuses the call by name, as one from before
+the call was a stable one does: no section, and the words that the yard is too
+old in its place, the open ask's card open), `lines-waiting`
 (the same bead's Lines details, with the same moves under its body),
 `lines-waiting-end` (those
 details at their end, the move back picked and its note typed),

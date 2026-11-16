@@ -2175,17 +2175,20 @@ impl Model {
         self.reselect()
     }
 
-    /// Whether the yard has no Waiting call: one from before the parked
-    /// queue. Decisions then has no Waiting section, and no words about
-    /// one; Lines' number of what waits on the reader goes by the remarks
-    /// of the beads it shows ([`Model::waiting_on_you`]), and the bead
-    /// details' stage-help line keys on it ([`Model::stage_help`]).
+    /// Whether the yard has no Waiting call as the window makes it: one from
+    /// before the parked queue, or before the call was a stable one.
+    /// Decisions then has no Waiting section, and says in its place that the
+    /// yard is too old ([`WAITING_TOO_OLD`]); Lines' number of what waits on
+    /// the reader goes by the remarks of the beads it shows
+    /// ([`Model::waiting_on_you`]), and the bead details' stage-help line
+    /// keys on it ([`Model::stage_help`]).
     pub fn waiting_too_old(&self) -> bool {
         self.waiting_too_old
     }
 
     /// The parked queue could not be read again. A yard without the call
-    /// has none to show: it is too old for it, and no notice is raised.
+    /// has none to show: it is too old for it, and no notice is raised (the
+    /// words Decide says are [`WAITING_TOO_OLD`], not the yard's refusal).
     /// Anything else is said as a notice, as ever, and the queue stays as
     /// it was.
     pub fn waiting_failed(&mut self, err: &api::Error) -> Vec<Effect> {
@@ -6956,13 +6959,26 @@ pub fn lines_too_old(err: &api::Error) -> bool {
     matches!(err, api::Error::Refused { message, .. } if message.starts_with("no such method"))
 }
 
-/// Whether the yard has no Waiting call: one from before the parked queue,
-/// which says it has no such method. That is no error: nothing is counted
-/// of the queue, and no notice is raised. Its words are read here, as
-/// above, and when they change this is shown as any refusal.
+/// Whether the yard has no Waiting call as the window makes it: one from
+/// before the parked queue, which says it has no such method, or one from
+/// before the call was a stable one, which refuses a call that names its
+/// arguments, saying Waiting takes them as a JSON array. That is no error:
+/// nothing is counted of the queue, no notice is raised, and Decide says in
+/// plain words that the yard is too old ([`WAITING_TOO_OLD`]). Its words are
+/// read here, as above, and when they change this is shown as any refusal.
+/// The second is read for Waiting alone: the yard begins its other refusals
+/// of arguments with the same word, and a bare prefix would take a fault of
+/// the window's for an old yard.
 pub fn waiting_too_old(err: &api::Error) -> bool {
-    matches!(err, api::Error::Refused { message, .. } if message.starts_with("no such method"))
+    matches!(err, api::Error::Refused { message, .. }
+        if message.starts_with("no such method")
+            || message.starts_with("arguments: Waiting takes them as a JSON array"))
 }
+
+/// What Decide says of a yard from before the beads-to-move view, in place
+/// of the section it would draw: plain words, never the wire's method name
+/// or the yard's refusal, and never in red.
+pub const WAITING_TOO_OLD: &str = "this yard's yardr is older than the beads-to-move view (it needs yardr from 9 Nov 2026 or later)";
 
 /// Whether the served moves fold behind the one "Move to ..." control:
 /// more than six of them, where every one is a plain advance, with no
@@ -13493,25 +13509,48 @@ mod tests {
         }
     }
 
-    /// A yard from before the parked queue has no Waiting call: its answer
-    /// is no error, so no notice is raised, and nothing of the queue counts.
-    /// Anything else the call fails with is said as a notice, as ever, and
-    /// the queue stays as it was. A queue read again clears it: the yard has
-    /// the call.
+    /// A yard from before the parked queue has no Waiting call, and one from
+    /// before it was a stable call refuses the window's call that names its
+    /// arguments: neither answer is an error, so no notice is raised, nothing
+    /// of the queue counts, and Decide says in plain words that the yard is
+    /// too old. Anything else the call fails with is said as a notice, as
+    /// ever, and the queue stays as it was: other refusals of arguments are
+    /// the window's fault, not a yard's age. A queue read again clears it:
+    /// the yard has the call.
     #[test]
-    fn a_yard_without_the_parked_queue_counts_none_of_it_and_says_nothing() {
+    fn a_yard_without_the_parked_queue_counts_none_of_it_and_raises_no_notice() {
         let refused = |message: &str| api::Error::Refused {
             code: "error".into(),
             message: message.into(),
         };
+        // yardr's own sentence for a call that is not a stable one, which
+        // names its arguments: the second way a yard says it is too old.
+        let by_name = "arguments: Waiting takes them as a JSON array: only the calls docs/api.md names take them by name";
         assert!(waiting_too_old(&refused("no such method Waiting")));
-        assert!(!waiting_too_old(&refused("the queue is closed")));
-        assert!(!waiting_too_old(&api::Error::Protocol(
-            "Waiting: invalid type: map, expected a sequence".into()
-        )));
-        assert!(!waiting_too_old(&api::Error::Down(std::io::Error::other(
-            "the yard went away"
-        ))));
+        assert!(waiting_too_old(&refused(by_name)));
+        // The same word says other things, none of them a yard's age:
+        // another call's sentence, a body that is no object, a misspelt name.
+        let others = [
+            refused("the queue is closed"),
+            refused(
+                "arguments: Arrivals takes them as a JSON array: only the calls docs/api.md names take them by name",
+            ),
+            refused(
+                "arguments: json: cannot unmarshal array into Go value of type map[string]json.RawMessage",
+            ),
+            refused(r#"argument "nmae": Waiting has none of that name (it takes name)"#),
+            api::Error::Protocol("Waiting: invalid type: map, expected a sequence".into()),
+            api::Error::Down(std::io::Error::other("the yard went away")),
+        ];
+        for err in &others {
+            assert!(!waiting_too_old(err), "{err}");
+        }
+        // Plain words, and never the wire's method name or the yard's
+        // refusal.
+        assert!(WAITING_TOO_OLD.contains("older than the beads-to-move view"));
+        assert!(!WAITING_TOO_OLD.contains("no such method"));
+        assert!(!WAITING_TOO_OLD.contains("Waiting"));
+        assert!(!WAITING_TOO_OLD.contains("arguments"));
 
         let mut state = yard(&[]);
         state.parked = vec![parked("yd-a", "A", "2026-11-01T09:00:00Z")];
@@ -13519,30 +13558,28 @@ mod tests {
         assert!(!m.waiting_too_old());
         assert_eq!(m.parked_count(), 1);
         // Any other failure is a notice, as ever, and the queue stays.
-        for err in [
-            refused("the queue is closed"),
-            api::Error::Protocol("Waiting: invalid type: map, expected a sequence".into()),
-            api::Error::Down(std::io::Error::other("the yard went away")),
-        ] {
-            m.waiting_failed(&err);
-            assert!(!m.waiting_too_old());
-            assert_eq!(m.parked_count(), 1);
+        for err in &others {
+            m.waiting_failed(err);
+            assert!(!m.waiting_too_old(), "{err}");
+            assert_eq!(m.parked_count(), 1, "{err}");
             assert_eq!(
                 m.notice,
                 format!("the beads to move could not be read: {err}")
             );
             m.notice.clear();
         }
-        // A yard without the call has none: the queue is gone, with no
-        // notice.
-        m.waiting_failed(&refused("no such method Waiting"));
-        assert!(m.waiting_too_old());
-        assert_eq!(m.parked_count(), 0);
-        assert!(m.notice.is_empty(), "{}", m.notice);
-        // A queue read again clears it.
-        m.waiting(vec![parked("yd-b", "B", "2026-11-02T09:00:00Z")]);
-        assert!(!m.waiting_too_old());
-        assert_eq!(m.parked_count(), 1);
+        // A yard without the call has none, whichever way it says so: the
+        // queue is gone, with no notice.
+        for err in [refused("no such method Waiting"), refused(by_name)] {
+            m.waiting_failed(&err);
+            assert!(m.waiting_too_old(), "{err}");
+            assert_eq!(m.parked_count(), 0, "{err}");
+            assert!(m.notice.is_empty(), "{}", m.notice);
+            // A queue read again clears it.
+            m.waiting(vec![parked("yd-b", "B", "2026-11-02T09:00:00Z")]);
+            assert!(!m.waiting_too_old(), "{err}");
+            assert_eq!(m.parked_count(), 1, "{err}");
+        }
         // A state that says so makes a model that is.
         let (m, _) = Model::new(yard_without_waiting(), Mode::Chat, None);
         assert!(m.waiting_too_old());
