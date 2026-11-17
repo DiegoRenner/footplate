@@ -10474,9 +10474,16 @@ yardr.dev
         wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-d"));
         let long = bounds_of(cx, "decided head bead-d 11");
         let id = bounds_of(cx, "decided id bead-d 11");
+        let outcome = bounds_of(cx, "decided outcome bead-d 11");
+        // The id stands on the outcome's line, past it, and the head above
+        // ends inside the row as the id does.
         assert!(
-            long.right() < id.left(),
-            "the long head touches the id: {long:?} {id:?}"
+            long.right() <= id.right() && long.bottom() <= id.top() + px(1.),
+            "the long head leaves its row: {long:?} {id:?}"
+        );
+        assert!(
+            outcome.right() < id.left(),
+            "the outcome touches the id: {outcome:?} {id:?}"
         );
         let short = bounds_of(cx, "decided head bead-d 15");
         assert_eq!(
@@ -37311,14 +37318,16 @@ yardr.dev
             let m = v.model.as_ref().unwrap();
             assert_eq!((m.decisions_count(), m.parked_count()), (1, 2));
         });
-        // The row leads with the title, the id small at its end.
+        // The row leads with the title, the id small at the end of the
+        // line under it.
         let (head, sub, id) = (
             bounds_of(cx, "waiting head bead-p"),
             bounds_of(cx, "waiting sub bead-p"),
             bounds_of(cx, "waiting id bead-p"),
         );
         assert!(head.bottom() <= sub.top() + px(1.), "{head:?} {sub:?}");
-        assert!(head.right() < id.left() && id.right() <= first.right());
+        assert!(sub.right() < id.left() && id.right() <= first.right());
+        assert!(head.right() <= id.right());
         assert!(first.top() <= head.top() && sub.bottom() <= first.bottom());
 
         // A press on the head folds the rows away: the head stays with its
@@ -37358,8 +37367,8 @@ yardr.dev
         wait(cx, "bead-q read whole", |cx| has_bead(&view, cx, "bead-q"));
         assert_eq!(yard.asked("Bead").len(), 2, "{:?}", yard.asked("Bead"));
 
-        // A row fits the list at the window's floor, wrapping its title to
-        // two lines where it has to.
+        // A row fits the list at the window's floor, its title cut where it
+        // has to be and the id past the line under it.
         cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(360.)));
         for bead in ["bead-p", "bead-q"] {
             let row = bounds_of(cx, &format!("waiting row {bead}"));
@@ -37371,8 +37380,8 @@ yardr.dev
                 "{bead} {row:?} {head:?} {sub:?}"
             );
             assert!(
-                head.right() < id.left() && id.right() <= row.right(),
-                "{bead} {head:?} {id:?} {row:?}"
+                head.right() <= row.right() && sub.right() < id.left() && id.right() <= row.right(),
+                "{bead} {head:?} {sub:?} {id:?} {row:?}"
             );
         }
     }

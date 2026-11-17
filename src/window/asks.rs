@@ -26,11 +26,12 @@ use super::ask::{
 use super::expanded_text_key;
 use super::keys::{APPROVE_KEY, SETUP_SECRET_CONTEXT};
 use super::metrics::{
-    ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL, ROW_LAMP, ROW_LAMP_GAP,
+    ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL, ROW_ASK_CHARS, ROW_LAMP, ROW_LAMP_GAP,
+    ROW_TITLE_CHARS,
 };
 use super::rail::{Picture, RailTip, UnsentNote, post_note};
 use super::state::{Adding, ApprovalPairing};
-use super::ui::{field, keys_row, send_held, small_button};
+use super::ui::{field, keys_row, send_held, shorten, small_button};
 use super::words::{bead_words, decide_words, decided_words, left_words};
 use super::{AskAbout, Decline, Expand, FocusFilter, FocusWords};
 use crate::api::{self};
@@ -2883,11 +2884,14 @@ impl Footplate {
         let decisions = model.decisions_count();
         let decided = model.decided_count();
         body = body.child(section_head("Decisions", decide_words(decisions), palette));
-        for group in model.decision_groups(&now) {
-            // A topic above a single ask is noise: the head stands only
-            // where two asks or more share the topic.
+        let groups = model.decision_groups(&now);
+        let several = groups.len() > 1;
+        for group in groups {
+            // A topic above a single ask is noise, and so is one above the
+            // only group: the head stands only where two asks or more share
+            // the topic, beside another topic.
             let asks: usize = group.rows.iter().map(|row| row.asks.len().max(1)).sum();
-            if asks > 1 {
+            if several && asks > 1 {
                 body = body.child(
                     div()
                         .debug_selector({
@@ -3160,7 +3164,7 @@ impl Footplate {
                             .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::SEMIBOLD)
                             .debug_selector(|| format!("decision head {}", row.bead))
-                            .child(row.head),
+                            .child(shorten(&row.head, ROW_TITLE_CHARS)),
                     ),
             );
         // The asks' lines and the last line stand under the title, past
@@ -3188,7 +3192,12 @@ impl Footplate {
                                     .child(format!("{} {seq}", ask.kind)),
                             )
                             .child(div().flex_none().child("·"))
-                            .child(div().min_w_0().truncate().child(ask.head.clone())),
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(shorten(&ask.head, ROW_ASK_CHARS)),
+                            ),
                     ),
             );
         }
@@ -3425,9 +3434,12 @@ impl Footplate {
             )
     }
 
-    /// One dealt with, with its outcome's icon first, then whose it was
-    /// and when it was asked. The outcome stands in the text colour, the
-    /// rest quiet, each cut with an ellipsis where it does not fit.
+    /// One dealt with, in the open rows' shape: its outcome's icon where
+    /// their lamp stands (an approval's in the go colour, the rest quiet),
+    /// the question's first line, then the outcome in the text colour with
+    /// whose it was and when it was asked quiet after it, and the bead's
+    /// short id at the right. Each is cut with an ellipsis where it does
+    /// not fit.
     pub(crate) fn decided_row(
         &self,
         row: DecidedRow,
@@ -3435,6 +3447,23 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let sel = Selected::Decided(row.bead.clone(), row.ask);
+        // The model words the outcome as its icon and its words together.
+        let mut chars = row.outcome.chars();
+        let icon = chars.next().map(String::from).unwrap_or_default();
+        let words = chars.as_str().to_string();
+        let icon_color = match icon.as_str() {
+            "✓" => palette.ok,
+            _ => palette.faint,
+        };
+        let mut short = div()
+            .flex_none()
+            .text_size(rems(TYPE_CODE))
+            .text_color(palette.faint)
+            .debug_selector(|| format!("decided id {} {}", row.bead, row.ask))
+            .child(row.short);
+        if let Some(mono) = select::mono(cx) {
+            short = short.font_family(mono);
+        }
         div()
             .id(SharedString::from(format!(
                 "decided {} {}",
@@ -3445,9 +3474,7 @@ impl Footplate {
             .py_1p5()
             .rounded_md()
             .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
+            .items_start()
             .cursor_pointer()
             .border_1()
             .border_color(rgba(0x00000000))
@@ -3458,55 +3485,64 @@ impl Footplate {
             .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
             .child(
                 div()
+                    .flex_none()
+                    .w(px(ROW_LAMP + ROW_LAMP_GAP))
+                    .text_size(rems(TYPE_LABEL))
+                    .text_color(icon_color)
+                    .debug_selector(|| format!("decided icon {} {}", row.bead, row.ask))
+                    .child(icon),
+            )
+            .child(
+                div()
                     .flex()
                     .flex_col()
-                    // Resolve the available row width before measuring the
-                    // head, so truncate() can draw its ellipsis.
                     .flex_1()
                     .min_w_0()
+                    .gap(px(2.))
                     .child(
                         div()
                             .truncate()
                             .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .debug_selector(|| format!("decided head {} {}", row.bead, row.ask))
-                            .child(row.head),
+                            .child(shorten(&row.head, ROW_TITLE_CHARS)),
                     )
                     .child(
                         div()
                             .flex()
-                            .flex_row()
                             .items_baseline()
-                            .gap_1()
+                            .justify_between()
+                            .gap_2()
                             .child(
                                 div()
-                                    .flex_none()
-                                    .max_w(relative(0.6))
-                                    .text_xs()
-                                    .truncate()
-                                    .debug_selector(|| {
-                                        format!("decided outcome {} {}", row.bead, row.ask)
-                                    })
-                                    .child(row.outcome),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
+                                    .flex()
+                                    .flex_row()
+                                    .items_baseline()
+                                    .gap_1()
                                     .min_w_0()
-                                    .text_xs()
-                                    .text_color(palette.faint)
-                                    .truncate()
-                                    .child(format!("· {}", row.detail)),
-                            ),
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .max_w(relative(0.6))
+                                            .text_xs()
+                                            .truncate()
+                                            .debug_selector(|| {
+                                                format!("decided outcome {} {}", row.bead, row.ask)
+                                            })
+                                            .child(words),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .text_color(palette.faint)
+                                            .truncate()
+                                            .child(format!("· {}", row.detail)),
+                                    ),
+                            )
+                            .child(short),
                     ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .debug_selector(|| format!("decided id {} {}", row.bead, row.ask))
-                    .child(row.short),
             )
     }
 

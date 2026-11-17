@@ -2823,7 +2823,8 @@ fn populate(yard: &Yard, state: &str) {
             // asks, a run ask with a short command and its four levers
             // and a pick, and the bead's thread with its image under the
             // cards. Under it in the list, two more beads with three asks,
-            // twelve dealt with, and a crew of four, two at work. The yard
+            // one bead parked for a move, twelve dealt with, and a crew of
+            // four, two at work. The yard
             // holds the image, as in the mail state.
             yard.blob(IMAGE_HASH, IMAGE);
             yard.answer(
@@ -2861,6 +2862,19 @@ fn populate(yard: &Yard, state: &str) {
             yard.answer(
                 "UserAsks",
                 &json!({"result": {"open": queued_frame(), "decided": decided}}).to_string(),
+            );
+            // One bead parked for jo's move, as the pick's list has it.
+            yard.answer(
+                "Waiting",
+                &json!({"result": [
+                    {"bead": "footplate-j152", "title": "Main window on macOS: three directions to pick from",
+                     "depot": "footplate", "stage": "pick", "group": "design-pickers",
+                     "since": landed_at(0, 20), "revision": "01KJB",
+                     "actions": [
+                        {"kind": "done", "label": "picked: move to build",
+                         "outcome": "picked", "to": "build"}]}
+                ]})
+                .to_string(),
             );
             yard.answer("Bead", &bead_frame());
             for (bead, answer) in beads_frame() {
@@ -3191,8 +3205,8 @@ fn frame_run() -> serde_json::Value {
 
 /// The frame shot's open asks as the queue lists them, the open card's
 /// two first: ask 1, the landing, and ask 2, a pick on the same bead.
-/// Two more beads wait under them, one with two asks of a topic, so the
-/// list carries a topic's head, and one asked by the assembly. Their
+/// Two more beads wait under them, one with two asks, and one asked by
+/// the assembly. None names a topic, so the list draws no topic's head. Their
 /// ages are from now, so the list reads minutes and hours whenever the
 /// shot runs. The yardmaster asks the open card's, and can be written to
 /// from here, so no unreachable line stands under its levers.
@@ -3211,13 +3225,13 @@ fn queued_frame() -> Vec<serde_json::Value> {
         }),
         json!({
             "bead": "yardr-m4kt", "bead_title": "Quiet hours for the yard's notifications",
-            "topic": "topic:notifications", "ask": 4,
+            "topic": "", "ask": 4,
             "question": "Hold every notification overnight, or only mail?",
             "asker": "shaper", "since": landed_at(1, 40)
         }),
         json!({
             "bead": "yardr-m4kt", "bead_title": "Quiet hours for the yard's notifications",
-            "topic": "topic:notifications", "ask": 5,
+            "topic": "", "ask": 5,
             "question": "Which hours count as the night?",
             "asker": "shaper", "since": landed_at(1, 35)
         }),
@@ -3276,7 +3290,7 @@ fn beads_frame() -> [(&'static str, String); 2] {
             "yardr-m4kt",
             json!({"result": {"id": "yardr-m4kt", "title": "Quiet hours for the yard's notifications",
                 "body": "No notification wakes the operator at night.",
-                "stage": "shape", "labels": ["topic:notifications"],
+                "stage": "shape", "labels": [],
                 "notes": [{"seq": 1, "kind": "note", "author": "shaper",
                            "text": "Two questions before I draft the design.",
                            "at": landed_at(1, 45)}],

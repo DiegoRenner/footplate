@@ -112,6 +112,14 @@ pub(crate) const LIST: f32 = 352.;
 pub(crate) const ROW_LAMP: f32 = 8.;
 pub(crate) const ROW_LAMP_GAP: f32 = 8.;
 
+/// The char budgets of a list row's lines, which end in an ellipsis past
+/// them (`ui::shorten`): gpui's `truncate()` clips mid-glyph in a row's
+/// flex items. At the list's full 352 a title of 34 chars at the label size
+/// and a question of 34 at the meta size after its `words 4 ·` fit; a
+/// narrower list still clips what is left.
+pub(crate) const ROW_TITLE_CHARS: usize = 34;
+pub(crate) const ROW_ASK_CHARS: usize = 34;
+
 /// A lever's measures, in pixels where the frame stands fixed and rems
 /// where its words do: the key plate's least height is the control's
 /// (32, the tokens' `--control-h`), its radius the control's (6), the
