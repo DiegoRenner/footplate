@@ -162,8 +162,9 @@ fn locked(queue: &Mutex<Queue>) -> MutexGuard<'_, Queue> {
 
 /// What the voice says, made what a speaker takes: the session's [`Queue`]
 /// at [`RATE`], mono, brought to the device's rate and spread over its
-/// channels, a callback at a time. Where the queue has nothing the speaker
-/// gets silence, and where the queue was dropped it lets go of what it held
+/// channels, a callback at a time. Where the queue has nothing, or holds a
+/// stretch for its margin ([`Queue::with_margin`]), the speaker gets silence,
+/// and where the queue was dropped it lets go of what it held
 /// beyond the queue — what it had taken and not yet played, and the
 /// resampler's tail — so that the drop is heard at once.
 pub struct Render {

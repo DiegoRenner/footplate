@@ -698,7 +698,17 @@ folder. A change is drawn at once and kept for the next start:
   line under the head shows what you have said that no request has taken
   yet (a pause does not clear it; a long one shows its last words), and
   the head's right counts the minutes and what they have cost at OpenAI's
-  rate, $0.05 a minute. When the voice sends something to the yard, it goes
+  rate, $0.05 a minute. The voice starts each stretch of speech 300 ms after
+  it arrives, so that a piece that comes late over a poor connection does not
+  cut a word; a connection worse than that still breaks it up now and then.
+  If OpenAI sets a session up with audio that is not PCM at 24 kHz, which
+  footplate plays, the session is refused in words in the head and closed, so
+  that it does not bill, before the microphone or the speaker is opened. A
+  session writes two lines of numbers to the [log](yards.md#a-hosted-yard) as it goes: how
+  its audio will be played when it stands, and when it ends how the audio
+  arrived (the gaps between pieces, the pace against the clock) and how often
+  the speaker ran out of speech, which is what to send with a report of a
+  voice that breaks up. When the voice sends something to the yard, it goes
   as your own mail in that conversation, as Enter would send it, once you
   have stopped talking, with the requests and replies it has held since its
   previous send, in the order you said them;

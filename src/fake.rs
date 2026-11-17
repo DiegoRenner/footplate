@@ -2668,6 +2668,9 @@ struct LiveState {
     /// The speech the server has queued and not sent.
     audio: VecDeque<Vec<i16>>,
     dropped: usize,
+    /// The format and rate `session.started` says the audio came out as,
+    /// where a test has the server resolve it otherwise than asked.
+    resolved_audio: Option<(String, u64)>,
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -2739,6 +2742,12 @@ impl LiveState {
             );
         }
         self.started = true;
+        // The resolved audio is what was asked unless a test has the server
+        // resolve it otherwise, as a server's defaults may.
+        let (resolved_format, resolved_rate) = self
+            .resolved_audio
+            .clone()
+            .unwrap_or_else(|| ("audio/pcm".to_string(), rate));
         let started = serde_json::json!({
             "type": "session.started",
             "client_event_id": id,
@@ -2750,7 +2759,7 @@ impl LiveState {
                 "instructions": session["instructions"],
                 "input": [],
                 "audio": {
-                    "format": { "type": "audio/pcm", "rate": rate },
+                    "format": { "type": resolved_format, "rate": resolved_rate },
                     "output": {
                         "voice": if voice.is_null() { serde_json::json!(LIVE_DEFAULT_VOICE) } else { voice.clone() },
                     },
@@ -2858,6 +2867,14 @@ impl Live {
     /// ends.
     pub fn expires_at(&self, unix: i64) {
         self.state.lock().unwrap().expires_at = unix;
+    }
+
+    /// The audio `session.started` will say the session came out as, in
+    /// place of what was asked: the resolved configuration is the server's
+    /// to give, and a client that plays what it asked for is wrong where the
+    /// two differ.
+    pub fn resolves_audio(&self, format: &str, rate: u64) {
+        self.state.lock().unwrap().resolved_audio = Some((format.to_string(), rate));
     }
 
     /// An event of the client's, as it sends it. Kept in [`Live::sent`], and
@@ -3136,6 +3153,16 @@ mod tests {
         assert_eq!(
             started[0]["session"]["delegation"]["acknowledgement_delay_ms"],
             800
+        );
+        // A server may resolve the audio otherwise than it was asked, and a
+        // test says so: `session.started` carries the resolved format, which
+        // is what a client must play by.
+        let other = Live::start();
+        other.resolves_audio("audio/pcmu", 8_000);
+        other.receive(LIVE_START);
+        assert_eq!(
+            said(&other)[0]["session"]["audio"]["format"],
+            serde_json::json!({ "type": "audio/pcmu", "rate": 8000 })
         );
 
         // Deltas, both ways, with their places on the timeline.

@@ -48,6 +48,10 @@ use serde_json::{Value, json};
 /// whole session.
 pub const MODEL: &str = "gpt-live-1";
 pub const RATE: u32 = 24_000;
+/// The format of that audio as the socket names it: what a session asks for,
+/// and the only one a session whose start says otherwise is let play
+/// ([`Resolved::refusal`]).
+const FORMAT: &str = "audio/pcm";
 
 /// The voice a session speaks in when it names none: the reference's
 /// "Defaults to `marin`".
@@ -189,7 +193,7 @@ impl Append {
 /// name that is none of the provider's is sent as it stands, for the provider
 /// to refuse in its own words.
 pub fn start(instructions: &str, voice: &str) -> String {
-    let mut audio = json!({ "format": { "type": "audio/pcm", "rate": RATE } });
+    let mut audio = json!({ "format": { "type": FORMAT, "rate": RATE } });
     if !voice.is_empty() {
         audio["output"] = json!({ "voice": voice });
     }
@@ -232,14 +236,127 @@ pub struct Fragment {
     pub end_ms: u64,
 }
 
+/// What `session.started` says the session's audio came out as: the
+/// reference's "resolved session configuration, including server defaults",
+/// `audio.format`. A server that resolved the audio otherwise than it was
+/// asked would make the voice garble from its first word, at the wrong speed
+/// or as noise, and nothing else would say why (the spike's `Resolved`, which
+/// only warned; spikes/voice-harness/src/live.rs). A field the server left
+/// out is none, and is the ask's; `unreadable` is a format that is there
+/// and is not the shape of one, which is not silence.
+#[derive(Debug, Default, PartialEq)]
+pub struct Resolved {
+    pub format: Option<String>,
+    pub rate: Option<u64>,
+    pub unreadable: bool,
+}
+
+impl Resolved {
+    /// The audio as the log tells it. The provider's format stands as a short
+    /// token and no more ([`format_words`]).
+    fn words(&self) -> String {
+        if self.unreadable {
+            return "an unreadable audio format".to_string();
+        }
+        match (&self.format, self.rate) {
+            (None, None) => "not given".to_string(),
+            (format, rate) => format!(
+                "{}{}",
+                format
+                    .as_deref()
+                    .map_or("no format".to_string(), format_words),
+                rate.map_or(", no rate given".to_string(), |rate| format!(
+                    " at {rate} Hz"
+                )),
+            ),
+        }
+    }
+
+    /// Words for the person where the audio came out other than the PCM at
+    /// [`RATE`] that this sends and plays, and the session is closed: none
+    /// where it did, and where the server said nothing of it or left out a
+    /// field, which it did not contradict. What is refused is refused where
+    /// it is read, before any device opens, and never played at some speed.
+    fn refusal(&self) -> Option<String> {
+        let plays = format!("footplate plays {FORMAT} at {RATE} Hz, so the session was closed");
+        if self.unreadable {
+            return Some(format!(
+                "OpenAI's voice audio format could not be read, and {plays}."
+            ));
+        }
+        match (self.format.as_deref(), self.rate) {
+            (None | Some(FORMAT), None) => None,
+            (None | Some(FORMAT), Some(rate)) if rate == u64::from(RATE) => None,
+            (format, rate) => {
+                let came = match (format.map(format_words), rate) {
+                    (Some(format), Some(rate)) => format!("as {format} at {rate} Hz"),
+                    (Some(format), None) => format!("as {format}"),
+                    (None, Some(rate)) => format!("at {rate} Hz"),
+                    // Silence plays, so this is not reached; it says something
+                    // true where it is.
+                    (None, None) => "otherwise".to_string(),
+                };
+                Some(format!(
+                    "OpenAI's voice audio came out {came}, and {plays}."
+                ))
+            }
+        }
+    }
+}
+
+/// A format as the log and the person are told it: the provider's own token
+/// where it is a short one of the kind a format is, and never its free text,
+/// which would otherwise reach the window and the log as it was sent. A key
+/// it carries is taken out, as it is of any of the provider's words.
+fn format_words(format: &str) -> String {
+    let token = (1..=24).contains(&format.len())
+        && format
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/.+-_".contains(&b));
+    if token {
+        redact(format)
+    } else {
+        "an unreadable format".to_string()
+    }
+}
+
+/// The resolved audio out of the `audio` of a `session.started`'s session.
+fn resolved(audio: &Value) -> Resolved {
+    let unreadable = Resolved {
+        unreadable: true,
+        ..Resolved::default()
+    };
+    let format = match audio {
+        Value::Null => return Resolved::default(),
+        Value::Object(fields) => match fields.get("format") {
+            None | Some(Value::Null) => return Resolved::default(),
+            Some(format) => format,
+        },
+        _ => return unreadable,
+    };
+    let (kind, rate) = (&format["type"], &format["rate"]);
+    if !format.is_object()
+        || !(kind.is_null() || kind.is_string())
+        || !(rate.is_null() || rate.is_u64())
+    {
+        return unreadable;
+    }
+    Resolved {
+        format: kind.as_str().map(str::to_string),
+        rate: rate.as_u64(),
+        unreadable: false,
+    }
+}
+
 /// What the server says, as far as the rules read it.
 #[derive(Debug, PartialEq)]
 pub enum Server {
     /// `expires_at` is the session's moment, in Unix seconds, where the
-    /// server gave one.
+    /// server gave one; `audio` is what its audio came out as.
     Started {
         id: String,
         expires_at: Option<i64>,
+        audio: Resolved,
     },
     /// The person's words, as they are heard.
     Heard(Fragment),
@@ -285,6 +402,7 @@ pub fn parse(text: &str) -> Result<Server, String> {
         "session.started" => Server::Started {
             id: string(&v["session"]["id"]).unwrap_or_default(),
             expires_at: v["session"]["expires_at"].as_i64(),
+            audio: resolved(&v["session"]["audio"]),
         },
         "session.input_transcript.delta" => Server::Heard(fragment()),
         "session.output_transcript.delta" => Server::Said(fragment()),
@@ -1202,6 +1320,51 @@ pub const SOUND_DB: f32 = -50.0;
 /// bounded however long the session runs.
 const MAX_QUEUED: usize = 60 * RATE as usize;
 
+/// How much speech stands queued before a stretch of it plays
+/// (footplate-tpwp). The server's stream arrives at the pace of the clock, so
+/// the queue ahead of the speaker is empty by design (runs 3 to 6 read 0 to
+/// 60 ms of it), and a chunk that comes a tick late is silence written into
+/// the middle of a word: at the start of every stretch, where the first
+/// chunk's own delay is the anchor the rest are late against, even on a link
+/// whose chunks are never more than a tick apart, and at every stall. The
+/// hold makes the late chunk early: a stretch waits for this much, and waits
+/// again whenever the queue runs short. It is the queue's and not the
+/// device's: the speaker is always given something to play, silence where
+/// there is none, so a deeper buffer in the device would only commit that
+/// silence further ahead. Each millisecond of it is a millisecond more
+/// between the server's voice and the person's ear at the start of every
+/// stretch. A session's own gaps and underruns are in its log
+/// ([`Queue::counted`]), so a link that needs more, or less, says so.
+///
+/// 300 ms is mckean's pick (mail 211379), the hold he asked for on the phone
+/// after hearing 200 ms there (footplate-android-39fa), and not a measured
+/// minimum: it is 15 chunks of the stream's 20 ms, or 60 of the speaker's
+/// pieces. What smaller holds showed, so that a later change has the numbers:
+/// on the seeded link of `tests::playout`, played through `Render` with the
+/// callbacks of a desktop (10 ms, where the Android port's frames are 20), over
+/// ten seeds of eight stretches of three seconds of speech, with each 20 ms
+/// chunk 35 to 200 ms late, in order (that port's `umts` link), no hold
+/// breaks up on every seed, 120 ms on nine and 140 ms on one, and 160 ms is the
+/// smallest hold, in steps of a chunk, with no silence inside speech on any;
+/// it is clean with callbacks of 20 and 40 ms too. A calmer link needs less
+/// (chunks 0 to 25 ms late: 60 ms; 5 to 60 ms: 80 ms), and the port's worse
+/// `edge` link (80 to 400 ms late) needs the 300 ms, where 280 ms still breaks
+/// up on two. A shorter stretch of speech has fewer chances to stall, so a
+/// brief stream passes a smaller hold than a long one. So on the first link
+/// 300 ms is some 140 ms more than it needs at the start of every stretch,
+/// and on a calm one some 240 ms more. `tests::measure_the_margin` prints the
+/// table.
+pub const MARGIN: Duration = Duration::from_millis(300);
+
+/// The edges of the buckets the gaps between chunks are counted in, in
+/// milliseconds: the stream is chunks of 20 ms at the pace of the clock, so
+/// the first is a gap on pace and the rest are what a link adds to it.
+const GAP_EDGES_MS: [u64; 10] = [25, 40, 60, 80, 120, 160, 240, 320, 480, 640];
+
+/// A session's audio is judged against the clock from this long after its
+/// first chunk: a shorter stretch says nothing of a pace.
+const PACE_AFTER: Duration = Duration::from_secs(5);
+
 /// Whether a delta from the server is more than padding.
 fn has_sound(pcm: &[i16]) -> bool {
     if pcm.is_empty() {
@@ -1226,6 +1389,13 @@ fn has_sound(pcm: &[i16]) -> bool {
 /// whether it is or not. Padding behind the last speech goes as the speech
 /// goes out. A pause in a stall's backlog therefore does not stay as latency
 /// for the rest of the session, and [`Queue::queued_ms`] reads speech.
+///
+/// A stretch of speech is held until its margin stands queued ([`MARGIN`], for
+/// a session): the queue made by [`Queue::default`] has none, and plays what
+/// is queued as soon as it is. The queue also counts what it was given and
+/// what it did with it, for the session's log: how the audio arrived, the
+/// time the hold cost, and the times the speaker ran out inside the voice's
+/// speech ([`Queue::counted`]).
 #[derive(Default)]
 pub struct Queue {
     /// Samples, mono 16-bit at [`RATE`], in the order they are to play.
@@ -1246,13 +1416,53 @@ pub struct Queue {
     /// of speech (not padding) thrown away in a holdoff, over the session.
     dropped: u64,
     thrown_away: u64,
+    /// Samples a stretch waits to have queued before it plays, none where it
+    /// plays at once.
+    margin: usize,
+    /// Whether a stretch is playing. One that is not waits for its margin:
+    /// from the start, after a pull that ran short and after a drop.
+    playing: bool,
+    /// Samples of the speaker's time that the waiting stretch has gone through
+    /// with some speech queued. The speaker's pulls are the clock, so the hold
+    /// needs none of its own: it ends where the speech never reaches the
+    /// margin, and where the link stops for good.
+    waited: usize,
+    /// Samples of the speaker's time that stretches waited, over the session:
+    /// what the margin cost.
+    held: u64,
+    /// The speaker was given silence where the queue ran out, and nothing has
+    /// come since to say whether the voice had paused: the next audio says.
+    dry: bool,
+    /// How many times the speaker ran out of speech and the next audio was
+    /// speech again, with no padding between: the stream had not paused, so
+    /// the link was late and the speaker played silence into the voice's
+    /// words. What the margin is for.
+    underruns: u64,
+    link: Link,
 }
 
 impl Queue {
+    /// A queue whose stretches wait for `margin` of speech to stand queued
+    /// before they play, or until `margin` of the speaker's time has gone with
+    /// some queued, whichever comes first ([`MARGIN`] for why).
+    pub fn with_margin(margin: Duration) -> Queue {
+        Queue {
+            margin: (margin.as_millis() as u64 * u64::from(RATE) / 1000) as usize,
+            ..Queue::default()
+        }
+    }
+
+    /// The margin, in milliseconds.
+    fn margin_ms(&self) -> u64 {
+        self.margin as u64 * 1000 / u64::from(RATE)
+    }
+
     /// Audio that arrived at `now`, mono 16-bit at [`RATE`]. True when it is
     /// queued to be played, false when it came in the holdoff and was thrown
     /// away, or was padding with no speech ahead of it and was let go.
     pub fn push(&mut self, pcm: Vec<i16>, now: Instant) -> bool {
+        // Counted before the queue decides anything: how the link behaved.
+        self.link.arrived(pcm.len(), now, self.margin_ms());
         let speech = has_sound(&pcm);
         if self.thrown_away_until.is_some_and(|until| now < until) {
             // Counted as the harness counts it: only speech is audio that
@@ -1261,6 +1471,11 @@ impl Queue {
                 self.thrown_away += pcm.len() as u64;
             }
             return false;
+        }
+        // The speaker had run out, and what came next is speech: the stream
+        // went on where the speaker had nothing. Padding says it paused.
+        if std::mem::take(&mut self.dry) && speech {
+            self.underruns += 1;
         }
         let speech_ahead = self.gone < self.speech_end;
         if speech {
@@ -1278,8 +1493,22 @@ impl Queue {
     }
 
     /// Fills `out` from the queue for the speaker, with silence where it runs
-    /// short, and says how many samples were audio.
+    /// short, and says how many samples were audio. While a stretch is held
+    /// for its margin `out` is silence and none are.
     pub fn pull(&mut self, out: &mut [i16]) -> usize {
+        if !self.playing && self.margin > 0 {
+            let ready = self.waiting.len() >= self.margin || self.waited >= self.margin;
+            if self.waiting.is_empty() || !ready {
+                // Nothing queued is the idle between stretches, and costs no
+                // wait.
+                if !self.waiting.is_empty() {
+                    self.waited += out.len();
+                    self.held += out.len() as u64;
+                }
+                out.fill(0);
+                return 0;
+            }
+        }
         let real = out.len().min(self.waiting.len());
         for (slot, sample) in out.iter_mut().zip(self.waiting.drain(..real)) {
             *slot = sample;
@@ -1291,6 +1520,16 @@ impl Queue {
         if self.gone >= self.speech_end {
             self.gone += self.waiting.len() as u64;
             self.waiting.clear();
+        }
+        if real == out.len() {
+            self.playing = true;
+        } else {
+            // The queue ran out: the stretch is over, or the link is late,
+            // and the next audio says which. Either way the next stretch,
+            // or what is left of this one, waits for its margin again.
+            self.dry |= real > 0 || self.playing;
+            self.playing = false;
+            self.waited = 0;
         }
         real
     }
@@ -1309,6 +1548,11 @@ impl Queue {
         self.waiting.clear();
         self.generation += 1;
         self.thrown_away_until = Some(now + HOLDOFF);
+        // What comes after waits for its margin as a first stretch does, and
+        // a run-out before the drop is no longer one the voice is owed for.
+        self.playing = false;
+        self.waited = 0;
+        self.dry = false;
         dropped
     }
 
@@ -1327,6 +1571,134 @@ impl Queue {
 
     pub fn thrown_away_ms(&self) -> u64 {
         self.thrown_away * 1000 / u64::from(RATE)
+    }
+
+    /// How long stretches waited for their margin, in all, in milliseconds:
+    /// what the hold cost in latency.
+    pub fn held_ms(&self) -> u64 {
+        self.held * 1000 / u64::from(RATE)
+    }
+
+    /// What the session's audio did, for its log: how it arrived
+    /// ([`Link::words`]), and what the speaker made of it, the times it ran
+    /// out inside the voice's speech and the time the hold cost. Numbers
+    /// alone, and never the provider's text.
+    pub fn counted(&self) -> String {
+        format!(
+            "{}; speaker: {} underruns, held {} ms",
+            self.link.words(self.margin_ms()),
+            self.underruns,
+            self.held_ms()
+        )
+    }
+}
+
+/// What a session's audio did on its way in, counted where the queue takes it
+/// in, before it decides anything: the link's own behaviour. The stream runs
+/// at the pace of the clock, so the time between chunks is the link's jitter,
+/// and a gap longer than what stood queued is a gap in the sound: the words
+/// say how long the gaps were and how many were longer than the margin, so
+/// that a report of breakup carries the number that explains it. The pace is
+/// the audio that arrived against the clock it arrived in: 100% where the
+/// rate is the one assumed, 67% for a 16000 stream taken for 24000. Counters
+/// only.
+#[derive(Default)]
+struct Link {
+    chunks: u64,
+    samples: u64,
+    /// The samples that had arrived before the last chunk: the last chunk's
+    /// audio is not yet elapsed when it arrives, so a pace leaves it out.
+    before: u64,
+    first: Option<Instant>,
+    last: Option<Instant>,
+    longest: Duration,
+    /// Gaps longer than the margin: a gap the hold could not cover.
+    over: u64,
+    gaps: [u64; GAP_EDGES_MS.len() + 1],
+}
+
+impl Link {
+    /// A chunk of `count` samples that arrived at `now`, with the margin the
+    /// queue holds a stretch for, in milliseconds.
+    fn arrived(&mut self, count: usize, now: Instant, margin_ms: u64) {
+        match self.last {
+            None => self.first = Some(now),
+            Some(last) => {
+                let gap = now.saturating_duration_since(last);
+                let ms = gap.as_millis() as u64;
+                self.longest = self.longest.max(gap);
+                if margin_ms > 0 && ms > margin_ms {
+                    self.over += 1;
+                }
+                let bucket = GAP_EDGES_MS
+                    .iter()
+                    .position(|&edge| ms <= edge)
+                    .unwrap_or(GAP_EDGES_MS.len());
+                self.gaps[bucket] += 1;
+            }
+        }
+        self.chunks += 1;
+        self.before = self.samples;
+        self.samples += count as u64;
+        self.last = Some(now);
+    }
+
+    /// The audio received for each unit of clock, from the first chunk to the
+    /// last, or none before [`PACE_AFTER`] has gone by.
+    fn pace(&self) -> Option<f64> {
+        let span = self.last?.saturating_duration_since(self.first?);
+        if self.chunks < 2 || span < PACE_AFTER {
+            return None;
+        }
+        Some(self.before as f64 / f64::from(RATE) / span.as_secs_f64())
+    }
+
+    /// The first gap length, in milliseconds, at which `percent` of the gaps
+    /// were at or under it.
+    fn within(&self, percent: u64) -> String {
+        let gaps = self.chunks.saturating_sub(1);
+        let mut seen = 0;
+        for (bucket, count) in self.gaps.iter().enumerate() {
+            seen += count;
+            if seen * 100 >= gaps * percent {
+                if let Some(edge) = GAP_EDGES_MS.get(bucket) {
+                    return edge.to_string();
+                }
+                break;
+            }
+        }
+        format!(">{}", GAP_EDGES_MS[GAP_EDGES_MS.len() - 1])
+    }
+
+    fn words(&self, margin_ms: u64) -> String {
+        let (Some(first), Some(last)) = (self.first, self.last) else {
+            return "no audio arrived".to_string();
+        };
+        let mut words = format!(
+            "{} chunks of {} ms over {} s, pace ",
+            self.chunks,
+            self.samples * 1000 / u64::from(RATE) / self.chunks,
+            last.saturating_duration_since(first).as_secs(),
+        );
+        match self.pace() {
+            None => words.push_str("n/a"),
+            Some(pace) => {
+                words.push_str(&format!("{}%", (pace * 100.0).round()));
+                if !(0.9..=1.1).contains(&pace) {
+                    words.push_str(" (the rate may not be the one assumed, or the link is behind)");
+                }
+            }
+        }
+        if self.chunks > 1 {
+            words.push_str(&format!(
+                "; gaps within {} ms at 95%, {} ms at 99%, longest {} ms, over the margin's {margin_ms} ms {}",
+                self.within(95),
+                self.within(99),
+                self.longest.as_millis(),
+                self.over,
+            ));
+        }
+        words
     }
 }
 
@@ -2510,7 +2882,7 @@ fn start_at(
 ) -> Start {
     let control = Control::default();
     let (cmds, heard_cmds) = mpsc::channel();
-    let speaker = Arc::new(Mutex::new(Queue::default()));
+    let speaker = Arc::new(Mutex::new(Queue::with_margin(MARGIN)));
     let hello = start(&instructions(counterpart), voice);
     let thread = std::thread::spawn({
         let control = control.clone();
@@ -2531,6 +2903,8 @@ fn start_at(
 /// writes the person's own log. The devices say their names here too
 /// ([`crate::audio`]).
 pub(crate) fn say(line: &str) {
+    #[cfg(test)]
+    tests::logged(line);
     #[cfg(test)]
     let file: Option<std::path::PathBuf> = None;
     #[cfg(not(test))]
@@ -2599,6 +2973,7 @@ fn run(
     };
     session.follow(&mut conn, &cmds);
     session.control.socket_ended();
+    session.say_audio();
     session.say_interruptions();
 }
 
@@ -2636,6 +3011,18 @@ struct Session {
 }
 
 impl Session {
+    /// What the session's audio did, in the log, once, when it is over and
+    /// only if it stood: how it arrived and what the speaker made of it
+    /// ([`Queue::counted`]), in numbers and in the app's own words, so that a
+    /// report of breakup carries what explains it.
+    fn say_audio(&self) {
+        if !self.started {
+            return;
+        }
+        let counted = self.speaker.lock().unwrap().counted();
+        say(&format!("voice session audio: {counted}"));
+    }
+
     /// What the person's speaking over the voice took from it, in the log,
     /// when the session is over and only if it took anything: the queued
     /// speech their next utterance dropped, and the speech the holdoff threw
@@ -2830,7 +3217,28 @@ impl Session {
             }
         };
         match event {
-            Server::Started { expires_at, .. } => {
+            Server::Started {
+                expires_at, audio, ..
+            } => {
+                // Before anything of the session stands, and so before the
+                // window opens the devices (that is what `Started` is for):
+                // audio taken for another format or rate is garble from the
+                // first word, and the session is made and bills until it is
+                // closed, so it is closed.
+                if let Some(words) = audio.refusal() {
+                    say(&format!(
+                        "voice session refused: asked {FORMAT} at {RATE} Hz, resolved {}",
+                        audio.words()
+                    ));
+                    let _ = self.close(conn);
+                    let _ = self.tell.send(Update::Refused(words));
+                    return false;
+                }
+                say(&format!(
+                    "voice session audio: asked {FORMAT} at {RATE} Hz, resolved {}, margin {} ms",
+                    audio.words(),
+                    MARGIN.as_millis()
+                ));
                 self.started = true;
                 self.deadline = expires_at.and_then(|at| {
                     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
@@ -3077,6 +3485,30 @@ pub(crate) mod tests {
     use crate::audio::{CHUNK, Capture, Render};
     use crate::fake::Live;
     use std::net::TcpListener;
+    use std::thread::ThreadId;
+
+    /// What was said in the log, and by which thread: a session says its
+    /// lines on its own thread, whose id its handle gives, so that a test
+    /// reads its own session's and no other test's.
+    static LOGGED: Mutex<Vec<(ThreadId, String)>> = Mutex::new(Vec::new());
+
+    pub(super) fn logged(line: &str) {
+        LOGGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((std::thread::current().id(), line.to_string()));
+    }
+
+    /// The lines `thread` said, in order.
+    fn logged_by(thread: ThreadId) -> Vec<String> {
+        LOGGED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(by, _)| *by == thread)
+            .map(|(_, line)| line.clone())
+            .collect()
+    }
 
     fn said(pieces: &[(&str, u64, u64)]) -> Vec<Fragment> {
         pieces
@@ -4165,6 +4597,551 @@ pub(crate) mod tests {
         assert_eq!(taken(&mut queue, 1), [8010], "the oldest ten seconds went");
     }
 
+    /// Seeded draws, so that a link is the same on every machine and no crate
+    /// is needed for it (splitmix64).
+    struct Draws(u64);
+
+    impl Draws {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) % n
+        }
+    }
+
+    /// What a speech that never pauses suffers on a link, as the speaker played
+    /// it out. The stream is the server's: chunks of 20 ms at the pace of the
+    /// clock, in the stretches of a [`Stream`]. The link delivers in order, as
+    /// TCP does, each chunk `delay_ms` late by a draw from a seeded generator,
+    /// so that a late chunk holds the ones behind it and they come in a
+    /// burst. The speaker calls back every 10 ms through the same `Render` a
+    /// real device's callbacks go through, from a phase of its own, in the
+    /// device's channels and rate (the hold sees the same pulls whichever);
+    /// the queue is the session's, with `margin_ms`. What it played is read
+    /// from its samples and nothing else: the speech is a constant, so a zero
+    /// between two of it is silence the speaker wrote into the voice.
+    struct Playout {
+        /// Runs of silence inside speech, and the callbacks that held any.
+        runs: usize,
+        callbacks: usize,
+        /// The longest a stretch waited between its first chunk's arrival and
+        /// its first sound, in milliseconds.
+        late_ms: u64,
+        /// What the queue counted of it itself.
+        underruns: u64,
+        held_ms: u64,
+    }
+
+    /// How much stream a playout plays: `stretches` of `speech` chunks, each
+    /// followed by a second of padding. The test's is brief, enough to tell a
+    /// margin from none; the measure's is a long answer's worth, since the
+    /// longer the speech the more chances a link has to stall for longer than
+    /// the margin, and the margin a session needs is the one that holds over
+    /// all of them.
+    struct Stream {
+        stretches: usize,
+        speech: usize,
+    }
+
+    const BRIEF: Stream = Stream {
+        stretches: 4,
+        speech: 80,
+    };
+    const LONG: Stream = Stream {
+        stretches: 8,
+        speech: 150,
+    };
+
+    /// The speaker of the sweeps, and the default device of runs 3 to 6.
+    const MONO: (usize, u32) = (1, 24_000);
+    const STEREO: (usize, u32) = (2, 48_000);
+
+    fn playout(
+        stream: &Stream,
+        (channels, rate): (usize, u32),
+        margin_ms: u64,
+        delay_ms: std::ops::RangeInclusive<u64>,
+        seed: u64,
+    ) -> Playout {
+        let per = stream.speech + 50;
+        let frames = rate as usize / 100;
+        let mut draws = Draws(seed);
+        let spread = delay_ms.end() - delay_ms.start() + 1;
+        let mut arrivals = Vec::new();
+        let mut last = 0;
+        for k in 0..stream.stretches * per {
+            last = last.max(k as u64 * 20 + delay_ms.start() + draws.below(spread));
+            arrivals.push(last);
+        }
+        let began = Instant::now();
+        let at = |ms: u64| began + Duration::from_millis(ms);
+        let queue = Arc::new(Mutex::new(Queue::with_margin(Duration::from_millis(
+            margin_ms,
+        ))));
+        let mut render = Render::new(channels, rate, queue.clone());
+        // The device has been calling back since before the stream: its phase
+        // is none of the stream's.
+        let phase = seed % 10;
+        let end = arrivals[arrivals.len() - 1] + margin_ms + 500;
+        let (mut heard, mut next, mut now) = (Vec::new(), 0, phase);
+        let mut callback = vec![0f32; frames * channels];
+        while now < end {
+            while next < arrivals.len() && arrivals[next] <= now {
+                let chunk = match next % per < stream.speech {
+                    true => vec![8000; 480],
+                    false => vec![0; 480],
+                };
+                queue.lock().unwrap().push(chunk, at(arrivals[next]));
+                next += 1;
+            }
+            render.fill(&mut callback, |s| s);
+            heard.extend(callback.chunks(channels).map(|frame| frame[0]));
+            now += 10;
+        }
+        // Where the sound is, and the silence between: shorter than 700 ms is
+        // inside a stretch (a stall and the hold after it are well under), and
+        // longer is the padding between two.
+        let ms_of = |at: usize| {
+            phase + (at / frames) as u64 * 10 + (at % frames) as u64 * 1000 / rate as u64
+        };
+        let between = rate as usize * 7 / 10;
+        let (mut runs, mut starts) = (0, Vec::new());
+        let mut silent = std::collections::BTreeSet::new();
+        let mut previous: Option<usize> = None;
+        for at in (0..heard.len()).filter(|&at| heard[at] != 0.0) {
+            match previous {
+                None => starts.push(at),
+                Some(before) if at - before > between => starts.push(at),
+                Some(before) if at - before > 1 => {
+                    runs += 1;
+                    silent.extend((before + 1) / frames..=(at - 1) / frames);
+                }
+                Some(_) => {}
+            }
+            previous = Some(at);
+        }
+        assert_eq!(starts.len(), stream.stretches, "every stretch was heard");
+        let late_ms = starts
+            .iter()
+            .enumerate()
+            .map(|(s, &at)| ms_of(at).saturating_sub(arrivals[s * per]))
+            .max()
+            .unwrap();
+        let queue = queue.lock().unwrap();
+        Playout {
+            runs,
+            callbacks: silent.len(),
+            late_ms,
+            underruns: queue.underruns,
+            held_ms: queue.held_ms(),
+        }
+    }
+
+    /// The throttled link's repro, in virtual time (footplate-tpwp): the
+    /// Android port's finding, that a speaker which is given silence where the
+    /// queue lacks a chunk cuts the voice at the start of every stretch and at
+    /// every stall, read on this one. A chunk 35 to 200 ms late is the phone's
+    /// `umts` link; the same stream 0 to 25 ms late is a link whose chunks are
+    /// never more than a tick off the pace, which cuts it too, at the start of
+    /// every stretch, where the first chunk's own delay is what the rest are
+    /// late against. With no margin both break up on every seed; with the
+    /// named one neither does, and a stretch begins no more than the margin
+    /// and a callback late. A hold under that link's own lag (120 ms) still
+    /// breaks up, so that the named one's being clean is the rig's finding and
+    /// not its gentleness. The queue's own count of the times the speaker ran
+    /// out agrees with the silence read from the samples, run for run.
+    #[test]
+    fn a_throttled_link_breaks_up_the_voice_with_no_margin_and_not_with_the_named_one() {
+        assert_eq!(MARGIN, Duration::from_millis(300));
+        let margin = MARGIN.as_millis() as u64;
+        let seen = |link: std::ops::RangeInclusive<u64>, seed: u64| {
+            let none = playout(&BRIEF, MONO, 0, link.clone(), seed);
+            let said = format!(
+                "{link:?} seed {seed}, no margin: {} silent callbacks in {} runs",
+                none.callbacks, none.runs
+            );
+            assert!(none.callbacks > 0, "{said}");
+            assert_eq!(none.underruns, none.runs as u64, "{said}");
+            assert_eq!(none.held_ms, 0, "{said}");
+            assert!(none.late_ms <= 20, "{said}");
+            let named = playout(&BRIEF, MONO, margin, link.clone(), seed);
+            let said = format!(
+                "{link:?} seed {seed}, the named margin: {} silent callbacks in {} runs, {} underruns",
+                named.callbacks, named.runs, named.underruns
+            );
+            assert_eq!(
+                (named.callbacks, named.runs, named.underruns),
+                (0, 0, 0),
+                "{said}"
+            );
+            // The cost of it: a stretch begins the margin late, and a callback.
+            assert!(named.held_ms > 0, "{said}");
+            assert!(
+                named.late_ms <= margin + 20,
+                "{said}: began {} ms late",
+                named.late_ms
+            );
+        };
+        let mut under_breaks = false;
+        for seed in 1..=6 {
+            seen(35..=200, seed);
+            under_breaks |= playout(&BRIEF, MONO, 120, 35..=200, seed).callbacks > 0;
+        }
+        for seed in 1..=3 {
+            seen(0..=25, seed);
+        }
+        assert!(
+            under_breaks,
+            "a hold under the link's lag breaks up on some seed"
+        );
+        // The same on the default device of runs 3 to 6, which makes the
+        // queue 48000 Hz in two channels: the pulls are the same, and so is
+        // the silence.
+        let umts = 35..=200;
+        let none = playout(&BRIEF, STEREO, 0, umts.clone(), 1);
+        assert_eq!(
+            none.callbacks,
+            playout(&BRIEF, MONO, 0, umts.clone(), 1).callbacks
+        );
+        assert!(none.callbacks > 0);
+        let named = playout(&BRIEF, STEREO, margin, umts, 1);
+        assert_eq!((named.callbacks, named.runs, named.underruns), (0, 0, 0));
+    }
+
+    /// Measures what a hold of each length does on four links: for each, the
+    /// silent callbacks inside speech over ten seeds of a long stream. The
+    /// doc on `MARGIN` quotes these numbers, and a person runs it for new ones
+    /// when a session's log says the link is not one of these: `cargo test
+    /// measure_the_margin -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "prints what a hold of each length does"]
+    fn measure_the_margin() {
+        for (name, link) in [
+            ("calm", 0..=25),
+            ("pc", 5..=60),
+            ("umts", 35..=200),
+            ("edge", 80..=400),
+        ] {
+            println!("{name}, each chunk {link:?} ms late");
+            for margin in (0..=360).step_by(20) {
+                let all: Vec<Playout> = (1..=10)
+                    .map(|seed| playout(&LONG, STEREO, margin, link.clone(), seed))
+                    .collect();
+                let broken = all.iter().filter(|p| p.callbacks > 0).count();
+                let callbacks: usize = all.iter().map(|p| p.callbacks).sum();
+                let runs: usize = all.iter().map(|p| p.runs).sum();
+                let late = all.iter().map(|p| p.late_ms).max().unwrap_or(0);
+                let held = all.iter().map(|p| p.held_ms).max().unwrap_or(0);
+                println!(
+                    "  margin {margin:3} ms: {broken:2}/10 seeds break up, {callbacks:4} silent callbacks in {runs:3} runs, latest start {late:3} ms, held up to {held} ms"
+                );
+            }
+        }
+    }
+
+    /// The hold in front of the speaker (footplate-tpwp): a stretch of speech
+    /// waits for its margin, by the speech queued or by the speaker's time
+    /// that has gone by with some queued, and waits again whenever the queue
+    /// runs short and after a drop. Time is the speaker's pulls, so this is
+    /// virtual time. Padding that follows a run-out says the voice had paused,
+    /// and speech that follows it says the link was late.
+    #[test]
+    fn a_stretch_is_held_for_its_margin_and_again_whenever_the_queue_runs_short() {
+        let began = Instant::now();
+        let at = |ms: u64| began + Duration::from_millis(ms);
+        let speech = |n: i16| vec![8000 + n; 480];
+        let mut out = [0_i16; 480];
+        // 60 ms, three chunks of the stream's 20 ms.
+        let mut queue = Queue::with_margin(Duration::from_millis(60));
+
+        // Idle: nothing queued is nothing to hold, and no wait is counted.
+        for _ in 0..5 {
+            assert_eq!(queue.pull(&mut out), 0);
+        }
+        assert_eq!(queue.held_ms(), 0);
+
+        // One chunk is not three: it waits for the time that goes by, 60 ms,
+        // and plays on the next pull.
+        assert!(queue.push(speech(1), at(0)));
+        for _ in 0..3 {
+            assert_eq!(queue.pull(&mut out), 0);
+            assert!(out.iter().all(|&s| s == 0));
+        }
+        assert_eq!(queue.held_ms(), 60);
+        assert_eq!(queue.pull(&mut out), 480);
+        assert_eq!(out[..], speech(1)[..]);
+        assert_eq!(queue.held_ms(), 60);
+
+        // The queue ran dry, and the stream went on with speech: the link was
+        // late, and that is an underrun. The next speech waits again, even a
+        // stall's resume: one chunk of the three is held.
+        assert_eq!(queue.pull(&mut out), 0);
+        assert!(queue.push(speech(2), at(100)));
+        assert_eq!(queue.underruns, 1);
+        assert_eq!(queue.pull(&mut out), 0);
+        assert_eq!(queue.held_ms(), 80);
+        // Two more chunks and the margin stands: it plays at once, in order,
+        // before the wait is out.
+        for n in 3..=4 {
+            assert!(queue.push(speech(n), at(120)));
+        }
+        for n in 2..=4 {
+            assert_eq!(queue.pull(&mut out), 480);
+            assert_eq!(out[..], speech(n)[..]);
+        }
+        assert_eq!(queue.held_ms(), 80);
+
+        // It ran dry again, and padding followed: the voice had paused, and
+        // that was no stall. What comes after is a stretch of its own.
+        assert_eq!(queue.pull(&mut out), 0);
+        assert!(!queue.push(vec![0; 480], at(200)));
+        assert!(queue.push(speech(5), at(220)));
+        assert_eq!(queue.underruns, 1);
+
+        // A drop holds the next stretch afresh: one that was playing, dropped,
+        // waits for its margin again, so one chunk queued after the holdoff
+        // waits three, and what the holdoff takes is thrown away.
+        for n in 6..=7 {
+            assert!(queue.push(speech(n), at(300)));
+        }
+        assert_eq!(queue.pull(&mut out), 480);
+        assert_eq!(queue.drop_queued(at(1000)), 40);
+        assert!(!queue.push(speech(8), at(1100)));
+        assert!(queue.push(speech(9), at(1300)));
+        for _ in 0..3 {
+            assert_eq!(queue.pull(&mut out), 0);
+        }
+        assert_eq!(queue.pull(&mut out), 480);
+        assert_eq!(queue.held_ms(), 140);
+        assert_eq!(queue.underruns, 1);
+        // A run-out before a drop is no longer one the voice is owed for.
+        assert_eq!(queue.pull(&mut out), 0);
+        assert_eq!(queue.drop_queued(at(2000)), 0);
+        assert!(queue.push(speech(10), at(2300)));
+        assert_eq!(queue.underruns, 1);
+        // Nor is a wait in progress carried over a drop: two pulls of the
+        // three gone, and the chunk after it waits all three.
+        assert_eq!(queue.pull(&mut out), 0);
+        assert_eq!(queue.pull(&mut out), 0);
+        assert_eq!(queue.drop_queued(at(3000)), 20);
+        assert!(queue.push(speech(11), at(3300)));
+        for _ in 0..3 {
+            assert_eq!(queue.pull(&mut out), 0);
+        }
+        assert_eq!(queue.pull(&mut out), 480);
+
+        // The wait is the speaker's samples and not its pulls: the pieces of
+        // 5 ms that `Render` takes wait the same 60 ms.
+        let mut queue = Queue::with_margin(Duration::from_millis(60));
+        assert!(queue.push(speech(1), at(0)));
+        let mut piece = [0_i16; 120];
+        for _ in 0..12 {
+            assert_eq!(queue.pull(&mut piece), 0);
+        }
+        assert_eq!(queue.held_ms(), 60);
+        assert_eq!(queue.pull(&mut piece), 120);
+
+        // A margin that is not reached is not waited for for ever: speech
+        // that never comes to three chunks plays after the time it would have
+        // taken.
+        let mut queue = Queue::with_margin(MARGIN);
+        assert!(queue.push(vec![8000; 120], at(0)));
+        let mut pulls = 0;
+        while queue.pull(&mut piece) == 0 && pulls < 1000 {
+            pulls += 1;
+        }
+        assert_eq!(pulls, MARGIN.as_millis() as usize / 5);
+        assert_eq!(queue.held_ms(), MARGIN.as_millis() as u64);
+
+        // No margin plays what is queued as soon as it is, as it always did.
+        let mut plain = Queue::default();
+        assert!(plain.push(speech(1), at(0)));
+        assert_eq!(plain.pull(&mut out), 480);
+        assert_eq!(plain.held_ms(), 0);
+    }
+
+    /// What a session's audio did on its way in (footplate-tpwp): the pace
+    /// against the clock says whether the rate is the one assumed (a 16000
+    /// stream taken for 24000 arrives at two thirds), and the gaps say how the
+    /// link kept the stream's pace.
+    #[test]
+    fn the_audios_arrivals_are_counted_against_the_clock_and_the_rate_assumed() {
+        let began = Instant::now();
+        let at = |ms: u64| began + Duration::from_millis(ms);
+        // Six seconds of 20 ms chunks at 24000, one 300 ms stall.
+        let mut steady = Link::default();
+        assert_eq!(steady.pace(), None);
+        assert_eq!(steady.words(160), "no audio arrived");
+        let mut now = 1_000;
+        for chunk in 0..300 {
+            if chunk == 150 {
+                now += 280;
+            }
+            steady.arrived(480, at(now), 160);
+            now += 20;
+        }
+        // 5980 ms of audio in the 6260 ms from the first chunk to the last:
+        // the stall is the clock's and not the audio's.
+        assert!((steady.pace().unwrap() - 5980.0 / 6260.0).abs() < 1e-9);
+        assert_eq!(
+            steady.words(160),
+            "300 chunks of 20 ms over 6 s, pace 96%; gaps within 25 ms at 95%, 25 ms at 99%, longest 300 ms, over the margin's 160 ms 1"
+        );
+        // A stall is counted over the margin only where there is one.
+        let mut none = Link::default();
+        none.arrived(480, at(0), 0);
+        none.arrived(480, at(300), 0);
+        assert_eq!(none.over, 0);
+
+        // A 16000 stream's chunks of the same 20 ms are 320 samples; read at
+        // 24000 they are 13 ms, and the audio arrives at two thirds of the
+        // clock.
+        let mut wrong = Link::default();
+        for chunk in 0..300 {
+            wrong.arrived(320, at(chunk * 20), 160);
+        }
+        assert!(
+            wrong.words(160).starts_with(
+                "300 chunks of 13 ms over 5 s, pace 67% (the rate may not be the one assumed"
+            ),
+            "{}",
+            wrong.words(160)
+        );
+
+        // Under five seconds says nothing of a pace; a gap past the last
+        // bucket is said as past it.
+        let mut brief = Link::default();
+        for chunk in 0..100 {
+            brief.arrived(480, at(chunk * 20), 160);
+        }
+        assert_eq!(brief.pace(), None);
+        assert!(
+            brief.words(160).contains("pace n/a"),
+            "{}",
+            brief.words(160)
+        );
+        let mut stalled = Link::default();
+        for chunk in 0..10 {
+            stalled.arrived(480, at(chunk * 2000), 160);
+        }
+        assert!(
+            stalled.words(160).contains("gaps within >640 ms at 95%"),
+            "{}",
+            stalled.words(160)
+        );
+
+        // The queue says it with what its speaker made of it, in numbers.
+        let mut queue = Queue::with_margin(MARGIN);
+        assert_eq!(
+            queue.counted(),
+            "no audio arrived; speaker: 0 underruns, held 0 ms"
+        );
+        for chunk in 0..10 {
+            assert!(queue.push(vec![8000; 480], at(chunk * 20)));
+        }
+        assert_eq!(
+            queue.counted(),
+            "10 chunks of 20 ms over 0 s, pace n/a; gaps within 25 ms at 95%, 25 ms at 99%, longest 20 ms, over the margin's 300 ms 0; speaker: 0 underruns, held 0 ms"
+        );
+    }
+
+    fn resolved_as(format: Option<&str>, rate: Option<u64>) -> Resolved {
+        Resolved {
+            format: format.map(str::to_string),
+            rate,
+            unreadable: false,
+        }
+    }
+
+    /// What `session.started` says the audio came out as against what is
+    /// played (footplate-tpwp): PCM at 24000 plays, and so does what the server
+    /// left out, which it did not contradict; any other format or rate is
+    /// refused in words, where it is read, and never played at some speed. The
+    /// provider's own words stand as a short token and no more.
+    #[test]
+    fn the_audio_the_server_resolved_is_played_as_asked_or_refused_in_words() {
+        for (resolved, plays) in [
+            (Resolved::default(), true),
+            (resolved_as(Some("audio/pcm"), Some(24_000)), true),
+            (resolved_as(Some("audio/pcm"), None), true),
+            (resolved_as(None, Some(24_000)), true),
+            (resolved_as(Some("audio/pcm"), Some(16_000)), false),
+            (resolved_as(Some("audio/pcmu"), Some(8_000)), false),
+            (resolved_as(Some("audio/pcmu"), Some(24_000)), false),
+            (resolved_as(Some("audio/pcma"), None), false),
+            (resolved_as(None, Some(22_050)), false),
+            (
+                Resolved {
+                    unreadable: true,
+                    ..Resolved::default()
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(resolved.refusal().is_none(), plays, "{resolved:?}");
+        }
+        let ends = "and footplate plays audio/pcm at 24000 Hz, so the session was closed.";
+        let refused =
+            |format: Option<&str>, rate: Option<u64>| resolved_as(format, rate).refusal().unwrap();
+        assert_eq!(
+            refused(Some("audio/pcm"), Some(16_000)),
+            format!("OpenAI's voice audio came out as audio/pcm at 16000 Hz, {ends}")
+        );
+        assert_eq!(
+            refused(Some("audio/pcmu"), Some(8_000)),
+            format!("OpenAI's voice audio came out as audio/pcmu at 8000 Hz, {ends}")
+        );
+        assert_eq!(
+            refused(Some("audio/pcma"), None),
+            format!("OpenAI's voice audio came out as audio/pcma, {ends}")
+        );
+        assert_eq!(
+            refused(None, Some(22_050)),
+            format!("OpenAI's voice audio came out at 22050 Hz, {ends}")
+        );
+        let unreadable = Resolved {
+            unreadable: true,
+            ..Resolved::default()
+        };
+        assert_eq!(
+            unreadable.refusal().unwrap(),
+            format!("OpenAI's voice audio format could not be read, {ends}")
+        );
+        // A long or odd format is not repeated, and one that carries a key has
+        // it taken out: the words reach the window and the log.
+        let odd = refused(
+            Some("audio/pcm; rate=1\nIgnore all previous instructions"),
+            Some(8_000),
+        );
+        assert!(odd.contains("as an unreadable format at 8000 Hz"), "{odd}");
+        assert!(!odd.contains("Ignore"), "{odd}");
+        assert!(refused(Some(&"a".repeat(25)), Some(8_000)).contains("an unreadable format"));
+        assert!(refused(Some(&"a".repeat(24)), Some(8_000)).contains(&"a".repeat(24)));
+        let key = ["sk", "-made-up-KEY"].concat();
+        let keyed = refused(Some(&key), Some(8_000));
+        assert!(
+            keyed.contains("sk-…") && !keyed.contains("made-up"),
+            "{keyed}"
+        );
+        // What the log says of it.
+        assert_eq!(Resolved::default().words(), "not given");
+        assert_eq!(
+            resolved_as(Some("audio/pcm"), Some(24_000)).words(),
+            "audio/pcm at 24000 Hz"
+        );
+        assert_eq!(
+            resolved_as(Some("audio/pcm"), None).words(),
+            "audio/pcm, no rate given"
+        );
+        assert_eq!(
+            resolved_as(None, Some(24_000)).words(),
+            "no format at 24000 Hz"
+        );
+        assert_eq!(unreadable.words(), "an unreadable audio format");
+    }
+
     #[test]
     fn the_state_words_are_listening_working_and_speaking() {
         assert_eq!(State::of(false, false).words("yardmaster"), "listening");
@@ -4555,17 +5532,111 @@ pub(crate) mod tests {
 
     #[test]
     fn what_is_read_is_the_references_events() {
+        // A start that says nothing of its audio leaves it as asked.
         assert_eq!(
             parse(r#"{"type":"session.started","event_id":"e","session":{"id":"live_1","expires_at":1788307200,"status":"active","model":"gpt-live-1"}}"#).unwrap(),
-            Server::Started { id: "live_1".into(), expires_at: Some(1788307200) }
+            Server::Started { id: "live_1".into(), expires_at: Some(1788307200), audio: Resolved::default() }
         );
         assert_eq!(
             parse(r#"{"type":"session.started","session":{"id":"live_2"}}"#).unwrap(),
             Server::Started {
                 id: "live_2".into(),
-                expires_at: None
+                expires_at: None,
+                audio: Resolved::default()
             }
         );
+        // The page's own example of what the server resolved the session as:
+        // the audio's format and rate are read, and the voice beside them is
+        // not this module's to read.
+        assert_eq!(
+            parse(r#"{"type":"session.started","event_id":"evt_started_001","client_event_id":"evt_start_001","session":{"id":"live_abc123","model":"gpt-live-1","status":"active","expires_at":1788555600,"instructions":"Help.","input":[],"audio":{"format":{"type":"audio/pcm","rate":24000},"output":{"voice":"marin"}},"delegation":{"type":"client","acknowledgement_delay_ms":800}}}"#).unwrap(),
+            Server::Started {
+                id: "live_abc123".into(),
+                expires_at: Some(1788555600),
+                audio: Resolved { format: Some("audio/pcm".into()), rate: Some(24000), unreadable: false }
+            }
+        );
+        // What is there and is not the shape of a format is not silence: it
+        // is kept as unreadable, so that the session refuses it and does not
+        // play at a rate it only assumes. What is half given is half read.
+        for (audio, resolved) in [
+            (r#"{"output":{"voice":"marin"}}"#, Resolved::default()),
+            (r#"{"format":null}"#, Resolved::default()),
+            (
+                r#"{"format":{"type":"audio/pcm"}}"#,
+                Resolved {
+                    format: Some("audio/pcm".into()),
+                    rate: None,
+                    unreadable: false,
+                },
+            ),
+            (
+                r#"{"format":{"rate":16000}}"#,
+                Resolved {
+                    format: None,
+                    rate: Some(16000),
+                    unreadable: false,
+                },
+            ),
+            (
+                r#"{"format":{"type":"audio/pcmu","rate":8000}}"#,
+                Resolved {
+                    format: Some("audio/pcmu".into()),
+                    rate: Some(8000),
+                    unreadable: false,
+                },
+            ),
+            (
+                r#"{"format":"audio/pcm"}"#,
+                Resolved {
+                    unreadable: true,
+                    ..Resolved::default()
+                },
+            ),
+            (
+                r#"{"format":{"type":7,"rate":24000}}"#,
+                Resolved {
+                    unreadable: true,
+                    ..Resolved::default()
+                },
+            ),
+            (
+                r#"{"format":{"type":"audio/pcm","rate":"24000"}}"#,
+                Resolved {
+                    unreadable: true,
+                    ..Resolved::default()
+                },
+            ),
+            (
+                r#"{"format":{"type":"audio/pcm","rate":24000.5}}"#,
+                Resolved {
+                    unreadable: true,
+                    ..Resolved::default()
+                },
+            ),
+            (
+                r#"{"format":{"type":"audio/pcm","rate":-1}}"#,
+                Resolved {
+                    unreadable: true,
+                    ..Resolved::default()
+                },
+            ),
+            (
+                r#""pcm""#,
+                Resolved {
+                    unreadable: true,
+                    ..Resolved::default()
+                },
+            ),
+        ] {
+            let Server::Started { audio: got, .. } = parse(&format!(
+                r#"{{"type":"session.started","session":{{"id":"live_3","audio":{audio}}}}}"#
+            ))
+            .unwrap() else {
+                panic!("a started session: {audio}");
+            };
+            assert_eq!(got, resolved, "{audio}");
+        }
         assert_eq!(
             parse(r#"{"type":"session.input_transcript.delta","event_id":"e","delta":"Hi","start_ms":5400,"end_ms":7200}"#).unwrap(),
             Server::Heard(Fragment { text: "Hi".into(), start_ms: 5400, end_ms: 7200 })
@@ -5315,10 +6386,17 @@ pub(crate) mod tests {
             panic!("the session stands");
         };
         assert_eq!(next_update(&updates), Update::Started);
+        let logged_on = voice.thread.as_ref().unwrap().thread().id();
         // The voice asked for is what the socket was started with.
         assert_eq!(
             live.sent()[0]["session"]["audio"]["output"]["voice"],
             "quartz"
+        );
+        // The queue the session shares with the speaker holds a stretch for
+        // the named margin: it is made so by the start, and not by a test.
+        assert_eq!(
+            voice.speaker().lock().unwrap().margin_ms(),
+            MARGIN.as_millis() as u64
         );
 
         // A stand-in microphone, as the Linux desktop's default of runs 3 to
@@ -5469,12 +6547,35 @@ pub(crate) mod tests {
         }
         assert_eq!(live.play(10), 10);
         wait_until(|| speaker.lock().unwrap().queued_ms() == 200);
+        // The session's queue holds a stretch for its margin: 200 ms are less
+        // than 300, so a callback of 10 ms is given silence, and none of the
+        // speech is taken.
+        let mut callback = vec![1f32; 480 * 2];
+        render.fill(&mut callback, |s| s);
+        assert!(callback.iter().all(|v| *v == 0.0), "held for its margin");
+        assert_eq!(speaker.lock().unwrap().queued_ms(), 200);
+        // Ten chunks more and the margin stands. The thread counted how the
+        // audio arrived, where it reads it: twenty chunks of 20 ms, and the
+        // speaker has run out of nothing.
+        for _ in 0..10 {
+            live.queue_audio(vec![7000_i16; 480]);
+        }
+        assert_eq!(live.play(10), 10);
+        wait_until(|| speaker.lock().unwrap().queued_ms() == 400);
+        assert_eq!(speaker.lock().unwrap().link.chunks, 20);
+        assert!(
+            speaker
+                .lock()
+                .unwrap()
+                .counted()
+                .starts_with("20 chunks of 20 ms over "),
+        );
+        assert_eq!(speaker.lock().unwrap().underruns, 0);
         // The voice is heard: a callback of 10 ms takes a little of the queue.
-        let mut callback = vec![0f32; 480 * 2];
         render.fill(&mut callback, |s| s);
         assert!(callback.iter().any(|v| v.abs() > 0.1));
         let queued = speaker.lock().unwrap().queued_ms();
-        assert!(queued < 200);
+        assert!(queued < 400);
         live.person_says("Wait", 40000, 40200);
         assert_eq!(
             next_update(&updates),
@@ -5519,6 +6620,33 @@ pub(crate) mod tests {
         );
         assert!(live.sent().iter().any(|e| e["type"] == "session.close"));
         server.thread.join().unwrap();
+        // The session logged what its audio did, once each end: how it was
+        // to be played when it stood, and how it arrived when it was over
+        // (the twenty-one chunks of 20 ms the stand-in sent, the gaps, the
+        // pace, the speaker run out of nothing and the callback that was held
+        // counted), in numbers and no provider text.
+        let lines = logged_by(logged_on);
+        let audio: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.starts_with("voice session audio: "))
+            .collect();
+        assert_eq!(audio.len(), 2, "{lines:?}");
+        assert_eq!(
+            audio[0],
+            "voice session audio: asked audio/pcm at 24000 Hz, resolved audio/pcm at 24000 Hz, margin 300 ms"
+        );
+        assert!(
+            audio[1].starts_with("voice session audio: 21 chunks of 20 ms over "),
+            "{}",
+            audio[1]
+        );
+        assert!(
+            audio[1].contains(", pace n/a; gaps within ")
+                && audio[1].contains("; speaker: 0 underruns, held ")
+                && !audio[1].ends_with("held 0 ms"),
+            "{}",
+            audio[1]
+        );
     }
 
     #[test]
@@ -5683,6 +6811,73 @@ pub(crate) mod tests {
         drop(voice);
         server.thread.join().unwrap();
         assert_eq!(live.sent().len(), 1, "nothing followed the refused start");
+    }
+
+    /// Audio the server resolved otherwise than footplate plays
+    /// (footplate-tpwp): refused where `session.started` is read, in the
+    /// app's words, and closed, since the server made the session and it
+    /// bills until it is closed. It is refused before `Started` is told,
+    /// which is what the window opens the microphone and the speaker on, so
+    /// no device is ever opened for it and nothing is played at a wrong speed.
+    #[test]
+    fn a_session_whose_audio_came_out_otherwise_is_refused_and_closed_before_anything_opens() {
+        for (format, rate, said) in [
+            ("audio/pcm", 16_000, "as audio/pcm at 16000 Hz"),
+            ("audio/pcmu", 8_000, "as audio/pcmu at 8000 Hz"),
+        ] {
+            let live = Arc::new(Live::start());
+            live.resolves_audio(format, rate);
+            let server = live_socket(live.clone(), "Bearer sk-test");
+            let (tell, updates) = mpsc::channel();
+            let Start::On(voice) = gated_start(
+                true,
+                || Ok("sk-test".to_string()),
+                &server.url,
+                "yardmaster",
+                "",
+                tell,
+            ) else {
+                panic!("the session stands");
+            };
+            // The first thing told is the refusal: no `Started` came before it.
+            let Update::Refused(words) = next_update(&updates) else {
+                panic!("a refusal, in words, and not a session that stands");
+            };
+            assert!(words.contains(said), "{words}");
+            assert!(
+                words.contains("footplate plays audio/pcm at 24000 Hz, so the session was closed"),
+                "{words}"
+            );
+            wait_until(|| live.sent().iter().any(|e| e["type"] == "session.close"));
+            // Nothing more is told, and none is retried: the thread is gone
+            // with the handle.
+            let logged_on = voice.thread.as_ref().unwrap().thread().id();
+            drop(voice);
+            server.thread.join().unwrap();
+            assert!(updates.try_recv().is_err());
+            // The log says what was asked and what came out, and has no line
+            // of a session's audio, since none stood.
+            let lines = logged_by(logged_on);
+            let refused = format!(
+                "voice session refused: asked audio/pcm at 24000 Hz, resolved {}",
+                said.trim_start_matches("as ")
+            );
+            assert!(lines.contains(&refused), "{refused:?} not in {lines:?}");
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| !line.starts_with("voice session audio:")),
+                "{lines:?}"
+            );
+            // The stand-in saw the start and the close, and nothing between:
+            // no microphone's audio, and no append.
+            let sent: Vec<String> = live
+                .sent()
+                .iter()
+                .map(|event| event["type"].as_str().unwrap_or_default().to_string())
+                .collect();
+            assert_eq!(sent, ["session.start", "session.close"]);
+        }
     }
 
     #[test]

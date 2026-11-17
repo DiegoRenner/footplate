@@ -214,7 +214,27 @@ The window, its state and the yard:
   which answer the voice is given to speak and under which delegation's id,
   the queue its speech waits in and
   drops (the server's padding let go, a holdoff that counts what it throws
-  away), the instructions and the state words, the voices GPT-Live offers
+  away) and holds: the stream arrives at the pace of the clock, so without a
+  hold the queue ahead of the speaker is empty by design and a chunk a tick
+  late is silence in the middle of a word, at the start of every stretch and
+  at every stall. A stretch therefore waits for `MARGIN` of audio to stand
+  queued (or that much of the speaker's own time to go with some queued) and
+  waits again whenever the queue runs short or is dropped; `MARGIN` is 300 ms,
+  mckean's pick after hearing Android's 200 ms on his phone. Its doc says what
+  smaller holds showed on a seeded link played through `Render`
+  (`tests::measure_the_margin` prints the table), and a queue made with no
+  margin plays at once, which the older tests stand on. The queue counts what
+  the session's audio did, which the
+  session writes to the log twice, once when it stands (the format asked and
+  the one resolved, the margin) and once when it ends (chunks and their gaps,
+  the pace as audio against the clock, the times the speaker ran out inside
+  speech, what the hold cost): numbers and the module's own words, never the
+  provider's text. What `session.started` says the audio came out as is read
+  by `parse` (`Resolved`) and checked before `Update::Started`, which is what
+  the window opens the devices on: a session whose audio is not PCM at 24 kHz
+  is refused in words and closed so that it does not bill, and one that says
+  nothing, or leaves a field out, plays as asked. The module also holds the
+  instructions and the state words, the voices GPT-Live offers
   (`VOICES`, which the Voice settings' picker lists and a session is started
   in, from OpenAI's reference), and the events of OpenAI's GPT-Live, which
   this is the one module to speak (no provider trait, and no setting to
@@ -340,7 +360,8 @@ Setup, release and tests:
   can rewrite it, a stand-in for PostHog's capture (`Posthog`), and, for
   tests and the voice shot, one for OpenAI's Live socket (`Live`: the
   server's side of a voice session as events in and out, held to the
-  reference, not to the module that uses it). `Yard::start()` is the
+  reference, not to the module that uses it, and able to resolve the audio
+  otherwise than it was asked). `Yard::start()` is the
   socket's on unix and the TCP one's on Windows.
 - `src/fixtures/`: `shot-page.png` and the terminal screens.
 
