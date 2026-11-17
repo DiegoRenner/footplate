@@ -1274,7 +1274,23 @@ impl Footplate {
                             .map(|row| row.line.clone())
                             .unwrap_or_default(),
                         flow_words(depot.flows.len())
-                    )));
+                    )))
+            .when(model.line_offered(), |el| {
+                let sel = Selected::LineWindow(line.to_string());
+                el.child(
+                    div().pt_2().child(
+                        super::ui::small_button("Line window".to_string(), palette)
+                            .id(SharedString::from(format!("line window open {line}")))
+                            .debug_selector({
+                                let line = line.to_string();
+                                move || format!("line window open {line}")
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select(sel.clone(), window, cx)
+                            })),
+                    ),
+                )
+            });
         let mono = select::mono(cx);
         let now = chrono::Utc::now();
         let mut list = div()

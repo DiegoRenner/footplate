@@ -428,6 +428,35 @@ its card under "Decided".
 | `cmd+shift+l` (`ctrl+shift+l` on Linux) | the next of auto, light, dark |
 | `cmd+q` (`ctrl+q` on Linux) | quits. On Linux so does closing the window, with the tray's item on or off; on macOS closing hides footplate while the menu bar item is on, and quits while it is off ([Closing the window](#closing-the-window)) |
 
+## The Line window
+
+Where the window runs as the yard's operator, a depot's line in Lines
+carries "Line window", which opens the depot's line read whole: the
+depot and flow pickers over the depots already listed, each flow named
+by its source (`store`, `pack <name>` for a pack-managed flow,
+`repo@<commit>` for a git depot's repository flow, and
+`repo (directory)` with its directory for a dir depot's), the stage
+track in the flow map's words (agents, script, people, end, nobody),
+warnings for beads stranded outside the flow, and under it the open
+stage's detail: its Rule line with the
+representative rule's id, its scope in "this depot's own" or
+"yard-wide" words — a yard-wide rule read as yard-wide wherever it
+stands — and every filter it sets, each shown as unset where it is
+unset, its chain in order with each group's quota condition, its
+Other rules with each further rule's id, scope, filters and first
+group, its next stages, and the open beads in the stage. An exec
+stage shows its `cmd` whole; a manual stage shows its members; a
+terminal stage says entering it closes the bead. The stage file and
+each herdr group's prompt stand behind Read, with no Edit on a stage
+file, and Edit faint until a later slice on a prompt a card can carry,
+with why it cannot where it cannot; the crew's prompts stand below the
+flows the same way. It reads through `Line` when the window opens or
+its depot changes, and at no other time: the window says to reopen it
+after an edit lands rather than pretending to be live, and it writes
+nothing. A yard from before the call says in its pane, in no red, that
+its yardr is older than the Line window, and the window is not offered
+again.
+
 ## Settings
 
 `cmd+,` opens the settings as their own sheet, with the sections down the

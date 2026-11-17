@@ -36,6 +36,7 @@ mod chrome;
 mod feedback;
 mod firstrun;
 mod keys;
+mod line;
 mod metrics;
 mod panel;
 mod rail;
@@ -362,6 +363,15 @@ pub struct Footplate {
     /// The open screen's own scroll: each answer stands it at the pane's
     /// bottom, where the input line is.
     screen_scroll: ScrollHandle,
+    /// The Line window's flow by type, name and source, and its stage
+    /// by name: one it no longer has falls back to the first of each.
+    /// Empty at first, for the first of each.
+    line_flow: String,
+    line_stage: String,
+    /// The Line window's texts standing open behind their Read, by
+    /// their key (`stagefile:<flow>:<stage>`, `prompt:<group>`,
+    /// `crew:<name>`): a text a yard no longer serves is not asked.
+    line_reads: HashSet<String>,
     /// How the web view answers at the setting's address (up, behind a
     /// login the browser cannot pass, or not at all): what a note's page is
     /// drawn with.
@@ -937,6 +947,9 @@ impl Footplate {
             screen_open: None,
             screen_read: 0,
             screen_scroll: ScrollHandle::new(),
+            line_flow: String::new(),
+            line_stage: String::new(),
+            line_reads: HashSet::new(),
             view_up: ViewUp::Unknown,
             run_up: ViewUp::Unknown,
             rows_shown: Cell::new(false),
@@ -15625,6 +15638,267 @@ yardr.dev
         to_decisions(&view, cx);
         cx.run_until_parked();
         assert_eq!(notice(&view, cx), "");
+    }
+
+    /// The Line window: opened from a depot's line, it names each
+    /// flow by its source, shows an exec stage's cmd whole, a
+    /// prompt's text behind Read and a labelled second rule under
+    /// Other rules, and makes no write call.
+    #[gpui::test]
+    fn the_line_window_names_flows_by_source_and_writes_nothing(cx: &mut TestAppContext) {
+        let flows = || {
+            json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": [{"bead": "yd-a", "title": "A", "expected": "1h",
+                                    "remark": "", "tone": "none", "working": false}]}]},
+                ], "elsewhere": []},
+                {"name": "notes", "kind": "dir", "travelling": 0, "flows": [], "elsewhere": []},
+            ], "unassigned": []}})
+            .to_string()
+        };
+        let line_yardr = || {
+            json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store",
+                 "warnings": ["bead yd-old is stranded"], "stages": [
+                    {"stage": "new", "next": ["review"], "outcomes": [{"name": "done", "to": "review"}],
+                     "route": {"id": "r-1", "scope": "this depot's own",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "builders", "runner": "herdr", "kind": "claude", "model": "opus",
+                         "prompt": {"path": "/home/jo/.yardr/roles/builder.md", "source": "home",
+                                    "found": "/home/jo/.yardr/roles/builder.md", "text": "Build the thing.\n",
+                                    "carriable": true}}], "limit": 3},
+                     "other_routes": [{"id": "r-2", "scope": "yard-wide",
+                       "filters": {"type": "task", "labels": ["eyes"], "priority": "P0-P1", "originator": "any"},
+                       "group": "reviewers"}],
+                     "open": 1, "stage_file": {"path": ".yardr/flows/default/new.md", "text": "Start here.\n"}},
+                    {"stage": "review", "next": ["merged"], "terminal": false,
+                     "route": {"id": "r-3", "scope": "yard-wide",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": "any"},
+                       "chain": [{"name": "assembly", "when": "Weekly<80", "runner": "exec", "cmd": "scripts/merge-local --fast"}],
+                       "limit": 1},
+                     "other_routes": [], "open": 0},
+                    {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]},
+                {"name": "default", "type": "task", "source": "store", "stages": [
+                    {"stage": "task-new", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                {"name": "managed", "type": "", "source": "pack starter", "stages": [
+                    {"stage": "new", "next": [], "terminal": false,
+                     "route": {"id": "r-4", "scope": "yard-wide",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "people", "runner": "manual", "members": ["jo"]}], "limit": 1},
+                     "other_routes": [], "open": 0}]},
+                {"name": "repo", "type": "", "source": "repo@abcdef0", "stages": [
+                    {"stage": "new", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                {"name": "dirflow", "type": "", "source": "repo (directory)", "directory": "/home/jo/notes", "stages": [
+                    {"stage": "inbox", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+            ], "crew": [{"name": "yardmaster", "prompt": {"path": "/home/jo/.yardr/roles/yardmaster.md",
+                          "source": "file", "found": "/home/jo/.yardr/roles/yardmaster.md",
+                          "text": "Mind the yard.\n", "carriable": true}},
+                        {"name": "signalman"}]}})
+            .to_string()
+        };
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer("Flows", &flows());
+        yard.answer_for("Line", "depot", "yardr", &line_yardr());
+        yard.answer_for(
+            "Line",
+            "depot",
+            "notes",
+            r#"{"result": {"depot": "notes", "kind": "dir", "flows": [
+                {"name": "dirflow", "type": "", "source": "repo (directory)", "directory": "/home/jo/notes",
+                 "stages": [{"stage": "inbox", "next": [], "terminal": false, "other_routes": [], "open": 0}]}],
+              "crew": []}}"#,
+        );
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
+        assert!(yard.asked("Line").is_empty());
+        click_on(cx, "line window open yardr");
+        wait(cx, "the line window", |cx| drawn(cx, "line rule new"));
+        assert_eq!(yard.asked("Line"), vec![json!({"depot": "yardr"})]);
+        assert_eq!(
+            open_row(&view, cx),
+            Some(Selected::LineWindow("yardr".into()))
+        );
+        // Each flow named by its source, and the detail of the first
+        // stage: its Rule line, chain, Other rules and next stages.
+        for selector in [
+            "line head",
+            "line depot notes",
+            "line flow default store",
+            "line flow task default store",
+            "line flow managed pack starter",
+            "line flow repo repo@abcdef0",
+            "line flow dirflow repo (directory)",
+            "line stage default new",
+            "line who default new",
+            "line flow warning default 0",
+            "line detail new",
+            "line chain new builders",
+            "line other new r-2",
+            "line next new",
+            "line stagefile new",
+            "line prompt new builders",
+            "line prompt new builders edit",
+            "line crew yardmaster",
+        ] {
+            assert!(drawn(cx, selector), "{selector}");
+        }
+        click_on(cx, "line flow task default store");
+        wait(cx, "the typed flow", |cx| drawn(cx, "line detail task-new"));
+        click_on(cx, "line flow default store");
+        wait(cx, "the depot flow", |cx| drawn(cx, "line detail new"));
+        view.read_with(cx, |v, _| {
+            let model = v.model.as_ref().unwrap();
+            let line = model.line_read_for("yardr").unwrap();
+            assert_eq!(
+                model::line_flow_words(&line.flows[4]),
+                "dirflow (repo (directory) /home/jo/notes)"
+            );
+            let stage = &line.flows[0].stages[0];
+            assert_eq!(model::line_who(stage), "agents");
+            assert_eq!(
+                model::line_rule_words(
+                    &stage.other_routes[0].id,
+                    &stage.other_routes[0].scope,
+                    &stage.other_routes[0].filters,
+                ),
+                "r-2 · yard-wide · type task · labels eyes · priority P0-P1 · for any originator"
+            );
+        });
+        // The stage file and the prompt stand behind Read, and the
+        // stage file has no Edit anywhere.
+        assert!(!drawn(cx, "line stagefile new text"));
+        assert!(!drawn(cx, "line prompt new builders text"));
+        click_on(cx, "line stagefile new read");
+        click_on(cx, "line prompt new builders read");
+        cx.run_until_parked();
+        assert!(drawn(cx, "line stagefile new text"));
+        assert!(drawn(cx, "line prompt new builders text"));
+        assert!(!drawn(cx, "line stagefile new edit"));
+        // The exec stage shows its group, whose words carry the cmd.
+        click_on(cx, "line stage default review");
+        wait(cx, "the exec stage", |cx| {
+            drawn(cx, "line chain review assembly")
+        });
+        view.read_with(cx, |v, _| {
+            let model = v.model.as_ref().unwrap();
+            let line = model.line_read_for("yardr").unwrap();
+            assert_eq!(
+                model::line_group_words(&line.flows[0].stages[1].route.as_ref().unwrap().chain[0]),
+                "exec · cmd scripts/merge-local --fast"
+            );
+        });
+        // A depot change reads that depot's line, and nothing the
+        // window made wrote: every call so far only reads.
+        click_on(cx, "line depot notes");
+        wait(cx, "the notes line", |cx| {
+            view.read_with(cx, |v, _| {
+                v.model
+                    .as_ref()
+                    .is_some_and(|m| m.line_read_for("notes").is_some())
+            })
+        });
+        assert_eq!(
+            yard.asked("Line"),
+            vec![json!({"depot": "yardr"}), json!({"depot": "notes"})]
+        );
+        // Returning to the other depot re-reads it, and its texts are
+        // folded again until Read is pressed in this open.
+        click_on(cx, "line depot yardr");
+        wait(cx, "the reopened yardr line", |cx| {
+            view.read_with(cx, |v, _| {
+                v.model
+                    .as_ref()
+                    .is_some_and(|m| m.line_read_for("yardr").is_some())
+            })
+        });
+        assert_eq!(
+            yard.asked("Line"),
+            vec![
+                json!({"depot": "yardr"}),
+                json!({"depot": "notes"}),
+                json!({"depot": "yardr"})
+            ]
+        );
+        view.read_with(cx, |v, _| assert!(v.line_reads.is_empty()));
+        assert!(
+            yard.calls().iter().all(|call| matches!(
+                call.as_str(),
+                "Head"
+                    | "Crew"
+                    | "Peers"
+                    | "Users"
+                    | "GetUser"
+                    | "Settings"
+                    | "UserInbox"
+                    | "Conversation"
+                    | "AckUserInbox"
+                    | "UserNotifications"
+                    | "AckUserNotifications"
+                    | "UserAsks"
+                    | "Waiting"
+                    | "Arrivals"
+                    | "Flows"
+                    | "SourceGrants"
+                    | "Teammates"
+                    | "DevicePairState"
+                    | "TelemetryShow"
+                    | "Line"
+            )),
+            "{:?}",
+            yard.calls()
+        );
+    }
+
+    /// A yard from before the Line call: the pane says the yard is
+    /// too old in no red and with no notice, and the window is not
+    /// offered again.
+    #[gpui::test]
+    fn an_old_yard_says_so_in_the_line_window_and_offers_it_no_more(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": []}]},
+                ], "elsewhere": []},
+            ], "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer(
+            "Line",
+            r#"{"error": {"code": "error", "message": "no such method Line"}}"#,
+        );
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
+        click_on(cx, "line window open yardr");
+        wait(cx, "the old yard's line", |cx| {
+            view.read_with(cx, |v, _| {
+                v.model.as_ref().is_some_and(|m| m.line_unserved())
+            })
+        });
+        cx.run_until_parked();
+        assert!(drawn(cx, "line too old"));
+        assert_eq!(notice(&view, cx), "");
+        view.read_with(cx, |v, _| {
+            let model = v.model.as_ref().unwrap();
+            assert!(!model.line_offered());
+            assert!(model.line_read_for("yardr").is_none());
+        });
+        assert_eq!(yard.asked("Line").len(), 1);
     }
 
     /// A Lines call read again past an old yard says the yard is too

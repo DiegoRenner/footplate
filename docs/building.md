@@ -383,7 +383,8 @@ lines), `departures` (the departures board open under the toggle, with its
 banner), `arrival` (one
 arrival's bead open from the panel, its body holding the whole-text
 Markdown sample), `flow` (yardr's line open on
-its flow), `old-lines` (the Lines pane against a yard too old to
+its flow), `line-window` (the Line window open on yardr's depot, with
+its flows named by their source and its first stage's detail), `old-lines` (the Lines pane against a yard too old to
 serve it, saying so in plain words), `grants` (the grants view open on
 its row, with a read, an update and an `--as` grant, and a source's named
 read call and update call), `pairing` (the Pair a phone pane open on

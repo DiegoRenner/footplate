@@ -1943,6 +1943,7 @@ impl Footplate {
             | Selected::Pairing
             | Selected::Arrivals
             | Selected::Line(_)
+            | Selected::LineWindow(_)
             | Selected::NoLine
             | Selected::Bead(_) => px(0.) - self.decision.offset().y,
         };
@@ -1985,6 +1986,7 @@ impl Footplate {
             // they are whole at once.
             Selected::Arrivals
             | Selected::Line(_)
+            | Selected::LineWindow(_)
             | Selected::NoLine
             | Selected::Grants
             | Selected::Teammates
@@ -2030,6 +2032,7 @@ impl Footplate {
             | Selected::Pairing
             | Selected::Arrivals
             | Selected::Line(_)
+            | Selected::LineWindow(_)
             | Selected::NoLine
             | Selected::Bead(_) => {
                 let mut at = self.decision.offset();
@@ -2116,6 +2119,7 @@ impl Footplate {
                 | Selected::Pairing
                 | Selected::Arrivals
                 | Selected::Line(_)
+                | Selected::LineWindow(_)
                 | Selected::NoLine
                 | Selected::Bead(_),
             ) => Some(&self.decision),
@@ -2488,6 +2492,7 @@ impl Footplate {
             | Selected::Pairing
             | Selected::Arrivals
             | Selected::Line(_)
+            | Selected::LineWindow(_)
             | Selected::NoLine => {}
         }
     }
@@ -3121,6 +3126,32 @@ impl Footplate {
                                     this.change_in(session, cx, |m| m.waiting_failed(&err));
                                 }
                             }
+                        },
+                    )
+                }
+                // Made only when the Line window opens or its depot
+                // changes. A new read folds every text until it is
+                // explicitly read again.
+                Effect::Line { depot, generation } => {
+                    if session == self.session {
+                        self.line_reads.clear();
+                    }
+                    self.ask_in(
+                        session,
+                        cx,
+                        {
+                            let depot = depot.clone();
+                            move |client, _| client.line(&depot)
+                        },
+                        move |this, answered, cx| match answered {
+                            Ok(line) => this.change_in(session, cx, |m| {
+                                m.line_read(&depot, generation, line);
+                                Vec::new()
+                            }),
+                            Err(err) => this.change_in(session, cx, |m| {
+                                m.line_failed(&depot, generation, &err);
+                                Vec::new()
+                            }),
                         },
                     )
                 }
@@ -6706,6 +6737,9 @@ impl Footplate {
             Some(Selected::Line(line)) => {
                 self.talk_flow(model, line, palette, cx).into_any_element()
             }
+            Some(Selected::LineWindow(depot)) => self
+                .talk_line_window(model, depot, palette, cx)
+                .into_any_element(),
             Some(Selected::NoLine) => self.talk_no_line(model, palette, cx).into_any_element(),
             Some(Selected::Bead(bead)) => self
                 .talk_bead(model, bead, &self.decision, true, palette, cx)
@@ -6988,6 +7022,7 @@ fn shot_selected() -> Option<Selected> {
         | Ok("lines-departures") => return Some(Selected::Arrivals),
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
+        Ok("line-window") => return Some(Selected::LineWindow("yardr".into())),
         Ok("grants") => return Some(Selected::Grants),
         Ok("teammates-list") => return Some(Selected::Teammates),
         Ok("pairing") => return Some(Selected::Pairing),

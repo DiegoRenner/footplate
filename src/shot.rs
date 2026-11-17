@@ -79,7 +79,9 @@ use crate::yard::Env;
 /// arrival's bead open from the panel, its body holding the whole-text
 /// Markdown sample, one
 /// line's flow open on its row with what landed under its landed
-/// station, the Lines pane against a yard too old
+/// station, the Line window open on yardr's depot with its flows
+/// named by their source, its first stage's detail and the crew
+/// below, the Lines pane against a yard too old
 /// to serve it, saying so in plain words, the grants view open on its
 /// row with a read, an update and an `--as` grant, and a source's named
 /// read call and update call, the Pair a phone pane open on its row
@@ -220,6 +222,7 @@ pub const STATES: &[&str] = &[
     "departures",
     "arrival",
     "flow",
+    "line-window",
     "old-lines",
     "grants",
     "pairing",
@@ -1337,6 +1340,52 @@ fn populate(yard: &Yard, state: &str) {
                 r#"{"error": {"code": "not-found", "message": "an open device pairing: not found"}}"#,
             );
         }
+        // The line the Line window reads: yardr's flows named by
+        // their source — a store flow, a pack's, a repository's and
+        // a directory's — with an exec stage's cmd whole, a prompt
+        // behind Read and a labelled yard-wide rule under Other rules.
+        if state == "line-window" {
+            yard.answer_for(
+                "Line",
+                "depot",
+                "yardr",
+                &json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "next": ["review"], "outcomes": [{"name": "done", "to": "review"}],
+                         "route": {"id": "r-1", "scope": "this depot's own",
+                           "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                           "chain": [{"name": "builders", "runner": "herdr", "kind": "claude", "model": "opus",
+                             "prompt": {"path": "/home/jo/.yardr/roles/builder.md", "source": "home",
+                                        "found": "/home/jo/.yardr/roles/builder.md", "text": "Build the thing.\n",
+                                        "carriable": true}}], "limit": 3},
+                         "other_routes": [{"id": "r-2", "scope": "yard-wide",
+                           "filters": {"type": "task", "labels": ["eyes"], "priority": "P0-P1", "originator": "any"},
+                           "group": "reviewers"}],
+                         "open": 1, "stage_file": {"path": ".yardr/flows/default/new.md", "text": "Start here.\n"}},
+                        {"stage": "review", "next": ["merged"], "terminal": false,
+                         "route": {"id": "r-3", "scope": "yard-wide",
+                           "filters": {"type": "", "labels": [], "priority": "", "originator": "any"},
+                           "chain": [{"name": "assembly", "when": "Weekly<80", "runner": "exec", "cmd": "scripts/merge-local --fast"}],
+                           "limit": 1},
+                         "other_routes": [], "open": 0},
+                        {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]},
+                    {"name": "managed", "type": "", "source": "pack starter", "stages": [
+                        {"stage": "new", "next": [], "terminal": false,
+                         "route": {"id": "r-4", "scope": "yard-wide",
+                           "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                           "chain": [{"name": "people", "runner": "manual", "members": ["jo"]}], "limit": 1},
+                         "other_routes": [], "open": 0}]},
+                    {"name": "repo", "type": "", "source": "repo@abcdef0", "stages": [
+                        {"stage": "new", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                    {"name": "dirflow", "type": "", "source": "repo (directory)", "directory": "/home/jo/notes", "stages": [
+                        {"stage": "inbox", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                ], "crew": [{"name": "yardmaster", "prompt": {"path": "/home/jo/.yardr/roles/yardmaster.md",
+                              "source": "file", "found": "/home/jo/.yardr/roles/yardmaster.md",
+                              "text": "Mind the yard.\n", "carriable": true}},
+                            {"name": "signalman"}]}})
+                .to_string(),
+            );
+        }
     }
     match state {
         // The yard at an address is opened from the settings, not from
@@ -1385,6 +1434,7 @@ fn populate(yard: &Yard, state: &str) {
         | "departures"
         | "arrival"
         | "flow"
+        | "line-window"
         | "old-lines"
         | "switcher"
         | "switcher-shut"
@@ -4565,6 +4615,39 @@ mod tests {
                         "{state}: {err:?}"
                     );
                     assert!(!crate::model::screen_over_the_link(&err), "{state}");
+                }
+                "line-window" => {
+                    // The window's read of yardr's depot: its flows
+                    // named by their source, an exec stage's cmd
+                    // whole, a prompt's text and a labelled yard-wide
+                    // rule under the first stage's Other rules.
+                    let line = yard.client().line("yardr").unwrap();
+                    assert_eq!(line.depot, "yardr", "{state}");
+                    let sources: Vec<&str> =
+                        line.flows.iter().map(|flow| flow.source.as_str()).collect();
+                    assert_eq!(
+                        sources,
+                        ["store", "pack starter", "repo@abcdef0", "repo (directory)"],
+                        "{state}"
+                    );
+                    assert_eq!(line.flows[3].directory, "/home/jo/notes", "{state}");
+                    let first = &line.flows[0].stages[0];
+                    assert_eq!(first.other_routes[0].scope, "yard-wide", "{state}");
+                    assert_eq!(first.other_routes[0].filters.labels, ["eyes"], "{state}");
+                    assert_eq!(
+                        line.flows[0].stages[1].route.as_ref().unwrap().chain[0].cmd,
+                        "scripts/merge-local --fast",
+                        "{state}"
+                    );
+                    assert_eq!(
+                        first.route.as_ref().unwrap().chain[0]
+                            .prompt
+                            .as_ref()
+                            .unwrap()
+                            .text,
+                        "Build the thing.\n",
+                        "{state}"
+                    );
                 }
                 _ => unreachable!("a state with no coverage: {state}"),
             }

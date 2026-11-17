@@ -233,6 +233,7 @@ pub fn name(yard: &str, target: &Selected) -> String {
         Selected::Yard => "yard".to_string(),
         Selected::Arrivals => "arrivals".to_string(),
         Selected::Line(line) => format!("line:{line}"),
+        Selected::LineWindow(depot) => format!("line window:{depot}"),
         Selected::NoLine => "no line".to_string(),
         Selected::Bead(bead) => format!("bead:{bead}"),
     };
@@ -276,6 +277,7 @@ fn row_in_yard(name: &str) -> Option<Selected> {
         "decision" => Some(Selected::Decision(of.to_string())),
         "waiting" => Some(Selected::Waiting(of.to_string())),
         "line" => Some(Selected::Line(of.to_string())),
+        "line window" => Some(Selected::LineWindow(of.to_string())),
         "bead" => Some(Selected::Bead(of.to_string())),
         _ => None,
     }

@@ -67,6 +67,14 @@ The window, its state and the yard:
     through `src/setup.rs`.
   - `src/window/keys.rs`: the contexts the window's key bindings answer in,
     and the tables the cheatsheet names for each view.
+  - `src/window/line.rs`: the Line window: the depot and flow pickers,
+    the stage track in the flow map's words, warnings for beads stranded
+    outside a flow, the stage detail with its
+    Rule line, chain, Other rules and next stages, its stage file and
+    prompts each behind Read (Edit faint until slice B on a prompt a
+    card can carry, none on a stage file), and the crew prompts below,
+    over the `Line` call alone, read when the window opens or its
+    depot changes.
   - `src/window/metrics.rs`: the window's measures: fixed sizes in pixels,
     sizes the words set in rems, the char budgets of the rows that end a long
     string in an ellipsis (`ui::shorten`), and the small functions that fit a

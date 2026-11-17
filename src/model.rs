@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use crate::api::{
     self, AboutBead, Arrival, Arrivals, AskWeight, Asks, Bead, BeadAsk, BeadNote, BlobRef,
     CrewMember, DecidedAsk, DevicePairing, Event, Flow, FlowBead, FlowDepot, Flows, GrantGiven,
-    Identity, Letter, Me, Notification, OpenAsk, Parked, Peer, Ran, Reaction, Run, Secret, Setup,
-    SourceGrant, Teammate, TelemetryPreview, Uninvited, User,
+    Identity, Letter, Line, LineFilters, LineFlow, LineOutcome, LineStage, Me, Notification,
+    OpenAsk, Parked, Peer, Ran, Reaction, Run, Secret, Setup, SourceGrant, Teammate,
+    TelemetryPreview, Uninvited, User,
 };
 use crate::markdown;
 use crate::select;
@@ -464,6 +465,11 @@ pub enum Selected {
     Arrivals,
     /// One line's flows, by depot name, in the served order.
     Line(String),
+    /// The Line window for one depot, by depot name: the depot's flows
+    /// read whole through `Line`, with who serves each stage, its rules
+    /// and its prompts. It has no row of the list: it opens from the
+    /// depot's line in Lines, and that row stands open for it.
+    LineWindow(String),
     /// The beads travelling with no line, newest change first. It stands
     /// only while any travel.
     NoLine,
@@ -487,9 +493,11 @@ impl Selected {
             | Selected::Grants
             | Selected::Teammates
             | Selected::Pairing => Mode::Decisions,
-            Selected::Arrivals | Selected::Line(_) | Selected::NoLine | Selected::Bead(_) => {
-                Mode::Timetable
-            }
+            Selected::Arrivals
+            | Selected::Line(_)
+            | Selected::LineWindow(_)
+            | Selected::NoLine
+            | Selected::Bead(_) => Mode::Timetable,
         }
     }
 }
@@ -995,6 +1003,10 @@ pub enum Effect {
     Arrivals,
     /// `Flows`; answered to [`Model::flows`].
     Flows,
+    /// `Line` with `depot`; answered to [`Model::line_read`] or
+    /// [`Model::line_failed`]. `generation` keeps an older answer from
+    /// replacing the line most recently opened.
+    Line { depot: String, generation: u64 },
     /// `SourceGrants`; answered to [`Model::grants`].
     Grants,
     /// `Teammates`; answered to [`Model::teammates`].
@@ -1224,6 +1236,20 @@ pub struct Model {
     /// The yard has no Flows call: as above, for the flows half of the
     /// Lines view.
     flows_too_old: bool,
+    /// The Line window's read of one depot, as `Line` answered it:
+    /// none where the window was not opened, where the yard serves no
+    /// such call to this window, and where the read failed. It is
+    /// read only when the window opens or its depot changes, never
+    /// with the state, and never again on an event.
+    line: Option<Line>,
+    /// Why the line is empty, in the window's words; `None` where it
+    /// was read, or the yard serves no such call here.
+    line_notice: Option<String>,
+    /// The yard has no Line call: one from before the Line window.
+    /// The window is not offered again, and the call is not made.
+    line_unserved: bool,
+    /// A newer Line read supersedes every answer from an earlier open.
+    line_generation: u64,
     /// The yard's operator, as its settings name them: who the grants
     /// view is offered to, and no one else.
     operator: String,
@@ -1531,7 +1557,8 @@ impl Model {
         let order = self.order_in(mode);
         selected
             .filter(|s| {
-                (mode == Mode::Timetable && matches!(s, Selected::Bead(_)))
+                (mode == Mode::Timetable
+                    && matches!(s, Selected::Bead(_) | Selected::LineWindow(_)))
                     || self.stands(mode, &order, s)
             })
             .or_else(|| match mode {
@@ -3040,6 +3067,71 @@ impl Model {
             return true;
         }
         false
+    }
+
+    /// Whether the Line window is offered: the window runs as the
+    /// yard's operator, and the yard has not said it serves no such
+    /// call to this window. A read that failed is offered still: the
+    /// pane says so, and opening it tries again.
+    pub fn line_offered(&self) -> bool {
+        self.is_operator() && !self.line_unserved
+    }
+
+    /// The line as read: every flow of its depot, whole. `None` where
+    /// none was read for the depot the window stands on.
+    pub fn line_read_for(&self, depot: &str) -> Option<&Line> {
+        self.line.as_ref().filter(|line| line.depot == depot)
+    }
+
+    /// Why the line is empty, in the window's words; `None` where it
+    /// was read, or the yard serves no such call here.
+    pub fn line_notice(&self) -> Option<&str> {
+        self.line_notice.as_deref()
+    }
+
+    /// Whether the yard has no Line call: one from before the Line
+    /// window, which the pane says and which is offered no more.
+    pub fn line_unserved(&self) -> bool {
+        self.line_unserved
+    }
+
+    /// Whether an answer still belongs to the Line window open now.
+    fn line_read_is_current(&self, depot: &str, generation: u64) -> bool {
+        self.line_generation == generation
+            && self.selected.as_ref().is_some_and(
+                |selected| matches!(selected, Selected::LineWindow(open) if open == depot),
+            )
+    }
+
+    /// The line as read again. An answer for a depot that is no longer
+    /// open, or for an older open of the same depot, says nothing.
+    pub fn line_read(&mut self, depot: &str, generation: u64, line: Line) {
+        if !self.line_read_is_current(depot, generation) || line.depot != depot {
+            return;
+        }
+        self.line = Some(line);
+        self.line_notice = None;
+        self.line_unserved = false;
+    }
+
+    /// The line could not be read. A yard without the call has none
+    /// to show: the pane says it is too old, in no red, the window is
+    /// not offered again, and no notice is raised. Anything else is
+    /// said in the pane, which opening tries again.
+    pub fn line_failed(&mut self, depot: &str, generation: u64, err: &api::Error) {
+        if !self.line_read_is_current(depot, generation) {
+            return;
+        }
+        match line_too_old(err) {
+            true => {
+                self.line = None;
+                self.line_notice = None;
+                self.line_unserved = true;
+            }
+            false => {
+                self.line_notice = Some(format!("the line could not be read: {err}"));
+            }
+        }
     }
 
     /// One line's flows as served, when the yard serves the line.
@@ -5118,7 +5210,9 @@ impl Model {
 
     /// Whether the yard has the row `sel` to open.
     pub fn has_row(&self, sel: &Selected) -> bool {
-        matches!(sel, Selected::Bead(_)) || self.order().contains(sel)
+        matches!(sel, Selected::Bead(_))
+            || matches!(sel, Selected::LineWindow(depot) if self.depot(depot).is_some())
+            || self.order().contains(sel)
     }
 
     /// Opens a row of a list: a bead, one dealt with, the grants, a
@@ -5297,6 +5391,19 @@ impl Model {
                 false => Vec::new(),
                 true => Vec::new(),
             },
+            // A fresh open always reads again. Clearing the old answer
+            // lets a failure speak in the pane instead of leaving stale
+            // data there while the new read is in flight.
+            Some(Selected::LineWindow(depot)) if self.line_offered() => {
+                self.line_generation = self.line_generation.wrapping_add(1);
+                self.line = None;
+                self.line_notice = None;
+                vec![Effect::Line {
+                    depot,
+                    generation: self.line_generation,
+                }]
+            }
+            Some(Selected::LineWindow(_)) => Vec::new(),
             _ => Vec::new(),
         }
     }
@@ -6299,7 +6406,8 @@ impl Model {
         }
         let order = self.order_in(self.mode);
         if self.selected.as_ref().is_some_and(|s| {
-            (self.mode == Mode::Timetable && matches!(s, Selected::Bead(_)))
+            (self.mode == Mode::Timetable
+                && matches!(s, Selected::Bead(_) | Selected::LineWindow(_)))
                 || self.stands(self.mode, &order, s)
         }) {
             return Vec::new();
@@ -7080,6 +7188,141 @@ pub fn screen_over_the_link(err: &api::Error) -> bool {
 /// hosted yard by its edge, and a yard from before it served the call down
 /// the link refuses it there.
 pub const SCREEN_ON_THE_YARD: &str = "the screen is read on the yard's machine";
+
+/// Whether the yard has no Line call: one from before the Line
+/// window, which says it has no such method. That is no error: the
+/// pane says the yard is too old, in plain words, the window is not
+/// offered again, and no notice is raised.
+pub fn line_too_old(err: &api::Error) -> bool {
+    matches!(err, api::Error::Refused { message, .. } if message.starts_with("no such method"))
+}
+
+/// What the Line window's pane says of a yard from before the call,
+/// in place of the line it would draw: plain words, never the wire's
+/// method name, and never in red.
+pub const LINE_TOO_OLD: &str =
+    "this yard's yardr is older than the Line window (it needs yardr from 17 Nov 2026 or later)";
+
+/// Who serves a stage, in the flow map's words: `agents` for a herdr
+/// group, `script` for an exec one, `people` for a manual one, `peer`
+/// for another yard's, `end` where entering the stage closes the
+/// bead, and `nobody` where no route serves it. The representative
+/// route's first group decides, as on the map.
+pub fn line_who(stage: &LineStage) -> &'static str {
+    if stage.terminal {
+        return "end";
+    }
+    let Some(group) = stage.route.as_ref().and_then(|route| route.chain.first()) else {
+        return "nobody";
+    };
+    match group.runner.as_str() {
+        "herdr" => "agents",
+        "exec" => "script",
+        "manual" => "people",
+        "peer" => "peer",
+        _ => "nobody",
+    }
+}
+
+/// Every filter a route sets, in words, each shown as unset where it
+/// is unset: `type any · labels none · priority any · for the
+/// operator`. A set filter stands as the yard serves it.
+pub fn line_filter_words(filters: &LineFilters) -> String {
+    let kind = match filters.filter_type.is_empty() {
+        true => "type any".to_string(),
+        false => format!("type {}", filters.filter_type),
+    };
+    let labels = match filters.labels.is_empty() {
+        true => "labels none".to_string(),
+        false => format!("labels {}", filters.labels.join(", ")),
+    };
+    let priority = match filters.priority.is_empty() {
+        true => "priority any".to_string(),
+        false => format!("priority {}", filters.priority),
+    };
+    let originator = match filters.originator.as_str() {
+        "" => "for the operator".to_string(),
+        "any" => "for any originator".to_string(),
+        originator => format!("for {originator}"),
+    };
+    format!("{kind} · {labels} · {priority} · {originator}")
+}
+
+/// A route's Rule line: its id, its scope in the yard's words (`this
+/// depot's own` or `yard-wide`, read as it stands wherever the rule
+/// stands), and every filter it sets.
+pub fn line_rule_words(id: &str, scope: &str, filters: &LineFilters) -> String {
+    format!("{id} · {scope} · {}", line_filter_words(filters))
+}
+
+/// One move the flow offers, including its retry limit and where it
+/// sends a bead after that limit.
+pub fn line_outcome_words(outcome: &LineOutcome) -> String {
+    let mut words = format!("{} on {}", outcome.to, outcome.name);
+    if let Some(max) = outcome.max {
+        words.push_str(&format!(", max {max} rounds"));
+    }
+    if !outcome.then_stage.is_empty() {
+        words.push_str(&format!(" then {}", outcome.then_stage));
+    }
+    words
+}
+
+/// One flow's picker words: its name with its source beside it, a
+/// directory flow with its directory named: `default (store)`,
+/// `default (pack starter)`, `default (repo@abcdef0)`, `default
+/// (repo (directory) /home/jo/notes)`, and a typed flow as
+/// `task · default (store)`.
+pub fn line_flow_words(flow: &LineFlow) -> String {
+    let name = line_flow_heading(flow);
+    match flow.directory.is_empty() {
+        true => format!("{name} ({})", flow.source),
+        false => format!("{name} ({} {})", flow.source, flow.directory),
+    }
+}
+
+/// A flow's picker identity: its type, name, source and directory keep
+/// same-named flows of different types or sources apart.
+pub fn line_flow_key(flow: &LineFlow) -> String {
+    format!(
+        "{}\0{}\0{}\0{}",
+        flow.flow_type, flow.name, flow.source, flow.directory
+    )
+}
+
+/// The flow's name in the picker, with a type where it is one flow of
+/// that type: `task · default` beside an untyped `default`.
+pub fn line_flow_heading(flow: &LineFlow) -> String {
+    match flow.flow_type.is_empty() {
+        true => flow.name.clone(),
+        false => format!("{} · {}", flow.flow_type, flow.name),
+    }
+}
+
+/// What a group of a chain is, beside its name: its runner with, for
+/// a herdr group, its kind and model, for an exec group its `cmd`
+/// whole, for a manual group its members, and for a peer group its yard.
+pub fn line_group_words(group: &crate::api::LineGroup) -> String {
+    let mut parts: Vec<String> = vec![group.runner.clone()];
+    match group.runner.as_str() {
+        "herdr" => {
+            if !group.kind.is_empty() {
+                parts.push(format!("kind {}", group.kind));
+            }
+            if !group.model.is_empty() {
+                parts.push(format!("model {}", group.model));
+            }
+        }
+        "exec" => parts.push(format!("cmd {}", group.cmd)),
+        "manual" => match group.members.is_empty() {
+            true => parts.push("anyone may move a bead on".to_string()),
+            false => parts.push(group.members.join(", ")),
+        },
+        "peer" if !group.yard.is_empty() => parts.push(group.yard.clone()),
+        _ => {}
+    }
+    parts.join(" · ")
+}
 
 /// Whether the yard has no telemetry calls: one from before them, or one
 /// whose listener serves them to no such device, which it says in the
@@ -13799,6 +14042,245 @@ mod tests {
             assert_eq!(m.notice, format!("the teammates could not be read: {err}"));
             m.notice.clear();
         }
+    }
+
+    /// The Line window is the operator's alone, read only when it
+    /// opens or its depot changes: a yard from before the call is
+    /// said too old in the pane, in plain words, is offered no more
+    /// and raises no notice; its words name who serves a stage, a
+    /// rule with every filter and each flow by its source.
+    #[test]
+    fn the_line_window_reads_on_open_and_says_an_old_yard_so() {
+        let refused = |message: &str| api::Error::Refused {
+            code: "error".into(),
+            message: message.into(),
+        };
+        assert!(line_too_old(&refused("no such method Line")));
+        assert!(!line_too_old(&refused("the line is closed")));
+        assert!(LINE_TOO_OLD.contains("older than the Line window"));
+        assert!(!LINE_TOO_OLD.contains("no such method"));
+
+        // The words of the window: who, the Rule line with unset
+        // filters shown, an Other rule, and each flow by its source.
+        let filters = LineFilters::default();
+        assert_eq!(
+            line_filter_words(&filters),
+            "type any · labels none · priority any · for the operator"
+        );
+        assert_eq!(
+            line_rule_words(
+                "r-2",
+                "yard-wide",
+                &LineFilters {
+                    filter_type: "task".into(),
+                    labels: vec!["eyes".into()],
+                    priority: "P0-P1".into(),
+                    originator: "any".into(),
+                }
+            ),
+            "r-2 · yard-wide · type task · labels eyes · priority P0-P1 · for any originator"
+        );
+        assert_eq!(
+            line_outcome_words(&LineOutcome {
+                name: "changes".into(),
+                to: "draft".into(),
+                max: Some(2),
+                then_stage: "parked".into(),
+            }),
+            "draft on changes, max 2 rounds then parked"
+        );
+        assert_eq!(
+            line_outcome_words(&LineOutcome {
+                name: "retry".into(),
+                to: "draft".into(),
+                max: Some(2),
+                ..Default::default()
+            }),
+            "draft on retry, max 2 rounds"
+        );
+        assert_eq!(
+            line_outcome_words(&LineOutcome {
+                name: "retry".into(),
+                to: "draft".into(),
+                then_stage: "parked".into(),
+                ..Default::default()
+            }),
+            "draft on retry then parked"
+        );
+        let stage = |runner: &str, terminal: bool| LineStage {
+            stage: "new".into(),
+            terminal,
+            route: Some(crate::api::LineRoute {
+                chain: vec![crate::api::LineGroup {
+                    name: "builders".into(),
+                    runner: runner.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(line_who(&stage("herdr", false)), "agents");
+        assert_eq!(line_who(&stage("exec", false)), "script");
+        assert_eq!(line_who(&stage("manual", false)), "people");
+        assert_eq!(line_who(&stage("peer", false)), "peer");
+        assert_eq!(line_who(&stage("herdr", true)), "end");
+        assert_eq!(
+            line_who(&LineStage {
+                route: None,
+                ..Default::default()
+            }),
+            "nobody"
+        );
+        assert_eq!(
+            line_flow_words(&LineFlow {
+                name: "default".into(),
+                source: "pack starter".into(),
+                ..Default::default()
+            }),
+            "default (pack starter)"
+        );
+        assert_eq!(
+            line_flow_words(&LineFlow {
+                name: "default".into(),
+                flow_type: "task".into(),
+                source: "store".into(),
+                ..Default::default()
+            }),
+            "task · default (store)"
+        );
+        assert_ne!(
+            line_flow_key(&LineFlow {
+                name: "default".into(),
+                source: "store".into(),
+                ..Default::default()
+            }),
+            line_flow_key(&LineFlow {
+                name: "default".into(),
+                flow_type: "task".into(),
+                source: "store".into(),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            line_flow_words(&LineFlow {
+                name: "default".into(),
+                source: "repo (directory)".into(),
+                directory: "/home/jo/notes".into(),
+                ..Default::default()
+            }),
+            "default (repo (directory) /home/jo/notes)"
+        );
+
+        let line_state = || {
+            let mut state = yard(&[]);
+            state.operator = "jo".into();
+            state.flows = Flows {
+                depots: vec![
+                    FlowDepot {
+                        name: "yardr".into(),
+                        ..Default::default()
+                    },
+                    FlowDepot {
+                        name: "notes".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+            state
+        };
+        // Not the operator's: not offered, and opening reads nothing.
+        let mut state = line_state();
+        state.operator = "someone-else".into();
+        let (mut m, _) = Model::new(state, Mode::Timetable, None);
+        assert!(!m.line_offered());
+        assert_eq!(m.select(Selected::LineWindow("yardr".into())), Vec::new());
+        // The operator's: opening and reopening read the line, and a
+        // depot change reads the new depot's line.
+        let (mut m, _) = Model::new(line_state(), Mode::Timetable, None);
+        assert!(m.line_offered());
+        let first = m.select(Selected::LineWindow("yardr".into()));
+        assert_eq!(
+            first,
+            vec![Effect::Line {
+                depot: "yardr".into(),
+                generation: 1,
+            }]
+        );
+        m.line_read(
+            "yardr",
+            1,
+            Line {
+                depot: "yardr".into(),
+                ..Default::default()
+            },
+        );
+        // Reopening reads again; an answer from before that open cannot
+        // replace it, even when it is for the same depot.
+        assert_eq!(
+            m.select(Selected::LineWindow("yardr".into())),
+            vec![Effect::Line {
+                depot: "yardr".into(),
+                generation: 2,
+            }]
+        );
+        assert!(m.line_read_for("yardr").is_none());
+        m.line_read(
+            "yardr",
+            1,
+            Line {
+                depot: "yardr".into(),
+                ..Default::default()
+            },
+        );
+        assert!(m.line_read_for("yardr").is_none());
+        let notes = m.select(Selected::LineWindow("notes".into()));
+        assert_eq!(
+            notes,
+            vec![Effect::Line {
+                depot: "notes".into(),
+                generation: 3,
+            }]
+        );
+        m.line_read(
+            "yardr",
+            2,
+            Line {
+                depot: "yardr".into(),
+                ..Default::default()
+            },
+        );
+        assert!(m.line_read_for("yardr").is_none());
+        m.line_failed("yardr", 2, &refused("no such method Line"));
+        assert!(!m.line_unserved());
+        assert_eq!(m.line_notice(), None);
+        m.line_read(
+            "notes",
+            3,
+            Line {
+                depot: "notes".into(),
+                ..Default::default()
+            },
+        );
+        assert!(m.line_read_for("notes").is_some());
+        // An old yard: too old in the pane, no notice, not offered.
+        m.line_failed("notes", 3, &refused("no such method Line"));
+        assert!(m.line_unserved());
+        assert!(!m.line_offered());
+        assert!(m.notice.is_empty(), "{}", m.notice);
+        assert_eq!(m.select(Selected::LineWindow("notes".into())), Vec::new());
+        // Any other failure is said in the pane, and offered still.
+        let (mut m, _) = Model::new(line_state(), Mode::Timetable, None);
+        let request = m.select(Selected::LineWindow("yardr".into()));
+        assert_eq!(request.len(), 1);
+        m.line_failed("yardr", 1, &refused("the line is closed"));
+        assert!(!m.line_unserved());
+        assert!(m.line_offered());
+        assert_eq!(
+            m.line_notice(),
+            Some("the line could not be read: the line is closed")
+        );
     }
 
     /// The Telemetry section is the operator's alone, on a yard that serves

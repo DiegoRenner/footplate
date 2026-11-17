@@ -536,6 +536,210 @@ pub struct FlowBead {
     pub entered_stage_at: String,
 }
 
+/// What `Line` answers: one depot's line whole — every flow that
+/// governs the depot, its stages in the flow's order with who serves
+/// each, its stage file, and the prompts of its groups and of the crew.
+/// The operator's to read: a `cmd` and a prompt are told to a device of
+/// the operator alone. No env file path stands anywhere in it.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct Line {
+    pub depot: String,
+    /// `git` or `dir`, as the depot is.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default, deserialize_with = "or_default")]
+    pub flows: Vec<LineFlow>,
+    #[serde(default, deserialize_with = "or_default")]
+    pub crew: Vec<LineCrew>,
+}
+
+/// One flow of a depot's line: the depot's own (an empty type) or a
+/// bead type's, with where it comes from and any beads stranded outside
+/// its stages.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineFlow {
+    pub name: String,
+    /// The bead type it governs, `""` for the depot's own.
+    #[serde(default, rename = "type")]
+    pub flow_type: String,
+    /// `repo@<commit>`, `repo (directory)`, `pack <name>` or `store`.
+    #[serde(default)]
+    pub source: String,
+    /// The directory a dir depot's directory flow was read from;
+    /// empty on any other flow.
+    #[serde(default)]
+    pub directory: String,
+    /// Beads stranded in this flow at stages it no longer has.
+    #[serde(default, deserialize_with = "or_default")]
+    pub warnings: Vec<String>,
+    #[serde(default, deserialize_with = "or_default")]
+    pub stages: Vec<LineStage>,
+}
+
+/// One stage of a line flow: where a bead in it may move, who serves
+/// it, and its stage file where it has one.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineStage {
+    pub stage: String,
+    #[serde(default, deserialize_with = "or_default")]
+    pub next: Vec<String>,
+    #[serde(default, deserialize_with = "or_default")]
+    pub outcomes: Vec<LineOutcome>,
+    /// Entering the stage closes the bead.
+    #[serde(default)]
+    pub terminal: bool,
+    /// The stage's representative route, whole; absent where no
+    /// route serves the stage, which `warnings` then says.
+    #[serde(default)]
+    pub route: Option<LineRoute>,
+    #[serde(default, deserialize_with = "or_default")]
+    pub other_routes: Vec<LineOther>,
+    /// The open beads in the stage that this flow governs.
+    #[serde(default)]
+    pub open: usize,
+    #[serde(default, deserialize_with = "or_default")]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub stage_file: Option<LineStageFile>,
+}
+
+/// How work in a stage can end, as the flow offers it.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineOutcome {
+    pub name: String,
+    pub to: String,
+    /// How many rounds back to `to` this outcome allows; absent
+    /// where there is no limit.
+    #[serde(default)]
+    pub max: Option<u64>,
+    /// The stage it sends the bead to once `max` rounds are used;
+    /// empty where there is no limit.
+    #[serde(default, rename = "then")]
+    pub then_stage: String,
+}
+
+/// A stage's representative route, whole: the route a probe bead of
+/// the depot, of the flow's type at the default priority with no
+/// labels reading as the operator's, would take.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineRoute {
+    pub id: String,
+    /// `this depot's own` or `yard-wide`, as the yard words it.
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub filters: LineFilters,
+    #[serde(default, deserialize_with = "or_default")]
+    pub chain: Vec<LineGroup>,
+    /// The first group's seat limit, `0` pausing the group; absent
+    /// where the first group is not in the yard's groups.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Every filter a route sets, each shown as unset where it is unset:
+/// an empty type takes any, empty labels none in particular, an
+/// empty priority any, and an empty originator the operator's alone.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineFilters {
+    #[serde(default, rename = "type")]
+    pub filter_type: String,
+    #[serde(default, deserialize_with = "or_default")]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub priority: String,
+    /// `""` takes the operator's alone, `any` every originator's.
+    #[serde(default)]
+    pub originator: String,
+}
+
+/// One group of a route's chain, in order, with its quota condition
+/// where it carries one and what its runner is.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineGroup {
+    pub name: String,
+    /// The quota condition for this group; empty where it always holds.
+    #[serde(default, rename = "when")]
+    pub when: String,
+    /// `herdr`, `exec`, `manual` or `peer`.
+    #[serde(default)]
+    pub runner: String,
+    /// An exec group's command, whole; empty on any other runner.
+    #[serde(default)]
+    pub cmd: String,
+    /// A herdr group's kind; empty on any other runner.
+    #[serde(default, rename = "kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub model: String,
+    /// The linked yard for a peer group; empty on any other runner.
+    #[serde(default)]
+    pub yard: String,
+    #[serde(default, deserialize_with = "or_default")]
+    pub members: Vec<String>,
+    #[serde(default)]
+    pub prompt: Option<LinePrompt>,
+}
+
+/// Every other effective route serving a stage, behind its
+/// representative: its id, scope and filters, and its chain's first group.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineOther {
+    pub id: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub filters: LineFilters,
+    pub group: String,
+}
+
+/// A prompt as the line read names it: the path the config names,
+/// where the text was found, the text whole, and whether a card can
+/// carry it. One that cannot be read names the paths tried and fails
+/// nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LinePrompt {
+    pub path: String,
+    /// `depot`, `home`, `pack <name>` or `file`; empty where not found.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub found: String,
+    /// The depot base commit the prompt was read at; empty elsewhere.
+    #[serde(default)]
+    pub commit: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub digest: String,
+    #[serde(default)]
+    pub carriable: bool,
+    /// Why a card cannot carry it; empty where it can.
+    #[serde(default)]
+    pub why: String,
+    #[serde(default, deserialize_with = "or_default")]
+    pub tried: Vec<String>,
+    #[serde(default)]
+    pub error: String,
+}
+
+/// A stage's file: its path as `flow show` names it, and its text whole.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineStageFile {
+    pub path: String,
+    #[serde(default)]
+    pub text: String,
+}
+
+/// One crew member of the line, with its prompt where its config
+/// names one; a member with none carries its name alone.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LineCrew {
+    pub name: String,
+    #[serde(default)]
+    pub prompt: Option<LinePrompt>,
+}
+
 /// One source's grant to one holder: what of it they may call, and as
 /// whom, with when, by whom and on which card each call was given. What
 /// `yardr source grants` prints, and footplate's grants view lists. A
@@ -4340,6 +4544,16 @@ impl Client {
         }
     }
 
+    /// One depot's line: every flow that governs the depot, with its
+    /// stages in the flow's order, who serves each stage, its stage
+    /// file and the prompts of its groups and of the crew, whole. The
+    /// operator's to read: on the socket the operator's alone, and over
+    /// the listener a device of the operator's. Made only when the
+    /// Line window opens or its depot changes.
+    pub fn line(&self, depot: &str) -> Result<Line> {
+        self.answer("Line", json!({ "depot": depot }))
+    }
+
     /// Every grant of the yard's sources: who may make which calls of
     /// each, and as whom, with when, by whom and on which card each call
     /// was given. What `yardr source grants` prints. The operator's to
@@ -5315,6 +5529,7 @@ const READS: &[&str] = &[
     "Waiting",
     "Arrivals",
     "Flows",
+    "Line",
     "SourceGrants",
     "SessionScreen",
     "TelemetryShow",
@@ -9661,6 +9876,75 @@ mod tests {
         assert!(preview.source_days.is_empty());
         assert!(preview.request.is_none());
         assert_eq!(preview.no_batch, "off");
+    }
+
+    #[test]
+    fn line_asks_by_depot_and_answers_flows_rules_prompts_and_crew() {
+        // A yard from before the call says so, as of any method.
+        let old = Yard::start();
+        let err = old.client().line("yardr").unwrap_err();
+        assert_eq!(err.to_string(), "no such method Line");
+        let yard = Yard::start();
+        yard.answer(
+            "Line",
+            r#"{"result": {"depot": "yardr", "kind": "git", "flows": [
+              {"name": "default", "type": "", "source": "repo@abcdef0", "warnings": ["bead yd-old is stranded"], "stages": [
+                {"stage": "new", "next": ["review"], "outcomes": [{"name": "done", "to": "review"}],
+                 "terminal": false,
+                 "route": {"id": "r-1", "scope": "yard-wide",
+                   "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                   "chain": [{"name": "builders", "runner": "herdr", "kind": "claude", "model": "opus",
+                     "prompt": {"path": "roles/builder.md", "source": "depot", "found": ".yardr/roles/builder.md", "text": "Build it.\n", "carriable": false, "why": "it is a relative path, read against each depot"}}],
+                   "limit": 3},
+                 "other_routes": [{"id": "r-2", "scope": "yard-wide",
+                   "filters": {"type": "task", "labels": ["eyes"], "priority": "P0-P1", "originator": "any"},
+                   "group": "reviewers"}],
+                 "open": 2, "stage_file": {"path": ".yardr/flows/default/new.md", "text": "Start here.\n"}},
+                {"stage": "run", "next": [], "terminal": false,
+                 "route": {"id": "r-3", "scope": "this depot's own",
+                   "filters": {"type": "", "labels": [], "priority": "", "originator": "any"},
+                   "chain": [{"name": "assembly", "when": "Weekly<80", "runner": "exec", "cmd": "scripts/merge-local --fast"}],
+                   "limit": 1},
+                 "other_routes": [], "open": 0},
+                {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}
+              ]}],
+            "crew": [{"name": "yardmaster", "prompt": {"path": "/home/jo/.yardr/roles/yardmaster.md", "source": "file", "found": "/home/jo/.yardr/roles/yardmaster.md", "text": "Mind the yard.\n", "carriable": true}},
+                     {"name": "signalman"}]}}"#,
+        );
+        let line = yard.client().line("yardr").unwrap();
+        assert_eq!(yard.asked("Line"), vec![json!({"depot": "yardr"})]);
+        assert_eq!(line.depot, "yardr");
+        assert_eq!(line.kind, "git");
+        assert_eq!(line.flows[0].source, "repo@abcdef0");
+        assert_eq!(line.flows[0].warnings, ["bead yd-old is stranded"]);
+        let stage = &line.flows[0].stages[0];
+        assert_eq!(stage.route.as_ref().unwrap().id, "r-1");
+        assert_eq!(stage.route.as_ref().unwrap().scope, "yard-wide");
+        assert_eq!(stage.other_routes[0].filters.labels, ["eyes"]);
+        assert_eq!(stage.other_routes[0].group, "reviewers");
+        assert_eq!(
+            stage.route.as_ref().unwrap().chain[0]
+                .prompt
+                .as_ref()
+                .unwrap()
+                .text,
+            "Build it.\n"
+        );
+        assert_eq!(stage.stage_file.as_ref().unwrap().text, "Start here.\n");
+        assert_eq!(
+            line.flows[0].stages[1].route.as_ref().unwrap().chain[0].cmd,
+            "scripts/merge-local --fast"
+        );
+        assert_eq!(
+            line.flows[0].stages[1].route.as_ref().unwrap().chain[0].when,
+            "Weekly<80"
+        );
+        assert!(line.flows[0].stages[2].terminal);
+        assert_eq!(
+            line.crew[0].prompt.as_ref().unwrap().text,
+            "Mind the yard.\n"
+        );
+        assert!(line.crew[1].prompt.is_none());
     }
 
     #[test]
