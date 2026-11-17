@@ -25,11 +25,13 @@ use super::ask::{
 };
 use super::expanded_text_key;
 use super::keys::{APPROVE_KEY, SETUP_SECRET_CONTEXT};
-use super::metrics::{ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL};
+use super::metrics::{
+    ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL, ROW_LAMP, ROW_LAMP_GAP,
+};
 use super::rail::{Picture, RailTip, UnsentNote, post_note};
 use super::state::{Adding, ApprovalPairing};
 use super::ui::{field, keys_row, send_held, small_button};
-use super::words::{bead_words, decide_words, decided_words, left_words, row_summary, time_column};
+use super::words::{bead_words, decide_words, decided_words, left_words};
 use super::{AskAbout, Decline, Expand, FocusFilter, FocusWords};
 use crate::api::{self};
 use crate::draft::{self, Attachment};
@@ -40,7 +42,7 @@ use crate::model::{
 };
 use crate::select::{self};
 use crate::theme::{
-    Palette, TYPE_BODY, TYPE_LABEL, TYPE_META, TYPE_QUESTION, TYPE_TITLE, yard_color,
+    Palette, TYPE_BODY, TYPE_CODE, TYPE_LABEL, TYPE_META, TYPE_QUESTION, TYPE_TITLE, yard_color,
 };
 use crate::unlock;
 
@@ -3117,10 +3119,11 @@ impl Footplate {
         chips
     }
 
-    /// One bead's open row: the question wrapped to two lines, then
-    /// whose it is, what it wants and how long it waits. A bead with
-    /// several open asks carries its title instead, with each ask beneath
-    /// it in the same shape.
+    /// One bead's open row: a lamp and the bead's title, then a line for
+    /// each open ask, what it wants and its number before the question,
+    /// and last who asks and how long the oldest ask waits, with the
+    /// bead's short id at the right. The lamp is the accent's: every row
+    /// here waits on the person.
     pub(crate) fn decision_row(
         &self,
         row: DecisionRow,
@@ -3128,55 +3131,94 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let sel = Selected::Decision(row.bead.clone());
-        // The right-hand time column's words, before the row's lines
-        // move into the column below.
-        let time = time_column(&row.sub, select::mono(cx), palette)
-            .map(|time| time.debug_selector(|| format!("decision time {}", row.bead)));
+        let mono = select::mono(cx);
         let mut col = div()
             .flex()
             .flex_col()
-            // Resolve the available row width before measuring the
-            // head, so it wraps within the row.
             .flex_1()
             .min_w_0()
+            .gap(px(2.))
             .child(
                 div()
-                    .line_clamp(2)
-                    .text_size(rems(TYPE_LABEL))
-                    .font_weight(FontWeight::MEDIUM)
-                    .debug_selector(|| format!("decision head {}", row.bead))
-                    .child(row.head),
+                    .flex()
+                    .items_center()
+                    .gap(px(ROW_LAMP_GAP))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .debug_selector(|| format!("decision lamp {}", row.bead))
+                            .size(px(ROW_LAMP))
+                            .rounded_full()
+                            .flex_none()
+                            .bg(palette.accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rems(TYPE_LABEL))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .debug_selector(|| format!("decision head {}", row.bead))
+                            .child(row.head),
+                    ),
             );
+        // The asks' lines and the last line stand under the title, past
+        // the lamp.
+        let indent = px(ROW_LAMP + ROW_LAMP_GAP);
         for ask in &row.asks {
             let seq = ask.ask;
-            col = col
-                .child(
-                    div()
-                        .line_clamp(2)
-                        .text_size(rems(TYPE_LABEL))
-                        .font_weight(FontWeight::MEDIUM)
-                        .debug_selector(|| format!("decision ask {seq} {}", row.bead))
-                        .child(ask.head.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette.faint)
-                        .truncate()
-                        .debug_selector(|| format!("decision meta {seq} {}", row.bead))
-                        .child(ask.meta.clone()),
-                );
-        }
-        if !row.sub.is_empty() {
             col = col.child(
                 div()
+                    .pl(indent)
+                    .truncate()
                     .text_xs()
                     .text_color(palette.faint)
-                    .truncate()
-                    .debug_selector(|| format!("decision sub {}", row.bead))
-                    .child(row_summary(&row.sub).to_string()),
+                    .debug_selector(|| format!("decision ask {seq} {}", row.bead))
+                    .child(
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette.text)
+                                    .child(format!("{} {seq}", ask.kind)),
+                            )
+                            .child(div().flex_none().child("·"))
+                            .child(div().min_w_0().truncate().child(ask.head.clone())),
+                    ),
             );
         }
+        let mut short = div()
+            .flex_none()
+            .text_size(rems(TYPE_CODE))
+            .text_color(palette.faint)
+            .debug_selector(|| format!("decision id {}", row.bead))
+            .child(row.short);
+        if let Some(mono) = mono {
+            short = short.font_family(mono);
+        }
+        col = col.child(
+            div()
+                .pl(indent)
+                .flex()
+                .items_baseline()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(palette.faint)
+                        .debug_selector(|| format!("decision sub {}", row.bead))
+                        .child(row.sub),
+                )
+                .child(short),
+        );
         div()
             .id(SharedString::from(format!("decision {}", row.bead)))
             .debug_selector(|| format!("decision row {}", row.bead))
@@ -3185,9 +3227,6 @@ impl Footplate {
             .py_1p5()
             .rounded_md()
             .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
             .cursor_pointer()
             .border_1()
             .border_color(rgba(0x00000000))
@@ -3197,23 +3236,6 @@ impl Footplate {
             })
             .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
             .child(col)
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_baseline()
-                    .gap_2()
-                    // The right-hand time column (mono 12) beside the
-                    // id: how long the bead's oldest ask waits.
-                    .children(time)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.faint)
-                            .debug_selector(|| format!("decision id {}", row.bead))
-                            .child(row.short),
-                    ),
-            )
     }
 
     /// The grants row, last of decisions where the window is the
@@ -4083,10 +4105,12 @@ impl Footplate {
                 let mut marked = false;
                 for option in &ask.options {
                     // A lever: its key plate, its label and its
-                    // consequence. The chosen and the recommended lever
-                    // are outlined in the accent, never filled: the
-                    // card's one filled control is its Answer button
-                    // below (the one-fill rule).
+                    // consequence. The chosen lever alone is outlined in
+                    // the accent, never filled: the card's one filled
+                    // control is its Answer button below (the one-fill
+                    // rule). The recommended one is chosen until another
+                    // is picked; after that only its plate's words say so,
+                    // so two outlines never stand at once.
                     let n = option.number;
                     let recommended = ask.recommend != 0 && n == ask.recommend;
                     let chosen = n == answered;
@@ -4099,7 +4123,7 @@ impl Footplate {
                             .cursor_pointer()
                             .rounded(px(RADIUS_CONTROL))
                             .border_1()
-                            .border_color(match chosen || recommended {
+                            .border_color(match chosen {
                                 true => palette.accent,
                                 false => rgba(0x00000000),
                             })
@@ -4111,7 +4135,7 @@ impl Footplate {
                             .flex_wrap()
                             .items_center()
                             .gap_2()
-                            .when(!chosen && !recommended, |el| {
+                            .when(!chosen, |el| {
                                 el.hover(|style| style.border_color(palette.line))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -4124,7 +4148,7 @@ impl Footplate {
                                     .py_0p5()
                                     .rounded_md()
                                     .border_1()
-                                    .border_color(match recommended || chosen {
+                                    .border_color(match chosen {
                                         true => palette.accent,
                                         false => palette.line,
                                     })

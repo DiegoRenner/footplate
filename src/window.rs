@@ -10485,16 +10485,16 @@ yardr.dev
         );
     }
 
-    /// An open decision row has the same width constraint as a decided row:
-    /// its head must be measured at the space left before the bead id.
+    /// An open decision row's title is cut at the row's end, and its last
+    /// line, who asks and how long, before the bead id with a gap.
     #[gpui::test]
-    fn a_long_decision_head_ends_before_the_bead_id_with_a_gap(cx: &mut TestAppContext) {
+    fn a_long_decision_head_ends_inside_its_row_and_the_sub_before_the_id(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer(
             "UserAsks",
             &json!({"result": {"open": [
-                {"bead": "bead-a", "bead_title": "Move the links", "topic": "topic:linear-out",
+                {"bead": "bead-a", "bead_title": "A deliberately long title that must be cut before the row's end", "topic": "topic:linear-out",
                  "ask": 3, "question": "A deliberately long question that must be cut before the id", "asker": "yardmaster",
                  "since": "2026-10-10T10:00:00Z"},
                 {"bead": "bead-b", "bead_title": "Short", "topic": "topic:linear-out",
@@ -10523,11 +10523,17 @@ yardr.dev
         wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-a"));
 
         let long = bounds_of(cx, "decision head bead-a");
+        let row = bounds_of(cx, "decision row bead-a");
+        let sub = bounds_of(cx, "decision sub bead-a");
         let id = bounds_of(cx, "decision id bead-a");
         let short = bounds_of(cx, "decision head bead-b");
         assert!(
-            long.right() < id.left(),
-            "the long head touches the id: {long:?} {id:?}"
+            long.right() <= id.right() && id.right() <= row.right(),
+            "the long head leaves its row: {long:?} {row:?}"
+        );
+        assert!(
+            sub.right() < id.left(),
+            "the sub touches the id: {sub:?} {id:?}"
         );
         assert_eq!(
             short.size.width, long.size.width,
@@ -14290,7 +14296,7 @@ yardr.dev
         yard.answer(
             "UserAsks",
             &json!({"result": {"open": [
-                {"bead": "bead-a", "bead_title": "Move the links", "topic": "topic:linear-out",
+                {"bead": "bead-a", "bead_title": "A deliberately long title that must be cut before the row's end", "topic": "topic:linear-out",
                  "ask": 3, "question": "A deliberately long question that must be cut before the id", "asker": "yardmaster",
                  "since": "2026-10-10T10:00:00Z"},
                 {"bead": "bead-b", "bead_title": "Short", "topic": "topic:linear-out",
@@ -14350,8 +14356,8 @@ yardr.dev
                 "at {text} px the head leaves its row: {long:?} {first:?}"
             );
             assert!(
-                long.right() < id.left() && id.right() <= first.right(),
-                "at {text} px the long head touches the id: {long:?} {id:?}"
+                long.right() <= id.right() && id.right() <= first.right(),
+                "at {text} px the long head leaves its row: {long:?} {id:?}"
             );
             assert_eq!(
                 short.size.width, long.size.width,
@@ -32899,8 +32905,8 @@ yardr.dev
     }
 
     /// The same forged run ask in the decisions list: the row draws the
-    /// question whole, wrapped to two lines, with whose it is beneath it,
-    /// as a mail row draws its wrapped text with its sender.
+    /// question's first line alone, as the Decided row does, with whose it
+    /// is beneath it, and neither the forged sentence nor the command.
     #[gpui::test]
     fn a_forged_run_ask_s_row_shows_its_question_with_whose(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -32915,17 +32921,19 @@ yardr.dev
             cx,
         );
         assert!(drawn(cx, "decision head bead-s"));
-        // The row's drawn text: the question whole, whose beneath it.
+        assert!(drawn(cx, "decision ask 7 bead-s"));
+        // The row's drawn text: the bead's title, the question's first line
+        // after what it wants, and whose it is beneath them.
         let row = view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
             model.decision_groups(&chrono::Utc::now())[0].rows[0].clone()
         });
-        assert_eq!(row.head, question);
-        assert!(
-            row.sub.starts_with("yardmaster · approval wanted ·"),
-            "{:?}",
-            row.sub
+        assert_eq!(row.head, "The link with airy");
+        assert_eq!(
+            (row.asks[0].kind, row.asks[0].head.as_str()),
+            ("run", "Take more?")
         );
+        assert!(row.sub.starts_with("yardmaster ·"), "{:?}", row.sub);
     }
 
     /// The same forged run ask in the Decided list, put aside: the row

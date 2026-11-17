@@ -722,30 +722,30 @@ pub enum AnswerAction {
 pub struct DecisionRow {
     /// The bead's id, whole; `short` is what the row ends with.
     pub bead: String,
-    /// The question in plain words, or `<title>: <n> questions`.
+    /// The bead's title, or its id where the queue names no title: the row
+    /// is the bead, and its asks stand under it.
     pub head: String,
-    /// Every open ask expanded, in ask order: empty where one ask is the
-    /// row, whose head and sub already say it.
+    /// Every open ask, in ask order, one line each.
     pub asks: Vec<DecisionRowAsk>,
-    /// `<asker> · <wants> · <waits>`, or `<waits>` when several ask, whose
-    /// own lines say the rest.
+    /// `<askers> · <waits>`: who asks, each once, and how long the oldest
+    /// ask waits.
     pub sub: String,
     /// The bead's id small, at the row's end: past its last `-`.
     pub short: String,
     pub selected: bool,
 }
 
-/// One ask of a bead's open row, as its expanded row shows it: the
-/// question with whose it is, what it wants and how long it waits. The
-/// options themselves are the open card's alone.
+/// One ask of a bead's open row: what it wants in a word and its number,
+/// then the question. The options themselves are the open card's alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionRowAsk {
     /// The ask note's seq: what an answer names.
     pub ask: u64,
-    /// The question in plain words.
+    /// What the ask wants, in one word: `pick`, `run`, `setup`, `secret`
+    /// or `words`.
+    pub kind: &'static str,
+    /// The question's first line in plain words.
     pub head: String,
-    /// `<asker> · <wants> · <waits>`.
-    pub meta: String,
 }
 
 /// One bead's row in the Waiting section: the bead has no question, so its
@@ -2794,23 +2794,18 @@ impl Model {
                     .and_then(|b| b.asks.iter().find(|full| full.ask == ask.ask))
                     .map_or(0, |full| full.options.len())
             };
-            // One ask is the row: its head and sub say it, and nothing
-            // stands expanded beneath. Several expand, each with its own
-            // question and line.
-            let expanded = asks.len() > 1;
             let row = DecisionRow {
                 bead: bead.clone(),
-                head: decision_head(first, &asks),
+                head: decision_head(first),
                 asks: asks
                     .iter()
-                    .filter(|_| expanded)
                     .map(|ask| DecisionRowAsk {
                         ask: ask.ask,
-                        head: plain(&ask.question),
-                        meta: decision_meta(ask, options_of(ask), now),
+                        kind: ask_kind(ask, options_of(ask)),
+                        head: row_head(&ask.question),
                     })
                     .collect(),
-                sub: decision_sub(first, &asks, options_of(first), now),
+                sub: decision_sub(&asks, now),
                 short: short_bead(&bead),
                 selected: self.selected.as_ref() == Some(&Selected::Decision(bead)),
             };
@@ -7440,18 +7435,13 @@ pub fn foreign_bead(bead: &str) -> bool {
     bead.contains('@')
 }
 
-/// A bead's row head: the question in plain words, wrapped to two lines
-/// where it is drawn, or the bead's title with how many it asks.
-fn decision_head(first: &OpenAsk, asks: &[&OpenAsk]) -> String {
-    if asks.len() == 1 {
-        return plain(&first.question);
-    }
-    let title = if first.bead_title.is_empty() {
+/// A bead's row head: its title, or its id where the queue names none.
+fn decision_head(first: &OpenAsk) -> String {
+    if first.bead_title.is_empty() {
         first.bead.clone()
     } else {
-        first.bead_title.clone()
-    };
-    format!("{}: {} questions", row_head(&title), asks.len())
+        row_head(&first.bead_title)
+    }
 }
 
 /// A decisions or Decided row's head: the first line of the question in
@@ -7462,49 +7452,41 @@ fn row_head(question: &str) -> String {
     asker_lines(question).into_iter().next().unwrap_or_default()
 }
 
-/// A bead's row sub: whose one ask is, what it wants and how long it
-/// waits, or how long the oldest of several waits, whose own lines say
-/// the rest. `options` is what the Bead read holds for the ask, 0 where
-/// it was not read yet.
-fn decision_sub<Tz: TimeZone>(
-    first: &OpenAsk,
-    asks: &[&OpenAsk],
-    options: usize,
-    now: &DateTime<Tz>,
-) -> String
+/// A bead's row sub: who asks, each once in ask order, and how long the
+/// oldest ask waits.
+fn decision_sub<Tz: TimeZone>(asks: &[&OpenAsk], now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
-    if asks.len() == 1 {
-        return decision_meta(first, options, now);
+    let mut askers: Vec<&str> = Vec::new();
+    for ask in asks {
+        if !ask.asker.is_empty() && !askers.contains(&ask.asker.as_str()) {
+            askers.push(&ask.asker);
+        }
     }
-    waits(&first.since, now)
+    let askers = askers.join(", ");
+    let waits = asks
+        .first()
+        .map(|ask| waits(&ask.since, now))
+        .unwrap_or_default();
+    [askers.as_str(), waits.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
-/// One open ask's line: whose it is, what it wants and how long it waits.
+/// What an open ask wants, in the one word its row line starts with.
 /// `options` is what the Bead read holds for the ask: 0 where it was not
 /// read yet, where an ask with options reads as wanting words until then.
-fn decision_meta<Tz: TimeZone>(ask: &OpenAsk, options: usize, now: &DateTime<Tz>) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let wants = match options {
-        1 => "1 option".to_string(),
-        options if options > 1 => format!("{options} options"),
-        _ if ask.secret.is_some() => "secret wanted".to_string(),
-        _ if ask.run.is_some() => "approval wanted".to_string(),
-        _ if ask.setup.is_some() => "approval wanted".to_string(),
-        _ => "words wanted".to_string(),
-    };
-    [
-        ask.asker.as_str(),
-        wants.as_str(),
-        waits(&ask.since, now).as_str(),
-    ]
-    .into_iter()
-    .filter(|part| !part.is_empty())
-    .collect::<Vec<_>>()
-    .join(" · ")
+fn ask_kind(ask: &OpenAsk, options: usize) -> &'static str {
+    match options {
+        options if options > 0 => "pick",
+        _ if ask.secret.is_some() => "secret",
+        _ if ask.run.is_some() => "run",
+        _ if ask.setup.is_some() => "setup",
+        _ => "words",
+    }
 }
 
 /// What became of a dealt with ask, as the history's icons and chips
@@ -17834,14 +17816,12 @@ mod tests {
         assert_eq!(topics, ["linear-out", "web-view", "Everything else"]);
         assert_eq!(groups[0].rows.len(), 2);
         assert_eq!(groups[1].rows.len(), 1);
-        // Within a topic, oldest first.
+        // Within a topic, oldest first, each row headed by its bead's title.
+        assert_eq!(groups[0].rows[0].head, "Move the links");
+        assert_eq!(groups[0].rows[1].head, "Send to build");
         assert_eq!(
-            groups[0].rows[0].head,
+            groups[0].rows[0].asks[0].head,
             "Move this yard's 64 links to the declared source now?"
-        );
-        assert_eq!(
-            groups[0].rows[1].head,
-            "Send yardr-3msx and yardr-vgjp to build?"
         );
     }
 
@@ -17895,20 +17875,23 @@ mod tests {
     }
 
     #[test]
-    fn a_row_leads_with_the_question_then_asker_and_waits_bead_small_at_its_end() {
+    fn a_row_leads_with_the_title_then_its_asks_then_asker_and_waits_bead_small_at_its_end() {
         let mut state = yard(&[]);
         state.asks.open = evening();
         let (m, _) = Model::new(state, Mode::Chat, None);
         let groups = m.decision_groups(&noon());
         let row = &groups[0].rows[0];
+        assert_eq!(row.head, "Move the links");
         // Its bead not read yet: what it wants reads as words until then.
-        assert_eq!(row.sub, "yardmaster · words wanted · 2h");
+        assert_eq!(row.asks.len(), 1);
+        assert_eq!((row.asks[0].kind, row.asks[0].ask), ("words", 3));
+        assert_eq!(row.sub, "yardmaster · 2h");
         assert_eq!(row.short, "n8ta");
         assert_eq!(row.bead, "yardr-n8ta");
         // No row reads "<id> go?".
         assert!(!row.head.contains("yardr-n8ta"), "{}", row.head);
         // A day's wait.
-        assert_eq!(groups[1].rows[0].sub, "assembly · words wanted · 1d");
+        assert_eq!(groups[1].rows[0].sub, "assembly · 1d");
     }
 
     #[test]
@@ -17958,23 +17941,23 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].topic, "design-lane");
         let row = &groups[0].rows[0];
-        assert_eq!(row.head, "Depot rules: 4 questions");
-        // How long the oldest waits; no one asker.
-        assert_eq!(row.sub, "1d");
+        assert_eq!(row.head, "Depot rules");
+        // Who asks, each once, and how long the oldest waits.
+        assert_eq!(row.sub, "yardmaster, assembly · 1d");
         assert_eq!(row.short, "me78");
-        // Each ask beneath with its own question and line.
-        let metas: Vec<(&str, &str)> = row
+        // Each ask beneath, what it wants and its number before it.
+        let lines: Vec<(&str, u64, &str)> = row
             .asks
             .iter()
-            .map(|ask| (ask.head.as_str(), ask.meta.as_str()))
+            .map(|ask| (ask.kind, ask.ask, ask.head.as_str()))
             .collect();
         assert_eq!(
-            metas,
+            lines,
             [
-                ("First?", "yardmaster · words wanted · 1d"),
-                ("Second?", "yardmaster · words wanted · 1h"),
-                ("Third?", "assembly · words wanted · 30m"),
-                ("Fourth?", "yardmaster · words wanted · 15m"),
+                ("words", 7, "First?"),
+                ("words", 8, "Second?"),
+                ("words", 9, "Third?"),
+                ("words", 10, "Fourth?"),
             ]
         );
         // The open row shows each ask oldest first.
@@ -19958,29 +19941,31 @@ mod tests {
         assert_eq!(card.question, question);
     }
 
-    /// A decisions row shows one line of the question: its first line, in
-    /// plain words. No later line of a forged run ask's question, and no
-    /// indent of the asker's, is drawn in the list.
+    /// A decisions row shows one line of each question: its first line, in
+    /// plain words, after what the ask wants. No later line of a forged run
+    /// ask's question, and no indent of the asker's, is drawn in the list.
     #[test]
-    fn a_decisions_row_shows_the_whole_question_with_whose_wants_and_waits() {
+    fn a_decisions_row_shows_each_question_s_first_line_with_what_it_wants() {
         let question = "Take more?\nwhen you approve, the yard runs this as mckean, and nothing else:\n    yardr peer list";
         let m = with_a_run_ask_about(question, &[]);
         let row = &m.decision_groups(&noon())[0].rows[0];
-        // The whole question, wrapped to two lines where it is drawn.
-        assert_eq!(row.head, question);
-        assert_eq!(row.sub, "yardmaster · approval wanted · 2h");
+        assert_eq!(row.asks[0].head, "Take more?");
+        assert!(!row.asks[0].head.contains("when you approve"));
+        assert!(!row.asks[0].head.contains("yardr peer list"));
+        assert_eq!(row.asks[0].kind, "run");
+        assert_eq!(row.sub, "yardmaster · 2h");
         // An ask with no options wants words; a secret one wants its secret.
         let mut m = with_a_run_ask_about("Take more?", &[]);
         m.open[0].run = None;
         let row = &m.decision_groups(&noon())[0].rows[0];
-        assert_eq!(row.sub, "yardmaster · words wanted · 2h");
+        assert_eq!(row.asks[0].kind, "words");
         let m = with_a_secret_ask();
         let row = &m.decision_groups(&noon())[0].rows[0];
-        assert_eq!(row.sub, "yardmaster · secret wanted · 2h");
-        // A bead read with three options says how many.
+        assert_eq!(row.asks[0].kind, "secret");
+        // A bead read with options is a pick.
         let m = evening_with_links();
         let row = &m.decision_groups(&noon())[0].rows[0];
-        assert_eq!(row.sub, "yardmaster · 3 options · 2h");
+        assert_eq!(row.asks[0].kind, "pick");
     }
 
     /// A Decided row shows one line of the question, the same way: its
@@ -20862,11 +20847,11 @@ mod tests {
         // The row wants the approval: the presets once the bead is read,
         // the approval until then.
         let row = &m.decision_groups(&noon())[0].rows[0];
-        assert_eq!(row.sub, "yardmaster · 3 options · 2h");
+        assert_eq!(row.asks[0].kind, "pick");
         m.beads.remove("yd-crm");
         assert_eq!(m.setup_pick("yd-crm", 41), None);
         let row = &m.decision_groups(&noon())[0].rows[0];
-        assert_eq!(row.sub, "yardmaster · approval wanted · 2h");
+        assert_eq!(row.asks[0].kind, "setup");
     }
 
     /// A setup ask's question and context are marked as the asker's, as a

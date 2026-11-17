@@ -105,6 +105,13 @@ pub(crate) const ASK_QUESTION_MIN: f32 = 200.;
 /// with the same rule.
 pub(crate) const LIST: f32 = 352.;
 
+/// A list row's lamp, in pixels: the dot before a row's title that says
+/// whose turn it is, as the crew's rows have it, and the gap after it,
+/// which the lines under the title are indented by so they stand under
+/// its first letter.
+pub(crate) const ROW_LAMP: f32 = 8.;
+pub(crate) const ROW_LAMP_GAP: f32 = 8.;
+
 /// A lever's measures, in pixels where the frame stands fixed and rems
 /// where its words do: the key plate's least height is the control's
 /// (32, the tokens' `--control-h`), its radius the control's (6), the
