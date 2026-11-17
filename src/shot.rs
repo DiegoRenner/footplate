@@ -223,6 +223,8 @@ pub const STATES: &[&str] = &[
     "arrival",
     "flow",
     "line-window",
+    "line-edit",
+    "line-sent",
     "old-lines",
     "grants",
     "pairing",
@@ -1344,7 +1346,9 @@ fn populate(yard: &Yard, state: &str) {
         // their source — a store flow, a pack's, a repository's and
         // a directory's — with an exec stage's cmd whole, a prompt
         // behind Read and a labelled yard-wide rule under Other rules.
-        if state == "line-window" {
+        // The editor's shot and the hand-off's read the same line: the
+        // builders' prompt is a file the yard wrote, named by its digest.
+        if matches!(state, "line-window" | "line-edit" | "line-sent") {
             yard.answer_for(
                 "Line",
                 "depot",
@@ -1355,8 +1359,11 @@ fn populate(yard: &Yard, state: &str) {
                          "route": {"id": "r-1", "scope": "this depot's own",
                            "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
                            "chain": [{"name": "builders", "runner": "herdr", "kind": "claude", "model": "opus",
-                             "prompt": {"path": "/home/jo/.yardr/roles/builder.md", "source": "home",
-                                        "found": "/home/jo/.yardr/roles/builder.md", "text": "Build the thing.\n",
+                             "prompt": {"path": "/home/jo/.yardr/roles/builders.c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1.md",
+                                        "source": "file",
+                                        "found": "/home/jo/.yardr/roles/builders.c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1.md",
+                                        "text": "Build the thing.\nRun the depot's test command before handing on.\n",
+                                        "digest": "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1",
                                         "carriable": true}}], "limit": 3},
                          "other_routes": [{"id": "r-2", "scope": "yard-wide",
                            "filters": {"type": "task", "labels": ["eyes"], "priority": "P0-P1", "originator": "any"},
@@ -1435,6 +1442,8 @@ fn populate(yard: &Yard, state: &str) {
         | "arrival"
         | "flow"
         | "line-window"
+        | "line-edit"
+        | "line-sent"
         | "old-lines"
         | "switcher"
         | "switcher-shut"
@@ -4616,7 +4625,7 @@ mod tests {
                     );
                     assert!(!crate::model::screen_over_the_link(&err), "{state}");
                 }
-                "line-window" => {
+                "line-window" | "line-edit" | "line-sent" => {
                     // The window's read of yardr's depot: its flows
                     // named by their source, an exec stage's cmd
                     // whole, a prompt's text and a labelled yard-wide
@@ -4645,9 +4654,17 @@ mod tests {
                             .as_ref()
                             .unwrap()
                             .text,
-                        "Build the thing.\n",
+                        "Build the thing.\nRun the depot's test command before handing on.\n",
                         "{state}"
                     );
+                    // The builders' prompt is a file the yard wrote, which
+                    // a card can carry: the editor opens over it.
+                    let prompt = first.route.as_ref().unwrap().chain[0]
+                        .prompt
+                        .as_ref()
+                        .unwrap();
+                    assert!(prompt.carriable, "{state}");
+                    assert_eq!(prompt.digest.len(), 64, "{state}");
                 }
                 _ => unreachable!("a state with no coverage: {state}"),
             }

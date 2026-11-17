@@ -384,7 +384,11 @@ banner), `arrival` (one
 arrival's bead open from the panel, its body holding the whole-text
 Markdown sample), `flow` (yardr's line open on
 its flow), `line-window` (the Line window open on yardr's depot, with
-its flows named by their source and its first stage's detail), `old-lines` (the Lines pane against a yard too old to
+its flows named by their source and its first stage's detail),
+`line-edit` (that window with the prompt editor open on the builders'
+prompt, a file the yard wrote named by its digest, and a change typed in
+it), `line-sent` (that window with the hand-off of an edit written over
+that prompt before it changed: the yardmaster's answer and Read again), `old-lines` (the Lines pane against a yard too old to
 serve it, saying so in plain words), `grants` (the grants view open on
 its row, with a read, an update and an `--as` grant, and a source's named
 read call and update call), `pairing` (the Pair a phone pane open on

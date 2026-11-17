@@ -372,6 +372,13 @@ pub struct Footplate {
     /// their key (`stagefile:<flow>:<stage>`, `prompt:<group>`,
     /// `crew:<name>`): a text a yard no longer serves is not asked.
     line_reads: HashSet<String>,
+    /// The Line window's prompt editor, while one is open: its prompt, the
+    /// text typed over the one that stands, and whether a send is on its way.
+    line_edit: Option<line::LineEdit>,
+    /// The last prompt edit the Line window sent, with the yardmaster's
+    /// answer once one has come: the window says its card will stand in
+    /// Decide, and reads where it stands whenever the line is read again.
+    line_sent: Option<line::LineSent>,
     /// How the web view answers at the setting's address (up, behind a
     /// login the browser cannot pass, or not at all): what a note's page is
     /// drawn with.
@@ -950,6 +957,8 @@ impl Footplate {
             line_flow: String::new(),
             line_stage: String::new(),
             line_reads: HashSet::new(),
+            line_edit: None,
+            line_sent: None,
             view_up: ViewUp::Unknown,
             run_up: ViewUp::Unknown,
             rows_shown: Cell::new(false),
@@ -1154,6 +1163,15 @@ impl Render for Footplate {
             // Nor with the Feedback form over it, whose fields take any
             // letter a card's keys are.
             _ if self.feedback.is_some() => CONTEXT,
+            // Nor with the focus in the Line window's prompt editor, whose
+            // field takes any letter a card's keys are.
+            _ if self
+                .line_edit
+                .as_ref()
+                .is_some_and(|edit| edit.field.focus_handle(cx).is_focused(window)) =>
+            {
+                CONTEXT
+            }
             // Nor are they for the first run, whose fields take names.
             _ if self.first_run.is_some() => CONTEXT,
             // Nor for the question before stopping, which stands where
@@ -15668,7 +15686,21 @@ yardr.dev
                        "chain": [{"name": "builders", "runner": "herdr", "kind": "claude", "model": "opus",
                          "prompt": {"path": "/home/jo/.yardr/roles/builder.md", "source": "home",
                                     "found": "/home/jo/.yardr/roles/builder.md", "text": "Build the thing.\n",
-                                    "carriable": true}}], "limit": 3},
+                                    "carriable": true}},
+                         {"name": "lengthy", "runner": "herdr", "kind": "claude",
+                          "prompt": {"path": "/home/jo/.yardr/roles/lengthy.md", "source": "home",
+                                     "found": "/home/jo/.yardr/roles/lengthy.md", "text": "A long one.\n",
+                                     "carriable": false, "why": "it is longer than the 8192 bytes a card shows"}},
+                         {"name": "texty", "runner": "herdr", "kind": "claude",
+                          "prompt": {"path": "/home/jo/.yardr/roles/texty.md", "source": "home",
+                                     "found": "/home/jo/.yardr/roles/texty.md", "text": "Odd text.\n",
+                                     "carriable": false, "why": "it is not text a card shows as written"}},
+                         {"name": "relative", "runner": "herdr", "kind": "claude",
+                          "prompt": {"path": "roles/relative.md", "source": "depot",
+                                     "found": ".yardr/roles/relative.md", "commit": "abcdef0",
+                                     "text": "A depot's own role.\n", "carriable": false,
+                                     "why": "it is a relative path, read against each depot"}},
+                         {"name": "bare", "runner": "herdr", "kind": "claude"}], "limit": 3},
                      "other_routes": [{"id": "r-2", "scope": "yard-wide",
                        "filters": {"type": "task", "labels": ["eyes"], "priority": "P0-P1", "originator": "any"},
                        "group": "reviewers"}],
@@ -15695,6 +15727,11 @@ yardr.dev
             ], "crew": [{"name": "yardmaster", "prompt": {"path": "/home/jo/.yardr/roles/yardmaster.md",
                           "source": "file", "found": "/home/jo/.yardr/roles/yardmaster.md",
                           "text": "Mind the yard.\n", "carriable": true}},
+                        {"name": "reader", "prompt": {"path": "/home/jo/.yardr/roles/reader.md",
+                          "text": "", "carriable": false,
+                          "why": "it does not stand as a regular file under the yard's home",
+                          "tried": ["/home/jo/.yardr/roles/reader.md"],
+                          "error": "open /home/jo/.yardr/roles/reader.md: no such file or directory"}},
                         {"name": "signalman"}]}})
             .to_string()
         };
@@ -15781,11 +15818,51 @@ yardr.dev
         assert!(drawn(cx, "line stagefile new text"));
         assert!(drawn(cx, "line prompt new builders text"));
         assert!(!drawn(cx, "line stagefile new edit"));
-        // The exec stage shows its group, whose words carry the cmd.
+        // Edit stands only where the read answers a prompt carriable,
+        // group and crew alike, and on nothing else: a prompt a card
+        // cannot carry (for its length, its text, or being a depot's own
+        // relative file) shows Read and the read's reason where Edit would
+        // stand, a group with no prompt says so on the stage, and a stage
+        // file says why it has none.
+        for selector in [
+            "line prompt new builders edit",
+            "line crew prompt yardmaster edit",
+        ] {
+            assert!(drawn(cx, selector), "{selector}");
+        }
+        for group in ["lengthy", "texty", "relative"] {
+            assert!(
+                drawn(cx, &format!("line prompt new {group} read")),
+                "{group}"
+            );
+            assert!(
+                drawn(cx, &format!("line prompt new {group} edit why")),
+                "{group}"
+            );
+            assert!(
+                !drawn(cx, &format!("line prompt new {group} edit")),
+                "{group}"
+            );
+        }
+        assert!(drawn(cx, "line crew prompt reader edit why"));
+        assert!(!drawn(cx, "line crew prompt reader edit"));
+        assert!(drawn(cx, "line prompt new bare none"));
+        assert!(drawn(cx, "line stagefile new edit why"));
+        // The exec stage shows its group, whose words carry the cmd, and
+        // says it has no prompt, as does a manual stage of a pack's flow.
         click_on(cx, "line stage default review");
         wait(cx, "the exec stage", |cx| {
             drawn(cx, "line chain review assembly")
         });
+        assert!(drawn(cx, "line prompt review assembly none"));
+        assert!(!drawn(cx, "line prompt review assembly edit"));
+        click_on(cx, "line flow managed pack starter");
+        wait(cx, "the manual stage", |cx| {
+            drawn(cx, "line prompt new people none")
+        });
+        assert!(!drawn(cx, "line prompt new people edit"));
+        click_on(cx, "line flow default store");
+        click_on(cx, "line stage default review");
         view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
             let line = model.line_read_for("yardr").unwrap();
@@ -15850,6 +15927,285 @@ yardr.dev
                     | "DevicePairState"
                     | "TelemetryShow"
                     | "Line"
+            )),
+            "{:?}",
+            yard.calls()
+        );
+    }
+
+    /// A prompt edit from the Line window: Edit opens the editor over the
+    /// text that stands, a group's and a crew member's alike, and Enter
+    /// breaks a line there; Send mails the yardmaster one mail whose first
+    /// lines name the depot, the group or crew member and the prompt file
+    /// and digest as the read named them, then the text whole; the window
+    /// then says the card will stand in Decide and approves nothing. The
+    /// yardmaster's answer is shown as it is with the read offered again,
+    /// and a read that finds the prompt changed says so; a mail the yard
+    /// refuses leaves the editor as it was.
+    #[gpui::test]
+    fn a_prompt_edit_is_mailed_to_the_yardmaster_and_the_card_stands_in_decide(
+        cx: &mut TestAppContext,
+    ) {
+        let digest = "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1";
+        let builders = format!("/home/jo/.yardr/roles/builders.{digest}.md");
+        let line = |crew_text: &str| {
+            json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "new", "next": ["review"], "terminal": false,
+                     "route": {"id": "r-1", "scope": "this depot's own",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "builders", "runner": "herdr", "kind": "claude",
+                         "prompt": {"path": builders, "source": "file", "found": builders,
+                                    "text": "Build the thing.\n", "digest": digest,
+                                    "carriable": true}}], "limit": 3},
+                     "other_routes": [], "open": 0}]}],
+              "crew": [{"name": "yardmaster", "prompt": {
+                          "path": "/home/jo/.yardr/roles/yardmaster.md", "source": "file",
+                          "found": "/home/jo/.yardr/roles/yardmaster.md",
+                          "text": crew_text, "carriable": true}}]}})
+            .to_string()
+        };
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": []}]}], "elsewhere": []}], "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer_for("Line", "depot", "yardr", &line("Mind the yard.\n"));
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
+        click_on(cx, "line window open yardr");
+        wait(cx, "the line window", |cx| drawn(cx, "line rule new"));
+        let typed = |view: &Entity<Footplate>, cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, cx| {
+                v.line_edit
+                    .as_ref()
+                    .map(|edit| edit.field.read(cx).text().to_string())
+            })
+        };
+
+        // Edit stands on the group's prompt and on the crew member's, and
+        // opens the editor over the text that stands. Send is held while
+        // nothing is changed, and the words say before it what it does.
+        assert!(drawn(cx, "line crew prompt yardmaster edit"));
+        click_on(cx, "line prompt new builders edit");
+        assert!(drawn(cx, "line prompt new builders editor"));
+        assert!(drawn(cx, "line prompt new builders editor words"));
+        assert_eq!(typed(&view, cx).as_deref(), Some("Build the thing.\n"));
+        click_on(cx, "line prompt new builders editor send");
+        assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
+
+        // The field is the editor's: a press in it has the focus (a press
+        // on the dim Send took it away), Enter breaks a line and sends
+        // nothing, Esc leaves the field and keeps the text, and another
+        // Edit, while text is typed, is not let drop it.
+        click_on(cx, "line prompt new builders editor");
+        cx.simulate_keystrokes("secondary-a");
+        cx.simulate_input("Build it carefully.");
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input("Build the thing.");
+        assert_eq!(
+            typed(&view, cx).as_deref(),
+            Some("Build it carefully.\nBuild the thing.")
+        );
+        cx.simulate_keystrokes("escape");
+        assert_eq!(
+            typed(&view, cx).as_deref(),
+            Some("Build it carefully.\nBuild the thing.")
+        );
+        click_on(cx, "line crew prompt yardmaster edit");
+        assert_eq!(
+            notice(&view, cx),
+            "finish or cancel the open edit of the prompt of group builders in yardr first"
+        );
+        assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
+
+        // A mail the yard refuses leaves the editor and its text as they
+        // were, with why, and sends nothing twice.
+        yard.answer(
+            "Mail",
+            r#"{"error": {"code": "error", "message": "the yardmaster is not taking mail"}}"#,
+        );
+        click_on(cx, "line prompt new builders editor send");
+        wait(cx, "the refusal", |cx| {
+            drawn(cx, "line prompt new builders editor said")
+        });
+        assert_eq!(yard.asked("Mail").len(), 1);
+        assert_eq!(
+            view.read_with(cx, |v, _| v.line_edit.as_ref().unwrap().said.clone())
+                .as_deref(),
+            Some("not sent: the yardmaster is not taking mail")
+        );
+        assert_eq!(
+            typed(&view, cx).as_deref(),
+            Some("Build it carefully.\nBuild the thing.")
+        );
+        view.read_with(cx, |v, _| assert!(v.line_sent.is_none()));
+
+        // Send mails the yardmaster, once: the depot, the group and the
+        // prompt file and digest as read, a blank line, and the text whole.
+        yard.answer("Mail", "{}");
+        // A pending request leaves its guard set. Cancel cannot remove it,
+        // and neither the button nor another call to Send makes a second
+        // mail.
+        view.update(cx, |v, cx| {
+            v.line_edit.as_mut().unwrap().sending = true;
+            cx.notify();
+        });
+        click_on(cx, "line prompt new builders editor cancel");
+        view.read_with(cx, |v, _| {
+            assert!(v.line_edit.as_ref().unwrap().sending);
+        });
+        click_on(cx, "line prompt new builders editor send");
+        view.update(cx, |v, cx| v.send_prompt_edit(cx));
+        assert_eq!(yard.asked("Mail").len(), 1);
+        view.update(cx, |v, cx| {
+            v.line_edit.as_mut().unwrap().sending = false;
+            cx.notify();
+        });
+        click_on(cx, "line prompt new builders editor send");
+        wait(cx, "the mail", |_| yard.asked("Mail").len() == 2);
+        let first = json!({"to": "yardmaster", "actor": "jo", "text": format!(
+            "depot: yardr\ngroup: builders\nprompt file: {builders}\nprompt digest: {digest}\n\nBuild it carefully.\nBuild the thing.")});
+        assert_eq!(yard.asked("Mail")[1], first);
+        wait(cx, "the hand-off", |cx| {
+            drawn(cx, "line prompt new builders sent waiting")
+        });
+        // The window says the card will stand in Decide and offers no
+        // approval: the editor is gone, the hand-off offers the read
+        // again and Clear, and nothing was approved.
+        view.read_with(cx, |v, _| assert!(v.line_edit.is_none()));
+        assert!(drawn(cx, "line prompt new builders sent read"));
+        assert!(drawn(cx, "line prompt new builders sent clear"));
+        assert!(drawn(cx, "line prompt new builders edit"));
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
+
+        // A crew member's prompt, with no digest to name, goes the same
+        // way, and takes the hand-off with it.
+        click_on(cx, "line crew prompt yardmaster edit");
+        assert_eq!(typed(&view, cx).as_deref(), Some("Mind the yard.\n"));
+        cx.simulate_input("Mind it well. ");
+        click_on(cx, "line crew prompt yardmaster editor send");
+        wait(cx, "the crew mail", |_| yard.asked("Mail").len() == 3);
+        assert_eq!(
+            yard.asked("Mail")[2],
+            json!({"to": "yardmaster", "actor": "jo", "text":
+                "depot: yardr\ncrew: yardmaster\nprompt file: /home/jo/.yardr/roles/yardmaster.md\n\nMind it well. Mind the yard.\n"})
+        );
+        wait(cx, "the crew hand-off", |cx| {
+            drawn(cx, "line crew prompt yardmaster sent waiting")
+        });
+
+        // The yardmaster's next mail is the answer, shown as it is; mail
+        // that came before the send was not.
+        let answer = "No card was filed: the prompt changed since it was read.";
+        yard.emit(
+            &json!({"seq": 31, "kind": "mail", "actor": "yardmaster", "at": "2026-10-08T09:40:00Z",
+                "data": {"to": "jo", "to_user": true, "text": answer}})
+            .to_string(),
+        );
+        wait(cx, "the answer", |cx| {
+            drawn(cx, "line crew prompt yardmaster sent answer")
+        });
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.line_sent.as_ref().unwrap().answer.as_deref(),
+                Some(answer)
+            );
+        });
+
+        // Read again reads the line again. The prompt stands as it was, so
+        // the edit is still waiting; once it reads another, the window says
+        // it changed since it was read and why, and Edit opens over the
+        // text that stands now; and once it reads as the text sent, the
+        // card was approved.
+        let sent_now = |view: &Entity<Footplate>, cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, _| {
+                let sent = v.line_sent.as_ref().unwrap();
+                let model = v.model.as_ref().unwrap();
+                let now = model
+                    .line_read_for(&sent.depot)
+                    .and_then(|line| model::line_prompt_of(line, &sent.owner));
+                model::line_sent_now(&sent.over, &sent.proposed, now)
+            })
+        };
+        let lines_read = |yard: &Yard, n: usize| yard.asked("Line").len() == n;
+        click_on(cx, "line crew prompt yardmaster sent read");
+        wait(cx, "the line read again", |_| lines_read(&yard, 2));
+        wait(cx, "the line", |cx| {
+            drawn(cx, "line crew prompt yardmaster")
+        });
+        assert_eq!(sent_now(&view, cx), model::EditNow::Waiting);
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &line("Mind the yard, differently.\n"),
+        );
+        click_on(cx, "line crew prompt yardmaster sent read");
+        wait(cx, "the changed line", |_| lines_read(&yard, 3));
+        wait(cx, "the moved hand-off", |cx| {
+            drawn(cx, "line crew prompt yardmaster sent moved")
+        });
+        assert_eq!(sent_now(&view, cx), model::EditNow::Moved);
+        click_on(cx, "line crew prompt yardmaster edit");
+        assert_eq!(
+            typed(&view, cx).as_deref(),
+            Some("Mind the yard, differently.\n")
+        );
+        click_on(cx, "line crew prompt yardmaster editor cancel");
+        view.read_with(cx, |v, _| assert!(v.line_edit.is_none()));
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &line("Mind it well. Mind the yard.\n"),
+        );
+        click_on(cx, "line crew prompt yardmaster sent read");
+        wait(cx, "the landed line", |_| lines_read(&yard, 4));
+        wait(cx, "the landed hand-off", |cx| {
+            drawn(cx, "line crew prompt yardmaster sent landed")
+        });
+        assert_eq!(sent_now(&view, cx), model::EditNow::Landed);
+        // Clear takes the hand-off away. The window approved nothing and
+        // wrote nothing but the mails.
+        click_on(cx, "line crew prompt yardmaster sent clear");
+        view.read_with(cx, |v, _| assert!(v.line_sent.is_none()));
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
+        assert!(
+            yard.calls().iter().all(|call| matches!(
+                call.as_str(),
+                "Head"
+                    | "Crew"
+                    | "Peers"
+                    | "Users"
+                    | "GetUser"
+                    | "Settings"
+                    | "UserInbox"
+                    | "Conversation"
+                    | "AckUserInbox"
+                    | "UserNotifications"
+                    | "AckUserNotifications"
+                    | "UserAsks"
+                    | "Waiting"
+                    | "Arrivals"
+                    | "Flows"
+                    | "SourceGrants"
+                    | "Teammates"
+                    | "DevicePairState"
+                    | "TelemetryShow"
+                    | "Line"
+                    | "Mail"
             )),
             "{:?}",
             yard.calls()

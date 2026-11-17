@@ -447,15 +447,71 @@ Other rules with each further rule's id, scope, filters and first
 group, its next stages, and the open beads in the stage. An exec
 stage shows its `cmd` whole; a manual stage shows its members; a
 terminal stage says entering it closes the bead. The stage file and
-each herdr group's prompt stand behind Read, with no Edit on a stage
-file, and Edit faint until a later slice on a prompt a card can carry,
-with why it cannot where it cannot; the crew's prompts stand below the
-flows the same way. It reads through `Line` when the window opens or
+each herdr group's prompt stand behind Read, and the crew's prompts
+stand below the flows the same way. A stage file has no Edit, and says
+it changes with its flow. A group with no prompt says so on the stage,
+whether a script, people or another yard serves it or the group's config
+names none. It reads through `Line` when the window opens or
 its depot changes, and at no other time: the window says to reopen it
-after an edit lands rather than pretending to be live, and it writes
-nothing. A yard from before the call says in its pane, in no red, that
-its yardr is older than the Line window, and the window is not offered
-again.
+after an edit lands rather than pretending to be live. A yard from
+before the call says in its pane, in no red, that its yardr is older
+than the Line window, and the window is not offered again.
+
+### Editing a prompt
+
+A group's prompt and a crew member's have an Edit where the `Line` read
+answers that a card can carry the prompt. That answer decides, not where
+the prompt's file stands. Where the read says a card cannot carry it, the
+read's reason stands in Edit's place, beside Read. The reasons are a text
+longer than a card shows, a text a card does not show as written, and a
+depot's own relative role file. A prompt file the yard wrote is named by
+its digest, and a row says the digest by its first twelve digits.
+
+Edit opens an editor under the prompt's row, over the text that stands,
+with the focus in it. Enter breaks a line there, as shift+Enter does, and
+sends nothing. Send is the button, and it is held while the text is blank
+or is what stands. Esc leaves the field and keeps the text. Cancel drops
+it. One editor stands at a time. Edit elsewhere, while the open editor
+holds typed text, says to finish or cancel that one first.
+
+Before Send, the editor says what Send does. The mail is the filing, so
+the text stays in the mail log. The yardmaster files a card, which will
+stand in Decide, and nothing changes until you approve it there. A
+session already running keeps the prompt it started with.
+
+Send mails the yardmaster once, through `Mail`. The first lines name the
+depot, the group or crew member, the prompt file as the read named it,
+and its digest where the read answered one. A file the yard wrote has a
+digest. A blank line follows, then the proposed text whole and nothing
+else:
+
+```text
+depot: yardr
+group: builders
+prompt file: /home/jo/.yardr/roles/builders.<digest>.md
+prompt digest: <digest>
+
+<the proposed text>
+```
+
+A crew member's prompt takes `crew: <name>` in place of the group line,
+and a prompt file the yard did not write has no digest line. The
+yardmaster files the card from the operator's own mail, and only where
+the prompt's digest now is the one it was sent. Until a filing call
+exists, it files by hand. A mail the yard refuses leaves the editor and
+its text as they were, with the reason.
+
+After Send, the window says under the prompt that the card will stand in
+Decide. It draws no approval, since every approval is Decide's. The
+yardmaster's next mail to you shows there as it is, beside Read again,
+which reads the line again, and Clear. When the line is read again, the
+window compares the prompt with the one the edit was written over. The
+same prompt means the edit is still waiting. The text that was sent
+means the card was approved. Anything else, a new digest, file or text,
+means the prompt changed since it was read, and the window says what
+changed. A card over the old text is stale, and the yard refuses to
+approve it. Edit then opens over the text that stands now. One hand-off
+stands at a time, and it goes when the yard is switched.
 
 ## Settings
 

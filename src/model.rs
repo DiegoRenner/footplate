@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::api::{
     self, AboutBead, Arrival, Arrivals, AskWeight, Asks, Bead, BeadAsk, BeadNote, BlobRef,
     CrewMember, DecidedAsk, DevicePairing, Event, Flow, FlowBead, FlowDepot, Flows, GrantGiven,
-    Identity, Letter, Line, LineFilters, LineFlow, LineOutcome, LineStage, Me, Notification,
-    OpenAsk, Parked, Peer, Ran, Reaction, Run, Secret, Setup, SourceGrant, Teammate,
+    Identity, Letter, Line, LineFilters, LineFlow, LineOutcome, LinePrompt, LineStage, Me,
+    Notification, OpenAsk, Parked, Peer, Ran, Reaction, Run, Secret, Setup, SourceGrant, Teammate,
     TelemetryPreview, Uninvited, User,
 };
 use crate::markdown;
@@ -3081,6 +3081,13 @@ impl Model {
     /// none was read for the depot the window stands on.
     pub fn line_read_for(&self, depot: &str) -> Option<&Line> {
         self.line.as_ref().filter(|line| line.depot == depot)
+    }
+
+    /// The newest event of the yard's stream this model has taken in: what
+    /// the window marks a mail it sends with, so that only mail after it
+    /// can be the answer.
+    pub fn events_seen(&self) -> u64 {
+        self.events_seen
     }
 
     /// Why the line is empty, in the window's words; `None` where it
@@ -7322,6 +7329,176 @@ pub fn line_group_words(group: &crate::api::LineGroup) -> String {
         _ => {}
     }
     parts.join(" · ")
+}
+
+/// The crew member a prompt edit is mailed to: the conversation the
+/// window calls that, and the one that files cards on the operator's own
+/// mail.
+pub const YARDMASTER: &str = "yardmaster";
+
+/// Whose prompt an edit in the Line window is for: a group's, which
+/// every stage the group serves shares, or a crew member's, which no
+/// stage carries.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PromptOwner {
+    Group(String),
+    Crew(String),
+}
+
+impl PromptOwner {
+    /// The word that names the kind of owner in the mail and the
+    /// window: `group` or `crew`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PromptOwner::Group(_) => "group",
+            PromptOwner::Crew(_) => "crew",
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            PromptOwner::Group(name) | PromptOwner::Crew(name) => name,
+        }
+    }
+}
+
+/// The mail a prompt edit sends the yardmaster: first lines that name the
+/// depot, the group or crew member, and the prompt file and digest as the
+/// `Line` read named them (the digest only where the read answered one,
+/// which is for a file the yard wrote), a blank line, and then the
+/// proposed text whole and nothing else, so that what stands in the mail
+/// log is what the card will show.
+pub fn line_edit_mail(
+    depot: &str,
+    owner: &PromptOwner,
+    prompt: &LinePrompt,
+    proposed: &str,
+) -> String {
+    let mut mail = format!(
+        "depot: {depot}\n{}: {}\nprompt file: {}\n",
+        owner.kind(),
+        owner.name(),
+        prompt.path
+    );
+    if !prompt.digest.is_empty() {
+        mail.push_str(&format!("prompt digest: {}\n", prompt.digest));
+    }
+    mail.push('\n');
+    mail.push_str(proposed);
+    mail
+}
+
+/// Whether a prompt is another than the one an edit was written over:
+/// its file, its digest or its text differ. The yardmaster files the
+/// card only where the digest it was sent still stands, and the card's
+/// own check refuses an approval where the prompt moved, so this is what
+/// the window says of a prompt that it read again.
+pub fn line_prompt_moved(was: &LinePrompt, now: &LinePrompt) -> bool {
+    was.path != now.path || was.digest != now.digest || was.text != now.text
+}
+
+/// A prompt's path as a row of the Line window says it: a digest in a
+/// file name (the 64 hex digits of a prompt the yard wrote, as
+/// `roles/<name>.<digest>.md`) is said by its first twelve, so that the
+/// row keeps its Read and Edit in view. The mail names the path whole.
+pub fn line_path_words(path: &str) -> String {
+    path.split('.')
+        .map(
+            |part| match part.len() == 64 && part.bytes().all(|b| b.is_ascii_hexdigit()) {
+                true => format!("{}…", line_short_digest(part)),
+                false => part.to_string(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// A digest as the window says it: its first twelve hex digits, enough
+/// to tell two prompts apart where the whole is in the mail.
+pub fn line_short_digest(digest: &str) -> &str {
+    digest.get(..12).unwrap_or(digest)
+}
+
+/// What the stage detail says after `Prompt · <group> · ` of a group the
+/// read answers no prompt for. A script or people serve the stage, so no
+/// agent reads one, and another yard's agent reads its own. A herdr group
+/// whose config names none has none to change here either.
+pub fn line_no_prompt_words(group: &crate::api::LineGroup) -> &'static str {
+    match group.runner.as_str() {
+        "exec" => "none, since a script serves this stage",
+        "manual" => "none, since people serve this stage",
+        "peer" => "none here, since another yard serves this stage",
+        "herdr" => "none, since the group's config names no prompt",
+        _ => "none",
+    }
+}
+
+/// What changed in the prompt an edit was written over, once the line is
+/// read again: its digest, its file, its text, or that the line reads no
+/// such prompt now. A sentence, for the hand-off to say.
+pub fn line_moved_words(was: &LinePrompt, now: Option<&LinePrompt>) -> String {
+    let Some(now) = now else {
+        return "The line reads no such prompt now.".to_string();
+    };
+    if !was.digest.is_empty() && !now.digest.is_empty() && was.digest != now.digest {
+        return format!(
+            "It stood as digest {} when you wrote the edit and stands as digest {} now.",
+            line_short_digest(&was.digest),
+            line_short_digest(&now.digest)
+        );
+    }
+    if was.path != now.path {
+        return format!(
+            "It stood in {} when you wrote the edit and stands in {} now.",
+            was.path, now.path
+        );
+    }
+    "Its text is not the text you wrote the edit over.".to_string()
+}
+
+/// The prompt of `owner` as `line` reads it: the first the read gives a
+/// group of that name in any stage's chain (a group's prompt is one text
+/// wherever it serves), or the crew member's own. `None` where the read
+/// has none, as where the line has changed since an edit was written.
+pub fn line_prompt_of<'a>(line: &'a Line, owner: &PromptOwner) -> Option<&'a LinePrompt> {
+    match owner {
+        PromptOwner::Group(name) => line
+            .flows
+            .iter()
+            .flat_map(|flow| &flow.stages)
+            .filter_map(|stage| stage.route.as_ref())
+            .flat_map(|route| &route.chain)
+            .find(|group| group.name == *name && group.prompt.is_some())
+            .and_then(|group| group.prompt.as_ref()),
+        PromptOwner::Crew(name) => line
+            .crew
+            .iter()
+            .find(|member| member.name == *name)
+            .and_then(|member| member.prompt.as_ref()),
+    }
+}
+
+/// Where a prompt edit that was sent stands once the line is read again:
+/// still waiting for its card, landed (the prompt now reads as the text
+/// that was sent, so the card was approved), or moved (the prompt is
+/// another than the one the edit was written over, so a card over it is
+/// refused as stale where it is approved, and the yardmaster files none
+/// whose digest is not the one that stands).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EditNow {
+    Waiting,
+    Landed,
+    Moved,
+}
+
+/// Where the edit written over `over` and sent as `proposed` stands, by
+/// the prompt the line reads now (`None` where it reads none).
+pub fn line_sent_now(over: &LinePrompt, proposed: &str, now: Option<&LinePrompt>) -> EditNow {
+    match now {
+        Some(now) if !line_prompt_moved(over, now) => EditNow::Waiting,
+        Some(now) if now.text == proposed => EditNow::Landed,
+        _ => EditNow::Moved,
+    }
 }
 
 /// Whether the yard has no telemetry calls: one from before them, or one
@@ -14132,6 +14309,167 @@ mod tests {
             }),
             "nobody"
         );
+        // A group with no prompt says why on its stage, by its runner:
+        // no editor stands over a stage that no agent reads a prompt for.
+        let group = |runner: &str| crate::api::LineGroup {
+            runner: runner.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            line_no_prompt_words(&group("exec")),
+            "none, since a script serves this stage"
+        );
+        assert_eq!(
+            line_no_prompt_words(&group("manual")),
+            "none, since people serve this stage"
+        );
+        assert_eq!(
+            line_no_prompt_words(&group("peer")),
+            "none here, since another yard serves this stage"
+        );
+        assert_eq!(
+            line_no_prompt_words(&group("herdr")),
+            "none, since the group's config names no prompt"
+        );
+        // A prompt moved where its file, digest or text is another; the
+        // digest is said by its first twelve digits.
+        let prompt = LinePrompt {
+            path: "/home/jo/.yardr/roles/b.aaaaaaaaaaaaaaaa.md".into(),
+            digest: "aaaaaaaaaaaaaaaa".into(),
+            text: "Build.\n".into(),
+            carriable: true,
+            ..Default::default()
+        };
+        assert!(!line_prompt_moved(&prompt, &prompt.clone()));
+        for moved in [
+            LinePrompt {
+                path: "/home/jo/.yardr/roles/b.bbbbbbbbbbbbbbbb.md".into(),
+                ..prompt.clone()
+            },
+            LinePrompt {
+                digest: "bbbbbbbbbbbbbbbb".into(),
+                ..prompt.clone()
+            },
+            LinePrompt {
+                text: "Build, then test.\n".into(),
+                ..prompt.clone()
+            },
+        ] {
+            assert!(line_prompt_moved(&prompt, &moved));
+        }
+        assert_eq!(line_short_digest(&prompt.digest), "aaaaaaaaaaaa");
+        assert_eq!(line_short_digest("abc"), "abc");
+        // A yard-written file's name carries its digest whole; a row says
+        // it short, and leaves every other path as it is.
+        let digest = "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1";
+        assert_eq!(
+            line_path_words(&format!("/home/jo/.yardr/roles/keepers.{digest}.md")),
+            "/home/jo/.yardr/roles/keepers.c34328a2b187….md"
+        );
+        assert_eq!(
+            line_path_words("/home/jo/.yardr/roles/builder.md"),
+            "/home/jo/.yardr/roles/builder.md"
+        );
+        // Where an edit sent over that prompt stands by what the line
+        // reads again: the same prompt, the text sent now standing, or
+        // another prompt (or none) under it.
+        let landed = LinePrompt {
+            path: "/home/jo/.yardr/roles/b.bbbbbbbbbbbbbbbb.md".into(),
+            digest: "bbbbbbbbbbbbbbbb".into(),
+            text: "Build, then test.\n".into(),
+            ..prompt.clone()
+        };
+        let other = LinePrompt {
+            text: "Build, then ship.\n".into(),
+            ..landed.clone()
+        };
+        let sent = "Build, then test.\n";
+        assert_eq!(
+            line_sent_now(&prompt, sent, Some(&prompt)),
+            EditNow::Waiting
+        );
+        assert_eq!(line_sent_now(&prompt, sent, Some(&landed)), EditNow::Landed);
+        assert_eq!(line_sent_now(&prompt, sent, Some(&other)), EditNow::Moved);
+        assert_eq!(line_sent_now(&prompt, sent, None), EditNow::Moved);
+        // What moved is said by the digest, else the file, else the text.
+        assert_eq!(
+            line_moved_words(&prompt, Some(&landed)),
+            "It stood as digest aaaaaaaaaaaa when you wrote the edit and stands as digest bbbbbbbbbbbb now."
+        );
+        let plain = LinePrompt {
+            digest: String::new(),
+            ..prompt.clone()
+        };
+        assert_eq!(
+            line_moved_words(
+                &plain,
+                Some(&LinePrompt {
+                    path: "/home/jo/.yardr/roles/b.md".into(),
+                    ..plain.clone()
+                })
+            ),
+            "It stood in /home/jo/.yardr/roles/b.aaaaaaaaaaaaaaaa.md when you wrote the edit and stands in /home/jo/.yardr/roles/b.md now."
+        );
+        assert_eq!(
+            line_moved_words(
+                &plain,
+                Some(&LinePrompt {
+                    text: "Other.\n".into(),
+                    ..plain.clone()
+                })
+            ),
+            "Its text is not the text you wrote the edit over."
+        );
+        assert_eq!(
+            line_moved_words(&prompt, None),
+            "The line reads no such prompt now."
+        );
+        // A prompt is found by its owner: a group's under any stage's
+        // chain, a crew member's among the crew.
+        let line = Line {
+            depot: "yardr".into(),
+            flows: vec![LineFlow {
+                stages: vec![LineStage {
+                    route: Some(crate::api::LineRoute {
+                        chain: vec![
+                            crate::api::LineGroup {
+                                name: "scripts".into(),
+                                ..Default::default()
+                            },
+                            crate::api::LineGroup {
+                                name: "builders".into(),
+                                prompt: Some(prompt.clone()),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            crew: vec![crate::api::LineCrew {
+                name: "yardmaster".into(),
+                prompt: Some(other.clone()),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            line_prompt_of(&line, &PromptOwner::Group("builders".into())),
+            Some(&prompt)
+        );
+        assert_eq!(
+            line_prompt_of(&line, &PromptOwner::Crew("yardmaster".into())),
+            Some(&other)
+        );
+        assert_eq!(
+            line_prompt_of(&line, &PromptOwner::Group("scripts".into())),
+            None
+        );
+        assert_eq!(
+            line_prompt_of(&line, &PromptOwner::Crew("builders".into())),
+            None
+        );
         assert_eq!(
             line_flow_words(&LineFlow {
                 name: "default".into(),
@@ -14281,6 +14619,51 @@ mod tests {
             m.line_notice(),
             Some("the line could not be read: the line is closed")
         );
+    }
+
+    /// A prompt edit is one mail whose first lines name the depot, the
+    /// group or crew member and the prompt file and digest as the read
+    /// named them, a blank line, and then the proposed text whole and
+    /// nothing else: a text that opens with lines like those, ends in a
+    /// line break, or holds blank lines goes out as it is.
+    #[test]
+    fn a_prompt_edit_is_mailed_as_its_file_and_digest_then_its_text_whole() {
+        let digest = "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1";
+        let written = LinePrompt {
+            path: format!("/home/jo/.yardr/roles/keepers.{digest}.md"),
+            source: "file".into(),
+            digest: digest.into(),
+            text: "Keep the inbox.\n".into(),
+            carriable: true,
+            ..Default::default()
+        };
+        let group = PromptOwner::Group("builders".into());
+        assert_eq!(
+            line_edit_mail(
+                "yardr",
+                &group,
+                &written,
+                "Keep the inbox, and the sent mail.\n"
+            ),
+            format!(
+                "depot: yardr\ngroup: builders\nprompt file: /home/jo/.yardr/roles/keepers.{digest}.md\nprompt digest: {digest}\n\nKeep the inbox, and the sent mail.\n"
+            )
+        );
+        // A crew member's, over a file the yard did not write: no digest
+        // line, since the read answered none.
+        let plain = LinePrompt {
+            path: "/home/jo/.yardr/roles/yardmaster.md".into(),
+            digest: String::new(),
+            ..written.clone()
+        };
+        let crew = PromptOwner::Crew("yardmaster".into());
+        let tricky = "depot: elsewhere\n\n\nMind the yard.\n\n";
+        assert_eq!(
+            line_edit_mail("yardr", &crew, &plain, tricky),
+            "depot: yardr\ncrew: yardmaster\nprompt file: /home/jo/.yardr/roles/yardmaster.md\n\ndepot: elsewhere\n\n\nMind the yard.\n\n"
+        );
+        assert_eq!((group.kind(), group.name()), ("group", "builders"));
+        assert_eq!((crew.kind(), crew.name()), ("crew", "yardmaster"));
     }
 
     /// The Telemetry section is the operator's alone, on a yard that serves

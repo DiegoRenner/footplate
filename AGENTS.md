@@ -71,10 +71,19 @@ The window, its state and the yard:
     the stage track in the flow map's words, warnings for beads stranded
     outside a flow, the stage detail with its
     Rule line, chain, Other rules and next stages, its stage file and
-    prompts each behind Read (Edit faint until slice B on a prompt a
-    card can carry, none on a stage file), and the crew prompts below,
-    over the `Line` call alone, read when the window opens or its
-    depot changes.
+    prompts each behind Read (Edit on a prompt the read answers
+    carriable, group and crew alike, and on that answer alone; the
+    read's reason where it says a card cannot; none on a stage file),
+    and the crew prompts below, over the `Line` call, read when the
+    window opens or its depot changes. Its one write is the prompt
+    editor: Edit opens an `input::Line::editor` under the prompt's row
+    over the text that stands, and Send mails the yardmaster one `Mail`
+    (the depot, the group or crew member, the prompt file and digest
+    as read, then the proposed text whole: `model::line_edit_mail`);
+    the row then says the card will stand in Decide, shows the
+    yardmaster's next mail as the answer, and says where the edit
+    stands whenever the line is read again (waiting, landed or moved).
+    No approval is drawn here: every approval is Decide's.
   - `src/window/metrics.rs`: the window's measures: fixed sizes in pixels,
     sizes the words set in rems, the char budgets of the rows that end a long
     string in an ellipsis (`ui::shorten`), and the small functions that fit a
@@ -194,6 +203,8 @@ Text and drawing helpers:
   `Means::downloads`; under test it is none, so a test never writes the
   person's own Downloads, and one that saves points it at a temp folder.
 - `src/input.rs`: the line typed in (gpui has no text field).
+  `Line::editor` is the same line for a long text that a button sends,
+  where Enter breaks the line.
 - `src/select.rs`: a message's text with mouse selection, one at a time.
 - `src/markdown.rs`: the light Markdown messages draw with (code, one-level
   lists, headings to h3, tables, quotes, rules, bold/italic, named links);

@@ -890,6 +890,10 @@ impl Footplate {
         self.switching = None;
         self.away_details = false;
         self.images.clear();
+        // The Line window's editor and hand-off name a prompt of the yard
+        // that is left.
+        self.line_edit = None;
+        self.line_sent = None;
         self.declining = None;
         self.back_position = None;
         // A paging request and its scroll position belonged to the yard
@@ -1511,6 +1515,9 @@ impl Footplate {
                 // A voice session in the conversation is given the other
                 // side's mail as it arrives.
                 self.voice_hears(&event);
+                // The Line window's last prompt edit is given the
+                // yardmaster's answer the same way.
+                self.line_hears(&event);
                 self.change(cx, |m| m.event(&event))
             }
             Update::Down(why, short) => {
@@ -3144,10 +3151,17 @@ impl Footplate {
                             move |client, _| client.line(&depot)
                         },
                         move |this, answered, cx| match answered {
-                            Ok(line) => this.change_in(session, cx, |m| {
-                                m.line_read(&depot, generation, line);
-                                Vec::new()
-                            }),
+                            Ok(line) => {
+                                this.change_in(session, cx, |m| {
+                                    m.line_read(&depot, generation, line);
+                                    Vec::new()
+                                });
+                                // The editor's and the hand-off's shots
+                                // open once the line is read: a debug
+                                // build's alone.
+                                #[cfg(debug_assertions)]
+                                this.shot_line_window(cx);
+                            }
                             Err(err) => this.change_in(session, cx, |m| {
                                 m.line_failed(&depot, generation, &err);
                                 Vec::new()
@@ -3353,6 +3367,15 @@ impl Footplate {
         if self.feedback.is_some() {
             return self.feedback_step(window, cx);
         }
+        // So are the Line window's prompt editor's: a prompt is no list to
+        // step, and Tab in its field does nothing.
+        if self
+            .line_edit
+            .as_ref()
+            .is_some_and(|edit| edit.field.focus_handle(cx).is_focused(window))
+        {
+            return;
+        }
         self.settings_open = false;
         let mode = self.mode();
         self.change(cx, |m| m.step_in(mode, by));
@@ -3432,6 +3455,7 @@ impl Footplate {
 
     /// Esc leaves what it can: the cheatsheet, the About card, the Feedback
     /// form, a picture's menu, the image over the window, a decline asked for words, the
+    /// Line window's prompt editor (its field, with the text kept), the
     /// words for the card's keys, the pick, then the words.
     pub(crate) fn leave(&mut self, _: &Leave, window: &mut Window, cx: &mut Context<Self>) {
         if self.show_keys {
@@ -3497,6 +3521,16 @@ impl Footplate {
         }
         // Esc in the history's filter leaves it, and what is typed stays.
         if self.filter.focus_handle(cx).is_focused(window) {
+            window.focus(&self.focus.clone());
+            return;
+        }
+        // Esc in the Line window's prompt editor leaves its field, and what
+        // is typed stays: Cancel is what drops it.
+        if self
+            .line_edit
+            .as_ref()
+            .is_some_and(|edit| edit.field.focus_handle(cx).is_focused(window))
+        {
             window.focus(&self.focus.clone());
             return;
         }
@@ -7022,7 +7056,9 @@ fn shot_selected() -> Option<Selected> {
         | Ok("lines-departures") => return Some(Selected::Arrivals),
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
-        Ok("line-window") => return Some(Selected::LineWindow("yardr".into())),
+        Ok("line-window") | Ok("line-edit") | Ok("line-sent") => {
+            return Some(Selected::LineWindow("yardr".into()));
+        }
         Ok("grants") => return Some(Selected::Grants),
         Ok("teammates-list") => return Some(Selected::Teammates),
         Ok("pairing") => return Some(Selected::Pairing),

@@ -4,9 +4,11 @@
 //! adds that a text wider than the box goes on in the next row, that the
 //! box is as high as its rows up to a part of the window and then scrolls
 //! with the cursor, that shift+Enter breaks the line and that Enter hands
-//! the text on. A masked line is the same line for a secret: it draws a
-//! mark for each character, takes what is pasted and gives nothing out.
-//! Shown, it draws the text as typed, for a look, and still gives
+//! the text on. An editor is the same line for a long text with a button of
+//! its own to send it: Enter breaks the line there, as shift+Enter does,
+//! and hands nothing on. A masked line is the same line for a secret: it
+//! draws a mark for each character, takes what is pasted and gives nothing
+//! out. Shown, it draws the text as typed, for a look, and still gives
 //! nothing out.
 
 use std::ops::Range;
@@ -105,6 +107,10 @@ pub struct Line {
     /// nothing is copied or cut out of and the input method is told
     /// none of.
     shown: bool,
+    /// Enter breaks the line, as shift+Enter does, and hands nothing on:
+    /// an editor's text is sent by a button, never by a key that is also
+    /// a paragraph's end.
+    breaks: bool,
 }
 
 /// What a masked line draws in place of each character.
@@ -139,6 +145,17 @@ impl Line {
             is_selecting: false,
             masked: false,
             shown: false,
+            breaks: false,
+        }
+    }
+
+    /// A line for a long text that is edited where it stands and sent by
+    /// a button of its own, a prompt: Enter breaks the line, as
+    /// shift+Enter does, and nothing is handed on by a key.
+    pub fn editor(cx: &mut Context<Self>) -> Self {
+        Line {
+            breaks: true,
+            ..Line::new(cx)
         }
     }
 
@@ -225,7 +242,10 @@ impl Line {
         &self.placeholder
     }
 
-    fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
+    fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.breaks {
+            return self.newline(&Newline, window, cx);
+        }
         cx.emit(Submitted);
     }
 
@@ -1525,6 +1545,19 @@ mod tests {
         (line, cx)
     }
 
+    /// An editor alone in a window 200 wide and 300 high, with the focus.
+    fn opened_editor(cx: &mut TestAppContext) -> (Entity<Line>, &mut VisualTestContext) {
+        cx.update(bind_keys);
+        let (line, cx) = cx.add_window_view(|window, cx| {
+            let line = Line::editor(cx);
+            window.focus(&line.focus_handle);
+            line
+        });
+        cx.simulate_resize(size(px(200.), px(300.)));
+        drawn(cx);
+        (line, cx)
+    }
+
     /// What the line last drew of its text.
     fn drawn_text(line: &Entity<Line>, cx: &mut VisualTestContext) -> String {
         drawn(cx);
@@ -1602,6 +1635,27 @@ mod tests {
         assert_eq!(text(&line, cx), "s3cret");
         line.update(cx, |line, cx| line.set_shown(false, cx));
         assert_eq!(drawn_text(&line, cx), MARK.repeat(6));
+    }
+
+    /// A prompt is prose: in an editor Enter ends a paragraph, as
+    /// shift+Enter does, and nothing is handed on by a key. Only the
+    /// button that holds the text sends it.
+    #[gpui::test]
+    fn return_breaks_the_line_in_an_editor_and_hands_nothing_on(cx: &mut TestAppContext) {
+        let (line, cx) = opened_editor(cx);
+        let sent = Rc::new(Cell::new(0));
+        let count = sent.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&line, move |_, _: &Submitted, _| count.set(count.get() + 1))
+                .detach()
+        });
+        cx.simulate_input("Build it.");
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input("Then land it.");
+        cx.simulate_keystrokes("enter shift-enter");
+        assert_eq!(text(&line, cx), "Build it.\nThen land it.\n\n");
+        assert_eq!(shown(&line, cx).0, 4);
+        assert_eq!(sent.get(), 0);
     }
 
     #[gpui::test]

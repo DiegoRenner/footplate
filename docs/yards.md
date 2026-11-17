@@ -51,7 +51,7 @@ never otherwise: the microphone is open only while a session stands.
 
 | It writes | When |
 |---|---|
-| `Mail` | Enter or the Send button, in a conversation with a crew member or a user of this yard, your own too |
+| `Mail` | Enter or the Send button, in a conversation with a crew member or a user of this yard, your own too; and Send in the Line window's prompt editor, one mail to the yardmaster that names the depot, the group or crew member and the prompt file and digest, then the proposed text ([the Line window](window.md#editing-a-prompt)) |
 | `PutBlob` for each file, then `Mail` with their hashes and names | Enter or the Send button, when files are attached to the draft |
 | `MailPeer` | Enter or the Send button, in a conversation with one of a linked yard, or in a user's row when a name trusted as them wrote last; after `PutBlob` for each file, with their hashes and names |
 | `React` | a tap on one of the bar of reactions floating over the hovered mail: the emoji, or nothing on the user's own current one, which takes it away |
