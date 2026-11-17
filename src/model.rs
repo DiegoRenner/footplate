@@ -5893,14 +5893,14 @@ impl Model {
         out
     }
 
-    /// The notes the open row's expanded cards show: the bead's, where
-    /// one of its cards stands expanded, and none anywhere else. An
-    /// arrival's bead shows its notes whole, so its are here too.
+    /// The notes whose images the window asks for: the open decision's
+    /// thread shows its bead's notes whole, expanded or not, so theirs
+    /// are here always; a dealt with's only where its card stands
+    /// expanded. An arrival's bead shows its notes whole, so its are
+    /// here too.
     fn expanded_notes(&self) -> Vec<&BeadNote> {
         let bead = match self.selected.as_ref() {
-            Some(Selected::Decision(bead)) if self.expanded.iter().any(|(b, _)| b == bead) => {
-                Some(bead)
-            }
+            Some(Selected::Decision(bead)) => Some(bead),
             Some(Selected::Decided(bead, ask))
                 if self.expanded.iter().any(|(b, a)| b == bead && a == ask) =>
             {
@@ -14483,16 +14483,17 @@ mod tests {
         ];
         m.bead_loaded(bead);
         m.select(Selected::Decision("yardr-n8ta".into()));
-        // The card stands folded: its notes' images are none shown.
-        assert_eq!(m.images(), Vec::<&str>::new());
+        // The thread under the cards shows the notes whole, folded or
+        // not: their images are asked for either way.
+        assert_eq!(m.images(), ["aa", "bb"]);
         m.toggle_expand("yardr-n8ta", 3);
         assert_eq!(m.images(), ["aa", "bb"]);
         // The card carries the notes with their images.
         let detail = m.decision_detail("yardr-n8ta", &noon()).unwrap();
         assert_eq!(detail.notes[0].files.len(), 2);
-        // Folded again, they are asked for no longer.
+        // Folded again, the thread still shows them.
         m.toggle_expand("yardr-n8ta", 3);
-        assert_eq!(m.images(), Vec::<&str>::new());
+        assert_eq!(m.images(), ["aa", "bb"]);
         // A dealt-with card's notes the same way.
         m.toggle_decided();
         m.select(Selected::Decided("yardr-n8ta".into(), 3));

@@ -3,12 +3,14 @@
 
 use gpui::{
     App, ClickEvent, Context, Div, FontWeight, SharedString, Stateful, Window, div, prelude::*, px,
+    rems,
 };
 
+use super::metrics::{LEVER_ACTION_H, RADIUS_CARD};
 use super::{APPROVE_KEY, Footplate, small_button};
 use crate::api;
 use crate::model::{self, DecidedDetail, DecisionAsk};
-use crate::theme::Palette;
+use crate::theme::{Palette, TYPE_LABEL, TYPE_META, TYPE_SECTION};
 
 /// A section's head in the left list: its title on the left, its count
 /// on the right, quiet. "Decisions" counts the open ones, "Crew" the
@@ -70,7 +72,7 @@ pub(crate) fn fold_head(
 fn head_title(title: &'static str, shown: String) -> Div {
     div()
         .debug_selector(move || format!("section {title}"))
-        .text_sm()
+        .text_size(rems(TYPE_SECTION))
         .font_weight(FontWeight::SEMIBOLD)
         .child(shown)
 }
@@ -79,7 +81,7 @@ fn head_title(title: &'static str, shown: String) -> Div {
 fn head_count(title: &'static str, count: String, palette: Palette) -> Div {
     div()
         .debug_selector(move || format!("section {title} count"))
-        .text_xs()
+        .text_size(rems(TYPE_META))
         .text_color(palette.faint)
         .flex_none()
         .child(count)
@@ -91,7 +93,7 @@ pub(crate) fn group_head(title: &'static str) -> impl IntoElement {
     div().px_3().pt_2().pb_1().child(
         div()
             .debug_selector(move || format!("group {title}"))
-            .text_sm()
+            .text_size(rems(TYPE_SECTION))
             .font_weight(FontWeight::SEMIBOLD)
             .child(title),
     )
@@ -110,6 +112,23 @@ pub(crate) fn answer_label(number: u64, label: &str) -> String {
 /// stays open.
 pub(crate) const ANSWER_WORDS: &str = "Answer ↵";
 pub(crate) const SEND_WORDS: &str = "Send ↵";
+
+/// A lever's key plate: its number, with the recommendation named on
+/// the recommended one's plate (`2 · recommended`, in text accent and
+/// an accent outline, never a fill: a card's one filled control is its
+/// Answer or Approve button).
+pub(crate) fn lever_plate(number: u64, recommended: bool) -> String {
+    match recommended {
+        true => format!("{number} · recommended"),
+        false => format!("{number}"),
+    }
+}
+
+/// What a lever says beside its key plate: the yard's words for the
+/// choice and its consequence. The number lives on the plate alone.
+pub(crate) fn lever_words(label: &str, consequence: &str) -> (String, String) {
+    (label.to_string(), format!("— {consequence}"))
+}
 
 /// The recommended option's mark under its own row, with its why: the one
 /// place the card names the recommendation.
@@ -704,6 +723,86 @@ pub(crate) fn approve_button(
     card_button(id, label, palette, click)
 }
 
+/// What a run or setup card's Approve lever reads under its key plate:
+/// the yard that runs the command, and unlocking first where the Mac's
+/// unlock stands in front. The plate carries the key, so the label
+/// names no key: `Approve in home`, plated `⌘↵`.
+pub(crate) fn approve_lever_label(yard: &str, unlock: bool) -> String {
+    match unlock {
+        true => format!("Approve in {yard} after unlocking"),
+        false => format!("Approve in {yard}"),
+    }
+}
+
+/// One action lever of a run or setup card: its key plate above its
+/// label, at [`LEVER_ACTION_H`]. Filled is the card's one fill (Approve);
+/// the rest are outlined. Without a click it stands disabled and takes
+/// none, as a held or waited card's levers do.
+pub(crate) fn action_lever(
+    id: String,
+    plate: String,
+    label: String,
+    filled: bool,
+    palette: Palette,
+    click: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+) -> Stateful<Div> {
+    let enabled = click.is_some();
+    div()
+        .id(SharedString::from(id.clone()))
+        .debug_selector(|| id.clone())
+        .h(px(LEVER_ACTION_H))
+        .px_3()
+        .py_2()
+        .rounded(px(RADIUS_CARD))
+        .border_1()
+        .flex()
+        .flex_col()
+        .justify_between()
+        .when(filled && enabled, |el| {
+            el.bg(palette.button)
+                .border_color(palette.button)
+                .text_color(palette.on_button)
+                .cursor_pointer()
+                .hover(|style| style.bg(palette.button_hover))
+                .active(|style| style.bg(palette.button_pressed))
+        })
+        .when(filled && !enabled, |el| {
+            el.bg(palette.button)
+                .border_color(palette.button)
+                .text_color(palette.on_button)
+                .opacity(0.5)
+        })
+        .when(!filled && enabled, |el| {
+            el.bg(palette.raised)
+                .border_color(palette.strong)
+                .text_color(palette.text)
+                .cursor_pointer()
+                .hover(|style| style.bg(palette.hover))
+        })
+        .when(!filled && !enabled, |el| {
+            el.bg(palette.raised)
+                .border_color(palette.line)
+                .text_color(palette.disabled)
+                .opacity(0.5)
+        })
+        .when_some(click, |el, click| el.on_click(click))
+        .child(
+            div()
+                .text_size(rems(TYPE_META))
+                .text_color(match filled {
+                    true => palette.on_button,
+                    false => palette.faint,
+                })
+                .child(plate),
+        )
+        .child(
+            div()
+                .text_size(rems(TYPE_LABEL))
+                .font_weight(FontWeight::MEDIUM)
+                .child(label),
+        )
+}
+
 /// The primary button: one filled button, standing as the one to take,
 /// with what a click on it does: a card's that sends or approves, or the
 /// away screen's that sets a yard up. Without that it is drawn quiet, and
@@ -726,6 +825,7 @@ pub(crate) fn card_button(
         .justify_center()
         .px_3()
         .py_1()
+        .text_size(rems(TYPE_LABEL))
         .rounded_md()
         .when(enabled, |el| {
             el.bg(palette.button)

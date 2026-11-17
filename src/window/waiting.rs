@@ -4,16 +4,17 @@
 
 use gpui::{
     ClickEvent, Context, Div, Focusable, FontWeight, SharedString, Stateful, Window, div,
-    prelude::*, px, rgba,
+    prelude::*, px, rems, rgba,
 };
 
 use super::Footplate;
 use super::metrics::WAITING_SUB;
 use super::ui::{field, keys_hint, shorten};
+use super::words::{row_summary, time_column};
 use crate::api::{Address, Reach};
 use crate::model::{self, Effect, Model, Selected, WaitingDetail, WaitingMove, WaitingRow};
 use crate::select;
-use crate::theme::{Palette, yard_color};
+use crate::theme::{Palette, TYPE_LABEL, yard_color};
 
 /// What the card says under its moves while the yard is reconnecting, which
 /// stand faint: nothing is queued, and the move is made by hand once the
@@ -161,6 +162,7 @@ impl Footplate {
                     .child(
                         div()
                             .line_clamp(2)
+                            .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .debug_selector(|| format!("waiting head {}", row.bead))
                             .child(row.head),
@@ -171,16 +173,27 @@ impl Footplate {
                             .text_color(palette.faint)
                             .truncate()
                             .debug_selector(|| format!("waiting sub {}", row.bead))
-                            .child(waiting_sub(&row.sub)),
+                            .child(waiting_sub(row_summary(&row.sub))),
                     ),
             )
             .child(
                 div()
                     .flex_none()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .debug_selector(|| format!("waiting id {}", row.bead))
-                    .child(row.short),
+                    .flex()
+                    .items_baseline()
+                    .gap_2()
+                    .children(
+                        time_column(&row.sub, select::mono(cx), palette).map(|time| {
+                            time.debug_selector(|| format!("waiting time {}", row.bead))
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.faint)
+                            .debug_selector(|| format!("waiting id {}", row.bead))
+                            .child(row.short),
+                    ),
             )
     }
 

@@ -333,7 +333,9 @@ a far yard whose web view is the browser's address at the edge,
 `https://my.yardr.dev/?yard=mac`: the page's row carries Open, and nothing
 is asked of the edge), `run` (an
 open card of a run ask: the forged one of the run card's test, whose
-question forges the yard's lines), `teammates` (an open card of a
+question forges the yard's lines), `frame` (the lever frame's card: a
+short-command run ask with its four levers and its bead's thread and
+image under it), `teammates` (an open card of a
 teammate invite), `teammates-list` (the teammates view open on its row,
 with a paired and a waiting teammate), `weighty` (a weighty run ask's
 card beside a routine one's), `weighty-mapping` (a weighty mapping ask's

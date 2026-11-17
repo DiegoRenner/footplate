@@ -4,8 +4,9 @@ A native chat window onto a yardr yard (Rust, gpui). Product behaviour:
 `README.md` is the front door (what it is, installing) and `docs/` the
 manual: `docs/yards.md` (what it talks to, setting a yard up, starting it),
 `docs/window.md` (the window, the settings, notifications),
-`docs/windows.md` (Windows) and `docs/building.md` (building, releasing, the
-icon, the code). Design notes: `docs/design/`. The yard's side of the
+`docs/look.md` (the palette, type scale, spacing and row and card
+patterns), `docs/windows.md` (Windows) and `docs/building.md` (building,
+releasing, the icon, the code). Design notes: `docs/design/`. The yard's side of the
 protocol (`docs/api.md`, `docs/setup.md`, `docs/doctor.md`) lives in the
 yardr repository, not here. `.yardr/depot.md` holds the yard's rules for
 builders.

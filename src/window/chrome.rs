@@ -34,7 +34,7 @@ use crate::select;
 use crate::session::{self, Update};
 use crate::settings::{self, Notify, Section, Settings};
 use crate::setup;
-use crate::theme::{Look, Palette, crew_dot, yard_color, yard_ink};
+use crate::theme::{Look, Palette, TYPE_LABEL, TYPE_META, crew_dot, yard_color, yard_ink};
 use crate::titlebar::Gesture;
 use crate::voice::{DEFAULT_VOICE, VOICES};
 use crate::yard::{self, Env};
@@ -46,8 +46,8 @@ use super::bead::ROWS_BEFORE_MAIL;
 use super::firstrun::{Ended, FirstRun};
 use super::keys::{KeysView, SECONDARY, keys_for};
 use super::metrics::{
-    DRAWER_WIDTH, HEAD_INSET, INPUT_KEPT, INPUT_NAME, INPUT_NOTE, MAIL_NEAR_TOP, RAIL, RAIL_LABEL,
-    RAIL_TILE, VOICE_LABEL, VOICE_NOTE, grown,
+    DRAWER_WIDTH, HEAD_INSET, INPUT_KEPT, INPUT_NAME, INPUT_NOTE, LIST, MAIL_NEAR_TOP, RAIL,
+    RAIL_LABEL, RAIL_TILE, VOICE_LABEL, VOICE_NOTE, grown,
 };
 use super::rail::{PROBE_AGAIN, Picture, Probe, RailTip, Unsent, ViewUp, reaches, run_address_of};
 #[cfg(debug_assertions)]
@@ -395,6 +395,21 @@ impl Footplate {
         if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("column-copy") {
             this.selection
                 .update(cx, |selection, cx| selection.pose_hover(23, 0, cx));
+        }
+        // The frame shot poses the pointer on its run command, so that
+        // its copy control shows at the block's top right. A debug
+        // build's alone, as above.
+        #[cfg(debug_assertions)]
+        if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("frame") {
+            let card = select::key(("footplate-q2rd".to_string(), 1u64));
+            let key = select::key((
+                card,
+                "run",
+                0usize,
+                "yardr land footplate-q2rd --onto main".to_string(),
+            ));
+            this.selection
+                .update(cx, |selection, cx| selection.pose_hover(key, 0, cx));
         }
         // The column-top shot poses the pointer on the head of mail 15, a
         // letter that begins a group: the list stands that head at its top
@@ -6665,16 +6680,21 @@ impl Footplate {
         body: impl IntoElement,
         palette: Palette,
         top: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let status = self.switch_rows(palette, cx);
         let banded = top > 0.;
+        // The list is LIST wide, capped so the pane beside it keeps
+        // its 290 at the usual size (grown with the text as the list
+        // is): at the usual 960 the cap is 606 and the list stands at
+        // its full 352; at the floor it narrows to 270 to keep the
+        // pane. metrics::LIST says why 352.
+        let rem = f32::from(window.rem_size());
+        let cap = (f32::from(window.viewport_size().width) - RAIL - 290. * rem / 16.).max(160.);
         div()
-            // 270 pixels at the usual text size. Its rows are cut to it,
-            // so it grows with the text, but never over the conversation:
-            // the smallest window still has the larger part for that.
-            .w(rems(16.875))
-            .max_w(relative(0.48))
+            .w(rems(LIST / 16.))
+            .max_w(px(cap))
             .flex_none()
             .h_full()
             .flex()
@@ -6714,15 +6734,18 @@ impl Footplate {
         model: &Model,
         palette: Palette,
         top: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match self.mode() {
-            Mode::Chat => self.list_chat(model, palette, top, cx).into_any_element(),
+            Mode::Chat => self
+                .list_chat(model, palette, top, window, cx)
+                .into_any_element(),
             Mode::Decisions => self
-                .list_decisions(model, palette, top, cx)
+                .list_decisions(model, palette, top, window, cx)
                 .into_any_element(),
             Mode::Timetable => self
-                .list_timetable(model, palette, top, cx)
+                .list_timetable(model, palette, top, window, cx)
                 .into_any_element(),
         }
     }
@@ -6750,6 +6773,7 @@ impl Footplate {
         model: &Model,
         palette: Palette,
         top: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let groups = [
@@ -6780,7 +6804,7 @@ impl Footplate {
         body = body.child(group_head("Yard"));
         let yard = model.yard_row();
         body = body.child(self.row(yard, Selected::Yard, palette, cx));
-        self.column(body, palette, top, cx)
+        self.column(body, palette, top, window, cx)
     }
 
     /// One bead's route as a strip: one dot per stage of its flow in
@@ -6922,6 +6946,7 @@ impl Footplate {
                             .items_center()
                             .gap_2()
                             .min_w_0()
+                            .text_size(rems(TYPE_LABEL))
                             .children(dot)
                             .child(
                                 div()
@@ -6978,7 +7003,7 @@ impl Footplate {
                     div()
                         .flex_none()
                         .debug_selector(|| format!("row unread {}", name))
-                        .text_sm()
+                        .text_size(rems(TYPE_META))
                         .text_color(palette.text_accent)
                         .child(unread_words(row.unread)),
                 ),
@@ -7224,7 +7249,7 @@ fn shot_section() -> Option<Section> {
 
 /// The row a screenshot state opens on instead of the yard's own: the
 /// refused mail's conversation for the undelivered shot, the open card
-/// for the plain, plain-select, page, run, teammates, weighty-mapping,
+/// for the plain, plain-select, page, run, frame, teammates, weighty-mapping,
 /// secret, secret-harness, secret-harness-empty, setup-host and pair-ask
 /// shots (the refused shot's with its refusal), the decided pairing card
 /// for the pair-qr and pair-ended shots, the board for the arrivals and
@@ -7274,6 +7299,9 @@ fn shot_selected() -> Option<Selected> {
         | Ok("setup-host")
         | Ok("pair-ask") => {
             return Some(Selected::Decision("bead-s".into()));
+        }
+        Ok("frame") => {
+            return Some(Selected::Decision("footplate-q2rd".into()));
         }
         Ok("pair-qr") | Ok("pair-ended") => {
             return Some(Selected::Decided("bead-s".into(), 7));

@@ -95,15 +95,40 @@ pub(crate) const WAITING_SUB: usize = 33;
 /// both do not fit.
 pub(crate) const ASK_QUESTION_MIN: f32 = 200.;
 
+/// The list's width in pixels at the usual text size: direction 1's
+/// 352, which at the window's usual 960 wide leaves the pane 544
+/// (960 − 64 rail − 352), wide enough that no lever label and no list
+/// title in the shot's content is cut. Drawn through rems as the other
+/// text-bearing widths are, and capped in [`Footplate::column`] so the
+/// pane keeps its 290: at the floor the list narrows to 270 for that,
+/// and stands at its full 352 from 706 wide up. [`drawer_fits`] counts
+/// with the same rule.
+pub(crate) const LIST: f32 = 352.;
+
+/// A lever's measures, in pixels where the frame stands fixed and rems
+/// where its words do: the key plate's least height is the control's
+/// (32, the tokens' `--control-h`), its radius the control's (6), the
+/// card's the card's (8). A lever row is one option of an ask card: its
+/// plate, its label and its consequence, outlined where it stands
+/// chosen or recommended, never filled (the one-fill rule: a card's
+/// only fill is its Answer or Approve button). An action lever — a run
+/// or setup card's Approve, Ask about this, Later or Decline — stands
+/// taller, at direction 2's 58, its key plate above its label, so the
+/// four stand whole beside a short command at 960x640.
+pub(crate) const LEVER_H: f32 = 32.;
+pub(crate) const LEVER_ACTION_H: f32 = 58.;
+pub(crate) const RADIUS_CONTROL: f32 = 6.;
+pub(crate) const RADIUS_CARD: f32 = 8.;
+
 /// The rail's width in pixels, fixed: room for a label under each
 /// icon, as the review has it.
 pub(crate) const RAIL: f32 = 64.;
 
 /// The window's narrowest width in pixels, which main.rs sets as its
-/// minimum: the 560 the list (270 at the usual text size) and the pane
-/// beside it have between them, and the rail beside those, so that no pane
-/// gives up room for the rail. The tests of the narrowest window read this
-/// number too.
+/// minimum: the 560 the list (capped at 48 hundredths of the window
+/// there) and the pane beside it have between them, and the rail beside
+/// those, so that no pane gives up room for the rail. The tests of the
+/// narrowest window read this number too.
 pub(crate) const WINDOW_MIN: f32 = 560. + RAIL;
 
 /// A rail tile's width in pixels: the glyph with its label under it, in
@@ -198,12 +223,13 @@ pub(crate) const DRAWER_WIDTH: f32 = 320.;
 
 /// Whether the window `window` pixels wide holds the bead drawer beside
 /// the reading pane: the pane keeps at least the drawer's own width. The
-/// rail is [`RAIL`] pixels, the list 270 at the usual text size and never
-/// over 48 hundredths of the window, as [`Footplate::column`] draws them,
-/// and the drawer its grown width; `rem` is the window's rem in pixels.
+/// rail is [`RAIL`] pixels, the list [`LIST`] at the usual text size and
+/// capped as [`Footplate::column`] caps it (the pane keeps its 290,
+/// grown), and the drawer its grown width; `rem` is the window's rem in
+/// pixels.
 pub(crate) fn drawer_fits(window: Pixels, rem: f32) -> bool {
     let drawer = DRAWER_WIDTH.max(DRAWER_WIDTH / 16. * rem);
-    let list = (270. * rem / 16.).min(0.48 * f32::from(window));
+    let list = (LIST * rem / 16.).min((f32::from(window) - RAIL - 290. * rem / 16.).max(0.));
     f32::from(window) - RAIL - list - drawer >= drawer
 }
 

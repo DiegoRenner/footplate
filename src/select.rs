@@ -28,7 +28,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::input::next_boundary;
 use crate::markdown::{self, Align, Block, Cell, Kind, Marks, NamedLink};
-use crate::theme::Palette;
+use crate::theme::{Palette, TYPE_CODE};
 
 /// What is selected in the talk, if anything is.
 #[derive(Default)]
@@ -1035,7 +1035,8 @@ pub(crate) fn mono(cx: &App) -> Option<SharedString> {
 
 /// The face a block of `kind` is drawn in, where the text's is `base`: a
 /// heading is bold and a little larger than the text, the first level the
-/// most, and code is in `mono`. All of it goes with the text's size.
+/// most, and code is in `mono` at the code role's size. All of it goes
+/// with the text's size.
 fn face(kind: &Kind, base: &TextStyle, mono: Option<&SharedString>, rem: Pixels) -> TextStyle {
     let mut face = base.clone();
     match kind {
@@ -1049,6 +1050,7 @@ fn face(kind: &Kind, base: &TextStyle, mono: Option<&SharedString>, rem: Pixels)
             face.font_weight = FontWeight::BOLD;
         }
         Kind::Code => {
+            face.font_size = (rem * TYPE_CODE).into();
             if let Some(mono) = mono {
                 face.font_family = mono.clone();
             }
@@ -2450,7 +2452,7 @@ mod tests {
         );
         let face = face(&code.kind, &base, Some(&mono), px(16.));
         assert_eq!(face.font_family, mono);
-        assert_eq!(face.font_size, base.font_size);
+        assert_eq!(face.font_size.to_pixels(px(16.)), px(12.));
         assert_eq!(face.font_weight, base.font_weight);
         let draw = Draw {
             face: &face,

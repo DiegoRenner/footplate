@@ -121,6 +121,23 @@ pub fn crew_dot(dot: Dot, palette: Palette) -> Rgba {
     }
 }
 
+/// The type scale: the design tokens' roles (`tokens/typography.css` in
+/// yardr-design) at the window's one rem, so a text setting scales every
+/// role together. Sizes in rems at the usual 16-pixel rem: question 22,
+/// title 15, section 13, label 13, body 13, meta 12, code 12. Weights ride
+/// with the roles: question, title and section semibold, label medium,
+/// the rest regular. The question is the open ask's, the one text the card
+/// owns the pane for (direction 2's `.q`: 22/600); no other screen takes
+/// it. The list's time column and every code text take [`TYPE_CODE`] in
+/// the mono face ([`crate::select::mono`]); no other face is set anywhere.
+pub const TYPE_QUESTION: f32 = 22. / 16.;
+pub const TYPE_TITLE: f32 = 15. / 16.;
+pub const TYPE_SECTION: f32 = 13. / 16.;
+pub const TYPE_LABEL: f32 = 13. / 16.;
+pub const TYPE_BODY: f32 = 13. / 16.;
+pub const TYPE_META: f32 = 12. / 16.;
+pub const TYPE_CODE: f32 = 12. / 16.;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     /// Whether the grounds are dark: a yard's colour is the one that
@@ -547,6 +564,26 @@ mod tests {
             assert_eq!(crew_dot(Dot::Stopped, palette), palette.faint);
             assert_eq!(crew_dot(Dot::Failed, palette), palette.warn);
         }
+    }
+
+    #[test]
+    fn the_type_scale_is_the_tokens_roles_at_the_usual_rem() {
+        // tokens/typography.css: title 15/600, section 13/600, label
+        // 13/500, body 13/400, meta 12/400, code 12 mono, at 16px; the
+        // question is direction 2's `.q` (22/600), the card's own.
+        let px = |rem: f32| rem * 16.;
+        assert_eq!(
+            (
+                px(TYPE_QUESTION),
+                px(TYPE_TITLE),
+                px(TYPE_SECTION),
+                px(TYPE_LABEL),
+                px(TYPE_BODY),
+                px(TYPE_META),
+                px(TYPE_CODE)
+            ),
+            (22., 15., 13., 13., 13., 12., 12.)
+        );
     }
 
     #[test]

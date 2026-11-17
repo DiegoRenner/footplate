@@ -6,29 +6,30 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use gpui::{
-    AnyElement, Context, Div, Entity, Focusable, FontWeight, MouseButton, SharedString, Window,
-    div, img, prelude::*, px, relative, rems, rgba,
+    AnyElement, Context, Div, Entity, Focusable, FontWeight, MouseButton, ObjectFit, SharedString,
+    Window, div, img, prelude::*, px, relative, rems, rgba,
 };
 
 use super::Expanded;
 use super::Footplate;
 use super::ask::{
     ANSWER_WORDS, APPROVE_ELSEWHERE, Approval, DECLINE_IS_NO_PICK, RUN_PROPOSED, RunText,
-    SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate, answer_label, approval,
-    approve_button, ask_line, asked_age, candidate_choice_line, card_head, carried_texts,
-    decided_keys, decision_head, description_line, fenced, fold_head, give_label,
-    give_unlock_label, is_device_pair_run, pair_door, recommended_line, run_keys, run_runs,
-    run_texts, secret_goes, secret_keys, section_head, send_button, setup_keys, setup_runs,
-    show_button, take_back_label, teammate_email, teammate_kind, teammate_of, teammate_role,
-    teammate_user, texts_label, typeback_line, typeback_mismatch, words_send,
+    SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate, action_lever,
+    answer_label, approval, approve_button, approve_lever_label, ask_line, asked_age,
+    candidate_choice_line, card_head, carried_texts, decided_keys, decision_head, description_line,
+    fenced, fold_head, give_label, give_unlock_label, is_device_pair_run, lever_plate, lever_words,
+    pair_door, recommended_line, run_keys, run_runs, run_texts, secret_goes, secret_keys,
+    section_head, send_button, setup_keys, setup_runs, show_button, take_back_label,
+    teammate_email, teammate_kind, teammate_of, teammate_role, teammate_user, texts_label,
+    typeback_line, typeback_mismatch, words_send,
 };
 use super::expanded_text_key;
 use super::keys::{APPROVE_KEY, SETUP_SECRET_CONTEXT};
-use super::metrics::ASK_QUESTION_MIN;
-use super::rail::{RailTip, UnsentNote, post_note};
+use super::metrics::{ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL};
+use super::rail::{Picture, RailTip, UnsentNote, post_note};
 use super::state::{Adding, ApprovalPairing};
 use super::ui::{field, keys_row, send_held, small_button};
-use super::words::{bead_words, decide_words, decided_words, left_words};
+use super::words::{bead_words, decide_words, decided_words, left_words, row_summary, time_column};
 use super::{AskAbout, Decline, Expand, FocusFilter, FocusWords};
 use crate::api::{self};
 use crate::draft::{self, Attachment};
@@ -38,7 +39,9 @@ use crate::model::{
     DecisionRow, Effect, Mode, Model, Selected, Sending, Taken, Target, Write,
 };
 use crate::select::{self};
-use crate::theme::{Palette, yard_color};
+use crate::theme::{
+    Palette, TYPE_BODY, TYPE_LABEL, TYPE_META, TYPE_QUESTION, TYPE_TITLE, yard_color,
+};
 use crate::unlock;
 
 impl Footplate {
@@ -2870,6 +2873,7 @@ impl Footplate {
         model: &Model,
         palette: Palette,
         top: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let now = chrono::Utc::now();
@@ -3005,7 +3009,7 @@ impl Footplate {
         if model.pair_offered() {
             body = body.child(self.pairing_row(model, palette, cx));
         }
-        self.column(body, palette, top, cx)
+        self.column(body, palette, top, window, cx)
     }
 
     /// The history's last row while asks it finds are not drawn: it says
@@ -3124,6 +3128,10 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let sel = Selected::Decision(row.bead.clone());
+        // The right-hand time column's words, before the row's lines
+        // move into the column below.
+        let time = time_column(&row.sub, select::mono(cx), palette)
+            .map(|time| time.debug_selector(|| format!("decision time {}", row.bead)));
         let mut col = div()
             .flex()
             .flex_col()
@@ -3134,6 +3142,7 @@ impl Footplate {
             .child(
                 div()
                     .line_clamp(2)
+                    .text_size(rems(TYPE_LABEL))
                     .font_weight(FontWeight::MEDIUM)
                     .debug_selector(|| format!("decision head {}", row.bead))
                     .child(row.head),
@@ -3144,6 +3153,7 @@ impl Footplate {
                 .child(
                     div()
                         .line_clamp(2)
+                        .text_size(rems(TYPE_LABEL))
                         .font_weight(FontWeight::MEDIUM)
                         .debug_selector(|| format!("decision ask {seq} {}", row.bead))
                         .child(ask.head.clone()),
@@ -3164,7 +3174,7 @@ impl Footplate {
                     .text_color(palette.faint)
                     .truncate()
                     .debug_selector(|| format!("decision sub {}", row.bead))
-                    .child(row.sub),
+                    .child(row_summary(&row.sub).to_string()),
             );
         }
         div()
@@ -3190,10 +3200,19 @@ impl Footplate {
             .child(
                 div()
                     .flex_none()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .debug_selector(|| format!("decision id {}", row.bead))
-                    .child(row.short),
+                    .flex()
+                    .items_baseline()
+                    .gap_2()
+                    // The right-hand time column (mono 12) beside the
+                    // id: how long the bead's oldest ask waits.
+                    .children(time)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.faint)
+                            .debug_selector(|| format!("decision id {}", row.bead))
+                            .child(row.short),
+                    ),
             )
     }
 
@@ -3248,6 +3267,7 @@ impl Footplate {
                         div()
                             .flex_1()
                             .truncate()
+                            .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .child("Grants"),
                     ),
@@ -3310,6 +3330,7 @@ impl Footplate {
                         div()
                             .flex_1()
                             .truncate()
+                            .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .child("Teammates"),
                     ),
@@ -3367,6 +3388,7 @@ impl Footplate {
                         div()
                             .flex_1()
                             .truncate()
+                            .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .child("Pair a phone"),
                     ),
@@ -3423,6 +3445,7 @@ impl Footplate {
                     .child(
                         div()
                             .truncate()
+                            .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .debug_selector(|| format!("decided head {} {}", row.bead, row.ask))
                             .child(row.head),
@@ -3512,6 +3535,7 @@ impl Footplate {
                     .child(
                         div()
                             .truncate()
+                            .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .debug_selector(|| {
                                 format!("decided fold head {} {}", fold.bead, fold.ask)
@@ -3605,12 +3629,21 @@ impl Footplate {
         let list = if !model.has_bead(bead) {
             list.child(div().text_color(palette.faint).child("Reading the bead."))
         } else {
-            list.children(
+            let mut list = list.children(
                 detail
                     .asks
                     .iter()
                     .map(|ask| self.decision_card(&detail, ask, palette, cx)),
-            )
+            );
+            // The bead's thread under the asks, as the pick draws it:
+            // its notes in order, each with its files, the images
+            // compact, so a short card and its thread stand together
+            // at 960x640. The bead whole stays one disclosure away on
+            // each card besides.
+            if !detail.notes.is_empty() {
+                list = list.child(self.decision_thread(&detail, palette, cx));
+            }
+            list
         };
         pane.children(self.reconnect_strip(palette))
             .child(head)
@@ -3625,6 +3658,180 @@ impl Footplate {
                         .child(format!("! {}", model.notice)),
                 )
             })
+    }
+
+    /// The bead's thread under its open asks: its notes in order, each
+    /// headed by who wrote it, its time and the bead, its words beside
+    /// its image where it has one (the pick's thread: words left, the
+    /// picture right at 156 wide), its other files under its words as
+    /// one quiet line each, so the thread and a short card stand
+    /// together. A note's words select and copy as a card's do, under
+    /// their own keys.
+    pub(crate) fn decision_thread(
+        &self,
+        detail: &DecisionDetail,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let bead = detail.bead.clone();
+        let bead_key = select::key(("thread", bead.as_str()));
+        let mut thread = div()
+            .debug_selector(|| format!("thread {bead}"))
+            .border_t_1()
+            .border_color(palette.line)
+            .pt_3()
+            .flex()
+            .flex_col()
+            .gap_3();
+        for (ix, note) in detail.notes.iter().enumerate() {
+            let at = model::clock_time(&note.at, &chrono::Local);
+            let head = match at.is_empty() {
+                true => format!("{} · on {bead}", note.author),
+                false => format!("{} · {at} · on {bead}", note.author),
+            };
+            let images: Vec<_> = note
+                .files
+                .iter()
+                .filter(|file| model::is_image(file) && file.not_taken.is_empty())
+                .collect();
+            let mut words = div().flex().flex_col().gap_1().child(
+                div()
+                    .text_size(rems(TYPE_BODY))
+                    .debug_selector(|| format!("thread note {bead} {ix}"))
+                    .child(select::text(
+                        expanded_text_key(bead_key, "note", ix, &note.text),
+                        note.text.clone(),
+                        &self.selection,
+                    )),
+            );
+            for file in note
+                .files
+                .iter()
+                .filter(|file| !model::is_image(file) || !file.not_taken.is_empty())
+            {
+                words = words.child(self.thread_file(file, palette, cx));
+            }
+            let mut row = div().flex().gap_4().child(words.flex_1().min_w_0());
+            if !images.is_empty() {
+                let mut pics = div().flex_none().w(px(156.)).flex().flex_col().gap_2();
+                for file in images {
+                    pics = pics.child(self.thread_file(file, palette, cx));
+                }
+                row = row.child(pics);
+            }
+            let block = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .debug_selector(|| format!("thread head {bead} {ix}"))
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child(head),
+                )
+                .child(row);
+            thread = thread.child(block);
+        }
+        thread
+    }
+
+    /// One file of a thread note: an image compact at 60 high, where
+    /// [`Footplate::picture`] stands it at its reading height; a page or
+    /// a file as one quiet line of its name and size, its Open and run
+    /// on the bead whole behind the card's disclosure, so the thread
+    /// names it without drawing its row twice. A click opens an image
+    /// full size as there, a right press saves it; while its bytes are
+    /// not there the line says so and a click opens it all the same.
+    pub(crate) fn thread_file(
+        &self,
+        file: &crate::api::BlobRef,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        if !model::is_image(file) || !file.not_taken.is_empty() {
+            if !file.not_taken.is_empty() {
+                return self
+                    .picture(file, false, false, palette, cx)
+                    .into_any_element();
+            }
+            let label = match file.name.is_empty() {
+                false => format!("{}, {}", file.name, model::size(file.bytes)),
+                true => match model::is_page(file) {
+                    true => format!("page, {}", model::size(file.bytes)),
+                    false => format!("file, {}", model::size(file.bytes)),
+                },
+            };
+            let hash = file.hash.clone();
+            return div()
+                .debug_selector(move || format!("thread file {hash}"))
+                .text_size(rems(TYPE_META))
+                .text_color(palette.faint)
+                .child(label)
+                .into_any_element();
+        }
+        let line = |text: String| {
+            div()
+                .text_size(rems(TYPE_META))
+                .text_color(palette.faint)
+                .child(text)
+                .into_any_element()
+        };
+        match self.images.get(&file.hash) {
+            Some(Picture::Here(image)) => {
+                let hash = file.hash.clone();
+                let bytes = file.bytes;
+                let name = file.name.clone();
+                img(image.clone())
+                    .h(px(60.))
+                    .max_w_full()
+                    .object_fit(ObjectFit::ScaleDown)
+                    .id(SharedString::from(format!("thread image {hash}")))
+                    .debug_selector({
+                        let hash = hash.clone();
+                        move || format!("thread image {hash}")
+                    })
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_mouse_down(MouseButton::Right, {
+                        let (hash, name) = (hash.clone(), name.clone());
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            window.prevent_default();
+                            this.open_picture_menu(hash.clone(), name.clone(), event.position, cx)
+                        })
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_image(hash.clone(), bytes, name.clone(), window, cx)
+                    }))
+                    .into_any_element()
+            }
+            Some(Picture::Not(why)) => line(why.clone()),
+            Some(Picture::Asked) | None => {
+                let hash = file.hash.clone();
+                let bytes = file.bytes;
+                let name = file.name.clone();
+                let text = format!("image, {}…", model::size(file.bytes));
+                div()
+                    .h(px(60.))
+                    .id(SharedString::from(format!("thread image {hash}")))
+                    .debug_selector({
+                        let hash = hash.clone();
+                        move || format!("thread image {hash}")
+                    })
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_image(hash.clone(), bytes, name.clone(), window, cx)
+                    }))
+                    .child(
+                        div()
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.faint)
+                            .child(text),
+                    )
+                    .into_any_element()
+            }
+        }
     }
 
     /// One card of an open bead: the question, the largest text; the asker
@@ -3660,7 +3867,7 @@ impl Footplate {
             .flex_col()
             .gap_2p5()
             .p_4()
-            .rounded_lg()
+            .rounded(px(RADIUS_CARD))
             .border_1()
             .border_color(palette.line)
             .bg(palette.raised);
@@ -3723,7 +3930,9 @@ impl Footplate {
         };
         // The asker's label and the age both need room beside the question.
         // At a narrow window let the age wrap before the label squeezes the
-        // words down to a few pixels.
+        // words down to a few pixels. The current ask's question stands at
+        // the question size, the card the pane is for; the rest at the
+        // title size, as the pick's second question does.
         card = card.child(
             div()
                 .flex()
@@ -3735,7 +3944,7 @@ impl Footplate {
                         .flex_1()
                         .min_w(px(ASK_QUESTION_MIN))
                         .debug_selector(|| format!("question {bead_id} {ask_seq}"))
-                        .text_lg()
+                        .text_size(rems(if current { TYPE_QUESTION } else { TYPE_TITLE }))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(question),
                 )
@@ -3760,19 +3969,23 @@ impl Footplate {
         // under the words.
         for (line, text) in ask.context.iter().enumerate() {
             if asker_marked {
-                card = card.child(div().text_xs().child(self.marked_asker_line(
-                    card_key,
-                    "context",
-                    line,
-                    format!("run context {bead_id} {ask_seq} {line}"),
-                    text,
-                    &ask.asker,
-                )));
+                card = card.child(
+                    div()
+                        .text_size(rems(TYPE_BODY))
+                        .child(self.marked_asker_line(
+                            card_key,
+                            "context",
+                            line,
+                            format!("run context {bead_id} {ask_seq} {line}"),
+                            text,
+                            &ask.asker,
+                        )),
+                );
             } else {
                 card = card.child(
                     div()
                         .debug_selector(|| format!("context {bead_id} {ask_seq} {line}"))
-                        .text_xs()
+                        .text_size(rems(TYPE_BODY))
                         .child(select::text(
                             expanded_text_key(card_key, "context", line, text),
                             text.clone(),
@@ -3869,31 +4082,36 @@ impl Footplate {
             } else {
                 let mut marked = false;
                 for option in &ask.options {
-                    let marker = if option.number == answered {
-                        "●"
-                    } else {
-                        "○"
-                    };
-                    let pick = format!("{} {}. {}", marker, option.number, option.label);
-                    let consequence = format!("— {}", option.consequence);
+                    // A lever: its key plate, its label and its
+                    // consequence. The chosen and the recommended lever
+                    // are outlined in the accent, never filled: the
+                    // card's one filled control is its Answer button
+                    // below (the one-fill rule).
                     let n = option.number;
+                    let recommended = ask.recommend != 0 && n == ask.recommend;
+                    let chosen = n == answered;
+                    let (label, consequence) = lever_words(&option.label, &option.consequence);
                     let bead_click = bead_id.clone();
                     card = card.child(
                         div()
                             .id(SharedString::from(format!("pick {bead_id} {ask_seq} {n}")))
                             .debug_selector(|| format!("pick {bead_id} {ask_seq} {n}"))
                             .cursor_pointer()
-                            .rounded_md()
+                            .rounded(px(RADIUS_CONTROL))
                             .border_1()
-                            .border_color(rgba(0x00000000))
+                            .border_color(match chosen || recommended {
+                                true => palette.accent,
+                                false => rgba(0x00000000),
+                            })
                             .px_2()
                             .py_1()
+                            .min_h(px(LEVER_H))
                             .flex()
                             .flex_row()
                             .flex_wrap()
-                            .items_baseline()
-                            .when(n == answered, |el| el.bg(palette.open))
-                            .when(n != answered, |el| {
+                            .items_center()
+                            .gap_2()
+                            .when(!chosen && !recommended, |el| {
                                 el.hover(|style| style.border_color(palette.line))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -3901,22 +4119,48 @@ impl Footplate {
                             }))
                             .child(
                                 div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(format!("{pick} ")),
+                                    .flex_none()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(match recommended || chosen {
+                                        true => palette.accent,
+                                        false => palette.line,
+                                    })
+                                    .text_size(rems(TYPE_META))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(match recommended {
+                                        true => palette.text_accent,
+                                        false => palette.faint,
+                                    })
+                                    .child(lever_plate(n, recommended)),
                             )
-                            .child(div().text_xs().text_color(palette.faint).child(consequence)),
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_size(rems(TYPE_LABEL))
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(TYPE_META))
+                                    .text_color(palette.faint)
+                                    .child(consequence),
+                            ),
                     );
-                    // The recommended one with its why, under its own row: the
-                    // one place the card names the recommendation.
-                    if ask.recommend != 0 && n == ask.recommend {
+                    // The recommended one's why, under its own lever.
+                    if recommended {
                         marked = true;
-                        card = card.child(
-                            div()
-                                .ml_6()
-                                .text_xs()
-                                .text_color(palette.faint)
-                                .child(recommended_line(&ask.why)),
-                        );
+                        if !ask.why.is_empty() {
+                            card = card.child(
+                                div()
+                                    .ml_6()
+                                    .text_xs()
+                                    .text_color(palette.faint)
+                                    .child(ask.why.clone()),
+                            );
+                        }
                     }
                 }
                 // A recommendation the options do not hold stands past them, as
@@ -4130,66 +4374,137 @@ impl Footplate {
             // keys do nothing), and the words under them say what the card
             // waits for.
             let waiting = self.write_sending(&bead_id, ask_seq).is_some();
-            card = card.child(
-                div()
+            if ask.run.is_some() || ask.setup.is_some() {
+                // A run or setup card's four moves are levers, as the
+                // pick draws them: Approve filled, the rest outlined,
+                // each with its key plate above its label. One fill
+                // holds, and a held or waited card's levers take no
+                // second write.
+                let approve_enabled = sends && self.approving.is_none() && !held && !waiting;
+                let approve_click =
+                    approve_enabled.then(|| cx.listener(|this, _, _, cx| this.approve(cx)));
+                let ask_click = unwritable
+                    .is_none()
+                    .then(|| cx.listener(|this, _, window, cx| this.ask_about_now(window, cx)));
+                let later_click =
+                    (!waiting).then(|| cx.listener(|this, _, _, cx| this.later_now(cx)));
+                let decline_click = (!waiting)
+                    .then(|| cx.listener(|this, _, window, cx| this.decline_now(window, cx)));
+                let levers = div()
                     .flex()
-                    .flex_wrap()
-                    .items_center()
                     .gap_2()
-                    .when_some(send, |el, (id, text, enabled)| {
-                        el.child(send_button(
-                            id,
-                            text,
-                            enabled && !held && !waiting,
-                            palette,
-                            cx,
-                        ))
-                    })
-                    .when((ask.run.is_some() || ask.setup.is_some()) && sends, |el| {
-                        el.child(approve_button(
+                    .child(
+                        action_lever(
                             format!("approve {bead_id} {ask_seq}"),
-                            &self.yard,
-                            matches!(approval, Approval::Unlock),
-                            self.approving.is_none()
-                                && !held
-                                && self.write_sending(&bead_id, ask_seq).is_none(),
+                            APPROVE_KEY.to_string(),
+                            approve_lever_label(&self.yard, matches!(approval, Approval::Unlock)),
+                            true,
                             palette,
-                            cx,
-                        ))
-                    })
+                            approve_click,
+                        )
+                        .flex_1(),
+                    )
+                    .child(
+                        action_lever(
+                            format!("ask {bead_id} {ask_seq}"),
+                            "a".to_string(),
+                            "Ask about this".to_string(),
+                            false,
+                            palette,
+                            ask_click,
+                        )
+                        .flex_1(),
+                    )
+                    .child(
+                        action_lever(
+                            format!("later {bead_id} {ask_seq}"),
+                            "x".to_string(),
+                            "Later".to_string(),
+                            false,
+                            palette,
+                            later_click,
+                        )
+                        .flex_1(),
+                    )
+                    .child(
+                        action_lever(
+                            format!("decline {bead_id} {ask_seq}"),
+                            "d".to_string(),
+                            "Decline".to_string(),
+                            false,
+                            palette,
+                            decline_click,
+                        )
+                        .flex_1(),
+                    );
+                card = card.child(levers);
+                if let Some(why) = &unwritable {
+                    card = card.child(
+                        div()
+                            .debug_selector(|| format!("ask unreachable {bead_id} {ask_seq}"))
+                            .text_sm()
+                            .text_color(palette.faint)
+                            .child(why.clone()),
+                    );
+                }
+                // Under the levers, as under the buttons: where the
+                // write stands with the yard, until it says.
+                card = card
                     .when(held, |el| el.child(send_held(palette)))
-                    // Under the control, as the held words are: where the
-                    // write stands with the yard, until it says.
                     .when_some(
                         self.sending_words(&bead_id, ask_seq, palette),
                         |el, words| el.child(words),
-                    )
-                    .child(ask_about)
-                    .child(
-                        small_button("Later (x)".to_string(), palette)
-                            .id(SharedString::from(format!("later {bead_id} {ask_seq}")))
-                            .debug_selector(|| format!("later {bead_id} {ask_seq}"))
-                            .when(waiting, |el| el.opacity(0.5))
-                            .on_click(cx.listener(|this, _, _, cx| this.later_now(cx))),
-                    )
-                    .child(
-                        small_button("Decline (d)".to_string(), palette)
-                            .id(SharedString::from(format!("decline {bead_id} {ask_seq}")))
-                            .debug_selector(|| format!("decline {bead_id} {ask_seq}"))
-                            .when(waiting, |el| el.opacity(0.5))
-                            // Declining is not a pick, and a run ask has no
-                            // pick to take it for: only another ask's button
-                            // says so.
-                            .when(ask.run.is_none(), |el| {
-                                el.tooltip(move |_, cx| {
-                                    cx.new(|_| RailTip(DECLINE_IS_NO_PICK.to_string())).into()
+                    );
+            } else {
+                card = card.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .when_some(send, |el, (id, text, enabled)| {
+                            el.child(send_button(
+                                id,
+                                text,
+                                enabled && !held && !waiting,
+                                palette,
+                                cx,
+                            ))
+                        })
+                        .when(held, |el| el.child(send_held(palette)))
+                        // Under the control, as the held words are: where the
+                        // write stands with the yard, until it says.
+                        .when_some(
+                            self.sending_words(&bead_id, ask_seq, palette),
+                            |el, words| el.child(words),
+                        )
+                        .child(ask_about)
+                        .child(
+                            small_button("Later (x)".to_string(), palette)
+                                .id(SharedString::from(format!("later {bead_id} {ask_seq}")))
+                                .debug_selector(|| format!("later {bead_id} {ask_seq}"))
+                                .when(waiting, |el| el.opacity(0.5))
+                                .on_click(cx.listener(|this, _, _, cx| this.later_now(cx))),
+                        )
+                        .child(
+                            small_button("Decline (d)".to_string(), palette)
+                                .id(SharedString::from(format!("decline {bead_id} {ask_seq}")))
+                                .debug_selector(|| format!("decline {bead_id} {ask_seq}"))
+                                .when(waiting, |el| el.opacity(0.5))
+                                // Declining is not a pick, and a run ask has no
+                                // pick to take it for: only another ask's button
+                                // says so.
+                                .when(ask.run.is_none(), |el| {
+                                    el.tooltip(move |_, cx| {
+                                        cx.new(|_| RailTip(DECLINE_IS_NO_PICK.to_string())).into()
+                                    })
                                 })
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.decline_now(window, cx)),
-                            ),
-                    ),
-            );
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.decline_now(window, cx)),
+                                ),
+                        ),
+                );
+            }
             // The keys of a secret, run or setup ask's card: an
             // ordinary card carries each key on its control, and lists
             // none. Every card carries the cheatsheet's hint.
@@ -4273,6 +4588,7 @@ impl Footplate {
             .flex()
             .flex_wrap()
             .items_start()
+            .gap_1()
             .child(
                 div()
                     .flex_none()
@@ -4451,9 +4767,10 @@ impl Footplate {
             .child(
                 div()
                     .debug_selector(|| format!("run command {bead} {ask}"))
-                    .child(select::text(
+                    .child(select::text_with_code_copy(
                         expanded_text_key(card_key, "run", 0, &command),
                         fenced(&command),
+                        command.clone(),
                         &self.selection,
                     )),
             );
@@ -4674,7 +4991,9 @@ impl Footplate {
                     .border_color(rgba(0x00000000))
                     .px_2()
                     .py_1()
-                    .when(is_taken, |el| el.bg(palette.open))
+                    // A taken account is outlined, never filled: the
+                    // card's one fill is its Approve button.
+                    .when(is_taken, |el| el.border_color(palette.accent))
                     .when(!is_taken, |el| {
                         el.hover(|style| style.border_color(palette.line))
                     })
@@ -4829,7 +5148,7 @@ impl Footplate {
             .flex_col()
             .gap_2p5()
             .p_4()
-            .rounded_lg()
+            .rounded(px(RADIUS_CARD))
             .border_1()
             .border_color(palette.line)
             .bg(palette.raised);
@@ -4923,19 +5242,21 @@ impl Footplate {
             // The context, the options to pick again, the recommendation.
             for (line, text) in detail.context.iter().enumerate() {
                 if asker_marked {
-                    body = body.child(div().text_xs().child(self.marked_asker_line(
-                        card_key,
-                        "context",
-                        line,
-                        format!("run decided context {bead} {ask} {line}"),
-                        text,
-                        &detail.asker,
-                    )));
+                    body = body.child(div().text_size(rems(TYPE_BODY)).child(
+                        self.marked_asker_line(
+                            card_key,
+                            "context",
+                            line,
+                            format!("run decided context {bead} {ask} {line}"),
+                            text,
+                            &detail.asker,
+                        ),
+                    ));
                 } else {
                     body = body.child(
                         div()
                             .debug_selector(|| format!("context {bead} {ask} {line}"))
-                            .text_xs()
+                            .text_size(rems(TYPE_BODY))
                             .child(select::text(
                                 expanded_text_key(card_key, "context", line, text),
                                 text.clone(),
@@ -4989,7 +5310,9 @@ impl Footplate {
                             .flex_row()
                             .flex_wrap()
                             .items_baseline()
-                            .when(n == detail.chosen, |el| el.bg(palette.open))
+                            // The chosen lever is outlined, never
+                            // filled: a card's one fill is its button.
+                            .when(n == detail.chosen, |el| el.border_color(palette.accent))
                             .when(n != detail.chosen, |el| {
                                 el.hover(|style| style.border_color(palette.line))
                             })

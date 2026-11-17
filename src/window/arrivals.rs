@@ -3,8 +3,8 @@
 //! travel with no line.
 
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, SharedString, div, prelude::*, relative, rems,
-    rgba,
+    AnyElement, Context, FontWeight, MouseButton, SharedString, Window, div, prelude::*, relative,
+    rems, rgba,
 };
 
 use super::Footplate;
@@ -78,6 +78,7 @@ impl Footplate {
         model: &Model,
         palette: Palette,
         top: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let mut body = self.list_body();
@@ -123,7 +124,7 @@ impl Footplate {
                 }
             }
         }
-        self.column(body, palette, top, cx)
+        self.column(body, palette, top, window, cx)
     }
 
     /// One row of the departures board: the expected arrival in

@@ -1359,7 +1359,7 @@ impl Render for Footplate {
             (Some(_), _)
                 if !matches!(self.switch_for(), SwitchFor::Far) && self.first_run.is_none() =>
             {
-                Some(self.column(div().flex_1(), palette, top, cx))
+                Some(self.column(div().flex_1(), palette, top, window, cx))
             }
             _ => None,
         };
@@ -1376,10 +1376,10 @@ impl Render for Footplate {
                 root.child(self.talk_settings(palette, top, cx))
             }
             (Some(_), Some(model)) if self.reconnecting() && self.first_run.is_some() => root
-                .child(self.list(model, palette, top, cx))
+                .child(self.list(model, palette, top, window, cx))
                 .children(self.first_run.clone()),
             (Some(_), Some(model)) if self.reconnecting() => root
-                .child(self.list(model, palette, top, cx))
+                .child(self.list(model, palette, top, window, cx))
                 .child(self.talk(model, palette, cx))
                 .children(self.talk_drawer(model, palette, cx)),
             (Some(why), _) => match &self.first_run {
@@ -1388,8 +1388,9 @@ impl Render for Footplate {
             },
             // The question before stopping stands where the conversation
             // is, and what was there is back once it is answered.
-            (None, Some(model)) if self.switch_question.is_some() => {
-                root.child(self.list(model, palette, top, cx)).child(
+            (None, Some(model)) if self.switch_question.is_some() => root
+                .child(self.list(model, palette, top, window, cx))
+                .child(
                     self.stop_question(
                         self.switch_question
                             .as_ref()
@@ -1397,8 +1398,7 @@ impl Render for Footplate {
                         palette,
                         cx,
                     ),
-                )
-            }
+                ),
             // The settings stand as their sheet, with their own
             // sections, over whatever stood open: no rows beside them.
             (None, Some(_)) if self.settings_open => {
@@ -1407,10 +1407,10 @@ impl Render for Footplate {
             // The yard answers before its first run is over: its rows are
             // there, and the first run where a conversation will be.
             (None, Some(model)) if self.first_run.is_some() => root
-                .child(self.list(model, palette, top, cx))
+                .child(self.list(model, palette, top, window, cx))
                 .children(self.first_run.clone()),
             (None, Some(model)) => root
-                .child(self.list(model, palette, top, cx))
+                .child(self.list(model, palette, top, window, cx))
                 .child(self.talk(model, palette, cx))
                 .children(self.talk_drawer(model, palette, cx)),
             (None, None) => root,
@@ -1465,11 +1465,11 @@ fn expanded_text_key(card_key: u64, section: &str, index: usize, text: &str) -> 
 mod tests {
     use super::ask::{
         ANSWER_WORDS, Approval, DECLINE_IS_NO_PICK, HARNESS_GOES, LOGIN_GOES, PAIRING_GIVES,
-        SECRET_GOES, SEND_WORDS, answer_label, approval, approve_label, approve_unlock_label,
-        ask_line, asked_age, candidate_choice_line, card_head, decided_keys, decision_head,
-        description_line, fenced, give_label, give_unlock_label, recommended_line, run_keys,
-        run_runs, run_texts, secret_keys, setup_keys, take_back_label, texts_label, typeback_line,
-        typeback_mismatch, words_send,
+        SECRET_GOES, SEND_WORDS, answer_label, approval, approve_label, approve_lever_label,
+        approve_unlock_label, ask_line, asked_age, candidate_choice_line, card_head, decided_keys,
+        decision_head, description_line, fenced, give_label, give_unlock_label, lever_plate,
+        lever_words, recommended_line, run_keys, run_runs, run_texts, secret_keys, setup_keys,
+        take_back_label, texts_label, typeback_line, typeback_mismatch, words_send,
     };
     use super::asks::{dir_url, file_url};
     use super::bead::{Button, ROWS_BEFORE_MAIL, bar_top, hover_clock};
@@ -1608,6 +1608,24 @@ mod tests {
             "recommended: the test passed"
         );
         assert_eq!(recommended_line(""), "recommended");
+        // The recommendation stands on its lever's plate, outlined and
+        // never filled; the one fill on a card is its Answer button.
+        assert_eq!(lever_plate(2, true), "2 · recommended");
+        assert_eq!(lever_plate(1, false), "1");
+        assert_eq!(
+            lever_words("Move them now", "the change is ready"),
+            (
+                "Move them now".to_string(),
+                "— the change is ready".to_string()
+            )
+        );
+        // A run card's Approve lever names its yard under its key plate,
+        // and unlocking first where the unlock stands in front.
+        assert_eq!(approve_lever_label("home", false), "Approve in home");
+        assert_eq!(
+            approve_lever_label("home", true),
+            "Approve in home after unlocking"
+        );
         assert_eq!(asked_age("now"), "asked now");
         assert_eq!(asked_age("2h"), "asked 2h");
         assert_eq!(asked_age(""), "");
@@ -5224,16 +5242,17 @@ mod tests {
     }
 
     /// The drawer fits where the reading pane keeps at least its own
-    /// width: from 974 pixels up at the usual size, and never where the
-    /// text grows both past the window.
+    /// width: from 1056 pixels up at the usual size (the 64 rail, the
+    /// 352 list and two drawers of 320), and never where the text grows
+    /// both past the window.
     #[test]
     fn the_drawer_fits_where_the_pane_keeps_its_width() {
         assert!(drawer_fits(px(1280.), 16.));
-        assert!(drawer_fits(px(974.), 16.));
-        assert!(!drawer_fits(px(973.), 16.));
+        assert!(drawer_fits(px(1056.), 16.));
+        assert!(!drawer_fits(px(1055.), 16.));
         assert!(!drawer_fits(px(616.), 16.));
         assert!(!drawer_fits(px(1280.), 16. * 20. / 14.));
-        assert!(drawer_fits(px(974.), 16. * 11. / 14.));
+        assert!(drawer_fits(px(981.), 16. * 11. / 14.));
     }
 
     #[gpui::test]
@@ -7432,21 +7451,22 @@ yardr.dev
             })
         });
         wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-a"));
-        // Folded, the card asks for none of the note's images.
-        cx.run_until_parked();
-        assert_eq!(yard.blobs_asked(), Vec::<String>::new());
-        // One key expands it: the image the yard holds is drawn, and the
+        // Folded, the thread under the cards already asks for the note's
+        // images: the image the yard holds stands there compact, and the
         // one it holds no longer is a line that says so.
-        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 3, cx));
-        cx.simulate_keystrokes("escape");
-        cx.simulate_keystrokes("e");
-        assert!(expanded_of(&view, cx, "bead-a", 3));
-        wait(cx, "the note's image", |cx| {
+        wait(cx, "the thread's image", |cx| {
             picture(&view, cx, &held) == "here"
         });
         wait(cx, "that the other image is gone", |cx| {
             picture(&view, cx, &gone) == "image cdcdcdcd: the yard no longer has it"
         });
+        assert!(drawn(cx, "thread bead-a"));
+        // One key expands it: the same images stand in the bead whole
+        // too, and no second ask goes for them.
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 3, cx));
+        cx.simulate_keystrokes("escape");
+        cx.simulate_keystrokes("e");
+        assert!(expanded_of(&view, cx, "bead-a", 3));
         // The window draws the expanded card and stays.
         cx.run_until_parked();
         cx.update(|window, _| window.refresh());
@@ -11529,8 +11549,11 @@ yardr.dev
         assert_eq!(typed(&view, cx), "");
 
         // With no pick and none recommended the words go as a note, from
-        // the button as from Enter.
+        // the button as from Enter. The levers stand taller than the
+        // rows they replaced, so the third card's button stands below
+        // the fold: scroll it into view, as a person does.
         view.update(cx, |v, cx| v.select_ask("bead-a".into(), 5, cx));
+        scroll_on(cx, "card bead-a 5", gpui::point(px(0.), px(-600.)));
         assert!(drawn(cx, "send bead-a 5"));
         assert_eq!(typed(&view, cx), "");
         click_on(cx, "send bead-a 5");
@@ -14314,8 +14337,12 @@ yardr.dev
             let long = bounds_of(cx, "decision head bead-a");
             let short = bounds_of(cx, "decision head bead-b");
             let id = bounds_of(cx, "decision id bead-a");
+            // Half a pixel of slack: at the 352 list width a row's
+            // fractional line heights allocate 78.5px where its painted
+            // bounds ceil to 79, so the painted bottom can stand half a
+            // pixel past the next row's top with no content hidden.
             assert!(
-                first.bottom() <= second.top(),
+                first.bottom() <= second.top() + px(0.5),
                 "at {text} px a row overlaps the next: {first:?} {second:?}"
             );
             assert!(
@@ -19704,7 +19731,10 @@ yardr.dev
         // stand on one left edge, well in from the pane's, and the notice
         // is the one line.
         let mut line = px(0.);
-        for width in [1920., 1280.] {
+        // Wide: the pane past the reading column and its margins. With
+        // the list at 352 that takes 1440; 1280 leaves an 864 pane,
+        // which the narrow arm below covers.
+        for width in [1920., 1440.] {
             cx.simulate_resize(gpui::size(px(width), px(800.)));
             let pane = px(width) - bounds_of(cx, "rows").right();
             assert!(

@@ -35,7 +35,8 @@ use crate::yard::Env;
 /// count where the assembly's shows three, an open decision card of a plain
 /// ask, that card with a selection posed over its context, that card
 /// with one of jo's beads changed, so Lines carries its badge, an open
-/// card of a run ask, an open card of a teammate invite, the
+/// card of a run ask, the lever frame's card (a short-command run ask
+/// with its bead's thread and its image under it), an open card of a teammate invite, the
 /// teammates view open on its row with a paired and a waiting
 /// teammate, a weighty run ask's card beside a routine one's,
 /// a weighty mapping ask's card beside a routine one's, a yard that is
@@ -181,6 +182,7 @@ pub const STATES: &[&str] = &[
     "plain-select",
     "lines",
     "run",
+    "frame",
     "teammates",
     "teammates-list",
     "weighty",
@@ -2816,6 +2818,26 @@ fn populate(yard: &Yard, state: &str) {
                 .to_string(),
             );
         }
+        "frame" => {
+            // The lever frame at 960x640: one run ask with a short
+            // command, its four levers under it, and the bead's thread
+            // with its image under the card. The yard holds the image,
+            // as in the mail state.
+            yard.blob(IMAGE_HASH, IMAGE);
+            yard.answer(
+                "UserInbox",
+                r#"{"result": {"mail": [{"seq": 12, "from": "yardmaster", "to": "jo", "text": "Shall I land it?", "read": false}], "unread": 1, "last": 12, "from": ["yardmaster"]}}"#,
+            );
+            yard.answer(
+                "Conversation",
+                r#"{"result": [{"seq": 12, "at": "2026-10-08T09:30:00Z", "from": "yardmaster", "to": "jo", "text": "Shall I land it?", "read": false}]}"#,
+            );
+            yard.answer(
+                "UserAsks",
+                &json!({"result": {"open": [queued_frame()], "decided": []}}).to_string(),
+            );
+            yard.answer("Bead", &bead_frame());
+        }
         "teammates" => {
             // An open card of a teammate invite: the address, the yard
             // user and the role above the command, with the yard's
@@ -3127,6 +3149,44 @@ fn run_of() -> serde_json::Value {
     let command = long_command();
     let argv: Vec<&str> = command.split(' ').skip(1).collect();
     json!({"argv": argv, "command": command, "does": [RUN_DOES], "back": RUN_BACK})
+}
+
+/// The frame shot's run: the pick's landing, short enough that its
+/// command, its four levers and the thread stand in one 960x640 frame.
+fn frame_run() -> serde_json::Value {
+    json!({"command": "yardr land footplate-q2rd --onto main",
+           "argv": ["land", "footplate-q2rd", "--onto", "main"],
+           "does": ["Rebases onto main, runs .yardr/test, then fast-forwards main"],
+           "back": ""})
+}
+
+/// The frame ask 1 on footplate-q2rd as the queue lists it. Its asker
+/// is the yardmaster, who can be written to from here, so no unreachable
+/// line stands under its levers.
+fn queued_frame() -> serde_json::Value {
+    json!({
+        "bead": "footplate-q2rd", "bead_title": "Show the open asks on the dock badge",
+        "topic": "", "ask": 1, "question": "May I land it?",
+        "asker": "yardmaster", "since": "2026-10-10T10:00:00Z", "run": frame_run()
+    })
+}
+
+/// The bead of that ask, with its thread: one note with the shot image.
+fn bead_frame() -> String {
+    json!({"result": {"id": "footplate-q2rd", "title": "Show the open asks on the dock badge",
+        "body": "", "stage": "new", "labels": [],
+        "notes": [{"seq": 2, "kind": "note", "author": "ada",
+                   "text": "Review passed. The dock with three open asks.",
+                   "at": "2026-10-10T11:40:00Z",
+                   "files": [{"hash": IMAGE_HASH, "type": "image/png",
+                              "bytes": IMAGE.len(), "name": "dock-badge.png"}]}],
+        "asks": [
+            {"ask": 1, "to": "jo", "asker": "yardmaster",
+             "since": "2026-10-10T10:00:00Z",
+             "question": "May I land it?",
+             "context": ["Review passed at 3f1c2ab; main has moved two commits since"],
+             "options": [], "state": "open", "run": frame_run()}]}})
+    .to_string()
 }
 
 /// The weighty shot's command: the mail limit the trust class is of,
@@ -4022,6 +4082,21 @@ mod tests {
                     assert_eq!(bead.asks.len(), 1, "{state}");
                     assert_eq!(bead.asks[0].question.lines().count(), 3, "{state}");
                     assert!(bead.asks[0].run.is_some(), "{state}");
+                }
+                "frame" => {
+                    assert_eq!(loaded.asks.open.len(), 1, "{state}");
+                    let run = loaded.asks.open[0].run.as_ref().unwrap();
+                    assert_eq!(
+                        run.line().as_str(),
+                        "yardr land footplate-q2rd --onto main",
+                        "{state}"
+                    );
+                    let bead = yard.client().bead("footplate-q2rd").unwrap();
+                    assert_eq!(bead.asks.len(), 1, "{state}");
+                    assert!(bead.asks[0].run.is_some(), "{state}");
+                    assert_eq!(bead.notes.len(), 1, "{state}");
+                    assert_eq!(bead.notes[0].files.len(), 1, "{state}");
+                    assert_eq!(bead.notes[0].files[0].hash, IMAGE_HASH, "{state}");
                 }
                 "teammates" => {
                     assert_eq!(loaded.asks.open.len(), 1, "{state}");
