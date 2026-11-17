@@ -422,6 +422,159 @@ pub struct AskPreview {
     pub kind: String,
 }
 
+/// What a number for the mails the conversations hold is drawn from: no two
+/// states of any model hold the same, so a layout kept for one is never taken
+/// for another's.
+fn next_mail_gen() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
+/// What the open conversation's rows are made from: the row, whose mail it
+/// shows, how far back the pages reach and which mails the window holds. A
+/// layout made under one key is the layout for any state that has it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MailKey {
+    sel: Selected,
+    names: Vec<String>,
+    horizon: u64,
+    /// Which mails the conversations hold, as `mail_gen` numbers them.
+    mails: u64,
+}
+
+impl MailKey {
+    /// The row it is of.
+    pub fn row(&self) -> &Selected {
+        &self.sel
+    }
+}
+
+/// A part of a mail that stands as a row of its conversation's list: the
+/// separator of the day it begins, the head of its group (the sender's name
+/// and time), and its body, which every mail has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailPart {
+    Day,
+    Head,
+    Body,
+}
+
+/// A mail of the open conversation: where its letter is held, and what its
+/// place among the mails alone says of it.
+#[derive(Debug, Clone, PartialEq)]
+struct MailAt {
+    /// Which of the row's sources holds it, and its place there.
+    source: usize,
+    index: usize,
+    seq: u64,
+    /// Whether the name and the time stand above it: the first of its
+    /// sender's mails within five minutes that answer the same mail does,
+    /// and the rest read under it.
+    head: bool,
+    /// The day it begins, where a separator stands above it.
+    day: Option<NaiveDate>,
+}
+
+/// The open conversation laid out as the rows its list draws: one for each
+/// day's separator, group head and body, oldest first. It is made from the
+/// mails alone, and holds no mail's text: [`Model::entry`] makes what a row
+/// shows, for the rows in view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MailRows {
+    sel: Selected,
+    names: Vec<String>,
+    mails: Vec<MailAt>,
+    /// How many rows stand before each mail's, and in the end how many
+    /// there are.
+    starts: Vec<usize>,
+}
+
+impl MailRows {
+    /// How many mails.
+    pub fn mails(&self) -> usize {
+        self.mails.len()
+    }
+
+    /// How many rows: the days' separators, the heads and the bodies.
+    pub fn rows(&self) -> usize {
+        self.starts.last().copied().unwrap_or(0)
+    }
+
+    fn letter<'a>(&self, model: &'a Model, k: usize) -> &'a Letter {
+        let m = &self.mails[k];
+        &model.convo[&self.names[m.source]][m.index]
+    }
+
+    /// The mail and the part that the row `row` draws.
+    pub fn at(&self, row: usize) -> Option<(usize, MailPart)> {
+        if row >= self.rows() {
+            return None;
+        }
+        let k = self.starts.partition_point(|start| *start <= row) - 1;
+        let m = &self.mails[k];
+        let mut part = row - self.starts[k];
+        if m.day.is_some() {
+            if part == 0 {
+                return Some((k, MailPart::Day));
+            }
+            part -= 1;
+        }
+        if m.head {
+            if part == 0 {
+                return Some((k, MailPart::Head));
+            }
+            part -= 1;
+        }
+        debug_assert_eq!(part, 0);
+        Some((k, MailPart::Body))
+    }
+
+    /// The row that draws `part` of the mail `k`: none for a part it has
+    /// not (a separator where its day began above, a head where it reads
+    /// under another's).
+    pub fn row_of(&self, k: usize, part: MailPart) -> Option<usize> {
+        let m = self.mails.get(k)?;
+        let start = self.starts[k];
+        let day = usize::from(m.day.is_some());
+        match part {
+            MailPart::Day => m.day.map(|_| start),
+            MailPart::Head => m.head.then_some(start + day),
+            MailPart::Body => Some(start + day + usize::from(m.head)),
+        }
+    }
+
+    /// The mail `seq` and the part of it that the row `row` draws: what a
+    /// row is, whatever the rows before it are, so that it can be found
+    /// again once older mail has come in above it.
+    pub fn key(&self, row: usize) -> Option<(u64, MailPart)> {
+        let (k, part) = self.at(row)?;
+        Some((self.mails[k].seq, part))
+    }
+
+    /// The row that is `key` in this layout. A part that is gone (a head
+    /// the mail lost to a group that older mail brought above it) is
+    /// answered by the next one of the same mail.
+    pub fn row_of_key(&self, (seq, part): (u64, MailPart)) -> Option<usize> {
+        let k = self.mails.partition_point(|m| m.seq < seq);
+        if self.mails.get(k)?.seq != seq {
+            return None;
+        }
+        [MailPart::Day, MailPart::Head, MailPart::Body]
+            .into_iter()
+            .skip_while(|candidate| *candidate != part)
+            .find_map(|candidate| self.row_of(k, candidate))
+    }
+}
+
+/// What the mails of a conversation are drawn with at a frame: the moment,
+/// which names the days, and the beads the yard knows.
+#[derive(Debug, Clone)]
+pub struct EntryContext {
+    now: DateTime<chrono::Local>,
+    today: NaiveDate,
+    known: HashSet<String>,
+}
+
 /// Where what is typed goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
@@ -1347,6 +1500,12 @@ pub struct Model {
     /// The conversations by whom they are with, each in order of seq, and
     /// those the yard was asked for whole.
     convo: HashMap<String, Vec<Letter>>,
+    /// Which mails the conversations hold, as a number no other state of any
+    /// model has had: renewed whenever a mail is put in, and by nothing that
+    /// only changes what a mail says (it was read, a reaction). What lays a
+    /// conversation out as rows ([`MailKey`]) depends on the mails and on
+    /// that alone.
+    mail_gen: u64,
     loaded: HashSet<String>,
     /// The conversations of which the yard has older mail than the window
     /// was given, and those an older page of which is asked for and not
@@ -5135,7 +5294,9 @@ impl Model {
         (spans, previews)
     }
 
-    /// The open conversation, oldest first.
+    /// The open conversation, oldest first, all of it: what the tests read
+    /// it by. A frame asks for the mails in view alone ([`Model::entry`]).
+    #[cfg(test)]
     pub fn entries(&self) -> Vec<Entry> {
         match self.selected.as_ref() {
             Some(sel @ Selected::Conversation(_)) => self.entries_of(sel),
@@ -5145,65 +5306,154 @@ impl Model {
 
     /// The mail the row `sel` shows, oldest first.
     fn entries_of(&self, sel: &Selected) -> Vec<Entry> {
-        let letters = self.letters(sel);
-        let zone = chrono::Local;
-        let now = chrono::Local::now();
-        let today = now.date_naive();
-        let known = self.known_beads();
-        let mut out: Vec<Entry> = Vec::with_capacity(letters.len());
-        let mut before: Option<&Letter> = None;
-        for l in letters {
-            let mine = self.own(&l.from, sel);
-            let standing = mine.then(|| self.standing(l));
-            // The line is under the last of those that stand alike.
-            if let Some(shown) = out.last_mut()
-                && shown.mine
-                && shown.standing == standing
-            {
-                shown.standing = None;
+        let rows = self.mail_rows_of(sel);
+        let ctx = self.entry_context();
+        (0..rows.mails())
+            .map(|k| self.entry(&rows, k, &ctx))
+            .collect()
+    }
+
+    /// What tells that the open conversation's rows changed: the row, whose
+    /// mail it shows, how far back the pages reach, and which mails the
+    /// window holds. Cheap to make, so a frame asks for it and lays the
+    /// conversation out again only when it is not the one it laid out
+    /// ([`Model::mail_rows`]). None where no conversation is open.
+    pub fn mail_key(&self) -> Option<MailKey> {
+        let sel = self
+            .selected
+            .as_ref()
+            .filter(|sel| matches!(sel, Selected::Conversation(_)))?;
+        Some(MailKey {
+            sel: sel.clone(),
+            names: self.sources(sel),
+            horizon: self.horizon(sel),
+            mails: self.mail_gen,
+        })
+    }
+
+    /// The open conversation laid out as the rows its list draws, from its
+    /// mail alone: the walk over every mail that a frame must not make. None
+    /// where no conversation is open.
+    pub fn mail_rows(&self) -> Option<MailRows> {
+        let sel = self
+            .selected
+            .as_ref()
+            .filter(|sel| matches!(sel, Selected::Conversation(_)))?;
+        Some(self.mail_rows_of(sel))
+    }
+
+    fn mail_rows_of(&self, sel: &Selected) -> MailRows {
+        let names = self.sources(sel);
+        let horizon = self.horizon(sel);
+        // In the order `letters` has them: by seq, the sources' own order
+        // among those of one seq.
+        let mut at: Vec<(u64, usize, usize)> = Vec::new();
+        for (source, name) in names.iter().enumerate() {
+            if let Some(held) = self.convo.get(name) {
+                at.extend(
+                    held.iter()
+                        .enumerate()
+                        .filter(|(_, l)| l.seq >= horizon)
+                        .map(|(index, l)| (l.seq, source, index)),
+                );
             }
+        }
+        at.sort_by_key(|(seq, _, _)| *seq);
+        let zone = chrono::Local;
+        let mut mails: Vec<MailAt> = Vec::with_capacity(at.len());
+        let mut starts: Vec<usize> = Vec::with_capacity(at.len() + 1);
+        let mut rows = 0;
+        let mut before: Option<(&Letter, Option<NaiveDate>)> = None;
+        for (seq, source, index) in at {
+            let l = &self.convo[&names[source]][index];
+            let on = day_of(&l.at, &zone);
             // A mail reads under the sender's name and time above it while
             // it comes within five minutes on the same day and answers the
             // same mail; every other one heads its own group, and a new day
             // breaks above it.
             let head = match before {
                 None => true,
-                Some(b) => !grouped(b, l, &zone),
+                Some((b, _)) => !grouped(b, l, &zone),
             };
-            let day = match (day_of(&l.at, &zone), before) {
-                (Some(day), None) => Some(day_words(day, today)),
-                (Some(day), Some(b)) if day_of(&b.at, &zone) != Some(day) => {
-                    Some(day_words(day, today))
-                }
+            let day = match (on, before) {
+                (Some(day), None) => Some(day),
+                (Some(day), Some((_, was))) if was != Some(day) => Some(day),
                 _ => None,
             };
-            before = Some(l);
-            let text = plain(&l.text);
-            // A correction's label says its word: its text is what follows
-            // it, and the references stand in that.
-            let (correction, text) = match correction(&text) {
-                Some(said) => (true, said.to_string()),
-                None => (false, text),
-            };
-            let (refs, asks) = self.entry_refs(&text, &known, &now);
-            out.push(Entry {
-                seq: l.seq,
-                at: l.at.clone(),
-                from: l.from.clone(),
-                correction,
-                text,
-                files: l.files.clone(),
-                mine,
-                standing,
+            before = Some((l, on));
+            starts.push(rows);
+            rows += usize::from(day.is_some()) + usize::from(head) + 1;
+            mails.push(MailAt {
+                source,
+                index,
+                seq,
                 head,
                 day,
-                refs,
-                asks,
-                reactions: l.reactions.clone(),
-                answered: l.answered,
             });
         }
-        out
+        starts.push(rows);
+        MailRows {
+            sel: sel.clone(),
+            names,
+            mails,
+            starts,
+        }
+    }
+
+    /// What every mail of a conversation is drawn with at one frame: when it
+    /// is, and the beads the yard knows. Made once for the mails in view.
+    pub fn entry_context(&self) -> EntryContext {
+        let now = chrono::Local::now();
+        EntryContext {
+            today: now.date_naive(),
+            now,
+            known: self.known_beads(),
+        }
+    }
+
+    /// The mail `k` of `rows` as it is shown. Made for the mails in view,
+    /// each from its own letter and the one after it, so that what a frame
+    /// costs does not grow with the conversation.
+    pub fn entry(&self, rows: &MailRows, k: usize, ctx: &EntryContext) -> Entry {
+        let m = &rows.mails[k];
+        let sel = &rows.sel;
+        let l = rows.letter(self, k);
+        let mine = self.own(&l.from, sel);
+        // The line of where a mail stands is under the last of those that
+        // stand alike.
+        let standing = mine
+            .then(|| self.standing(l))
+            .filter(|now| match rows.mails.get(k + 1) {
+                Some(_) => {
+                    let next = rows.letter(self, k + 1);
+                    !(self.own(&next.from, sel) && self.standing(next) == *now)
+                }
+                None => true,
+            });
+        let text = plain(&l.text);
+        // A correction's label says its word: its text is what follows
+        // it, and the references stand in that.
+        let (correction, text) = match correction(&text) {
+            Some(said) => (true, said.to_string()),
+            None => (false, text),
+        };
+        let (refs, asks) = self.entry_refs(&text, &ctx.known, &ctx.now);
+        Entry {
+            seq: l.seq,
+            at: l.at.clone(),
+            from: l.from.clone(),
+            correction,
+            text,
+            files: l.files.clone(),
+            mine,
+            standing,
+            head: m.head,
+            day: m.day.map(|day| day_words(day, ctx.today)),
+            refs,
+            asks,
+            reactions: l.reactions.clone(),
+            answered: l.answered,
+        }
     }
 
     /// The hash of every image shown, each once: the open conversation's
@@ -5667,7 +5917,10 @@ impl Model {
                     c[i].delivery = l.delivery;
                 }
             }
-            Err(i) => c.insert(i, l),
+            Err(i) => {
+                c.insert(i, l);
+                self.mail_gen = next_mail_gen();
+            }
         }
     }
 
@@ -5746,34 +5999,41 @@ impl Model {
     /// The seq of the oldest and of the newest mail the open conversation
     /// shows.
     pub fn span(&self) -> Option<(u64, u64)> {
-        let letters = match self.selected.as_ref() {
-            Some(sel @ Selected::Conversation(_)) => self.letters(sel),
-            _ => Vec::new(),
+        let Some(sel @ Selected::Conversation(_)) = self.selected.as_ref() else {
+            return None;
         };
-        Some((letters.first()?.seq, letters.last()?.seq))
-    }
-
-    /// The rows the mails above `oldest` add to the shown conversation:
-    /// one for each mail, group head and day break, less the head and break
-    /// the oldest shown mail loses where it joins them. The window keeps
-    /// its place by it when an older page arrives above the view.
-    pub fn rows_above(&self, oldest: u64) -> usize {
-        let entries = self.entries();
-        let mut rows = 0;
-        let mut under = true;
-        for e in &entries {
-            if e.seq < oldest {
-                rows += 1 + usize::from(e.head) + usize::from(e.day.is_some());
-            } else if under {
-                // The oldest shown mail stood first: its head, and its
-                // break where its time reads, stood as rows; what it lost
-                // to the group above it takes those rows back.
-                under = false;
-                rows -= usize::from(!e.head);
-                rows -= usize::from(e.day.is_none() && day_of(&e.at, &chrono::Local).is_some());
+        // Each source holds its mail in order of seq, so its oldest shown
+        // and its newest are found without walking the rest.
+        let horizon = self.horizon(sel);
+        let mut span: Option<(u64, u64)> = None;
+        for held in self
+            .sources(sel)
+            .iter()
+            .filter_map(|name| self.convo.get(name))
+        {
+            let from = held.partition_point(|l| l.seq < horizon);
+            if let (Some(oldest), Some(newest)) = (held.get(from), held.last()) {
+                span = Some(match span {
+                    Some((first, last)) => (first.min(oldest.seq), last.max(newest.seq)),
+                    None => (oldest.seq, newest.seq),
+                });
             }
         }
-        rows
+        span
+    }
+
+    /// How many mails of the open conversation are newer than `seq`.
+    pub fn mails_after(&self, seq: u64) -> usize {
+        let Some(sel @ Selected::Conversation(_)) = self.selected.as_ref() else {
+            return 0;
+        };
+        // What the row shows is from its horizon on.
+        let after = seq.max(self.horizon(sel).saturating_sub(1));
+        self.sources(sel)
+            .iter()
+            .filter_map(|name| self.convo.get(name))
+            .map(|held| held.len() - held.partition_point(|l| l.seq <= after))
+            .sum()
     }
 
     /// The top of the open conversation was reached: asks for the page
@@ -10036,6 +10296,12 @@ mod tests {
         m.page("yardmaster", 0, letters(451..=500, "yardmaster"), true);
         assert_eq!(m.span(), Some((451, 500)));
         assert_eq!(m.top(), Top::Older);
+        // What is newer than a mail of the open conversation, counted from
+        // where the mails are held: all of them, none, and those between.
+        assert_eq!(m.mails_after(0), 50);
+        assert_eq!(m.mails_after(450), 50);
+        assert_eq!(m.mails_after(480), 20);
+        assert_eq!(m.mails_after(500), 0);
 
         // The top asks for the page before the oldest shown, once.
         assert_eq!(m.older(), [page("yardmaster", 451)]);
@@ -10043,12 +10309,14 @@ mod tests {
         m.page("yardmaster", 451, letters(401..=450, "yardmaster"), true);
         assert_eq!(m.span(), Some((401, 500)));
         assert_eq!(m.entries().len(), 100);
+        assert_eq!(m.mails_after(450), 50);
         assert_eq!(m.older(), [page("yardmaster", 401)]);
 
         // New mail still arrives below, and what is read after a send is
         // what is newer than it.
         m.event(&mail_to_jo(501, "yardmaster"));
         assert_eq!(m.span(), Some((401, 501)));
+        assert_eq!(m.mails_after(500), 1);
         assert_eq!(m.sent("yardmaster"), [read("yardmaster", 501)]);
 
         // The last page says there is no more: the top says so, and
@@ -10509,7 +10777,8 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_above_count_the_groups_and_the_breaks_an_older_page_adds() {
+    fn the_rows_of_a_conversation_are_its_breaks_heads_and_bodies_found_by_their_place_and_their_key()
+     {
         let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
         m.conversation(
             "yardmaster",
@@ -10519,14 +10788,50 @@ mod tests {
                 letter_at(14, "yardmaster", "jo", "2026-10-10T12:00:00Z", "three"),
             ],
         );
+        let rows = m.mail_rows().unwrap();
+        // Each mail is a body, and a head and a break where its entry has
+        // them: the layout is the entries', mail for mail.
+        let entries = m.entries();
+        let expected: Vec<(u64, MailPart)> = entries
+            .iter()
+            .flat_map(|e| {
+                [
+                    e.day.as_ref().map(|_| (e.seq, MailPart::Day)),
+                    e.head.then_some((e.seq, MailPart::Head)),
+                    Some((e.seq, MailPart::Body)),
+                ]
+            })
+            .flatten()
+            .collect();
+        assert_eq!(rows.mails(), 3);
+        assert_eq!(rows.rows(), expected.len());
+        let keys: Vec<(u64, MailPart)> =
+            (0..rows.rows()).map(|row| rows.key(row).unwrap()).collect();
+        assert_eq!(keys, expected);
+        assert_eq!(rows.at(rows.rows()), None);
+        // A row is found again by its mail and part, and by its key.
+        for (row, key) in keys.iter().enumerate() {
+            assert_eq!(rows.row_of_key(*key), Some(row), "{key:?}");
+            let (k, part) = rows.at(row).unwrap();
+            assert_eq!(rows.row_of(k, part), Some(row));
+        }
         // Above 14 stand two mails, their heads and the earlier day's
-        // break; above 13 stand one mail and its head; above the oldest
-        // mail nothing stands.
-        assert_eq!(m.rows_above(14), 5);
-        assert_eq!(m.rows_above(13), 2);
-        assert_eq!(m.rows_above(12), 0);
-        // Where the oldest shown mail joins the group above it, the new
-        // mail body still adds a row, while its old head and break move up.
+        // break (the first row of 14 is its own day's break); above 13 one
+        // mail, its head and its break; above the oldest mail nothing
+        // stands.
+        assert_eq!(rows.row_of(2, MailPart::Day), Some(5));
+        assert_eq!(rows.row_of(1, MailPart::Head), Some(3));
+        assert_eq!(rows.row_of(0, MailPart::Day), Some(0));
+        // A mail has no part it does not have, and a part that is gone is
+        // answered by the next one of the mail.
+        assert_eq!(rows.row_of(1, MailPart::Day), None);
+        assert_eq!(
+            rows.row_of_key((13, MailPart::Day)),
+            rows.row_of(1, MailPart::Head)
+        );
+        assert_eq!(rows.row_of_key((15, MailPart::Body)), None);
+        // Where the oldest mail joins the group of one that comes above
+        // it, the head and the break it had move up with that one's.
         let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
         m.conversation(
             "yardmaster",
@@ -10537,7 +10842,70 @@ mod tests {
         );
         let zone = chrono::Local;
         let same = day_of("2026-10-08T12:00:00Z", &zone) == day_of("2026-10-08T12:03:00Z", &zone);
-        assert_eq!(m.rows_above(13), if same { 1 } else { 3 });
+        let rows = m.mail_rows().unwrap();
+        assert_eq!(rows.rows(), if same { 4 } else { 6 });
+        assert_eq!(
+            rows.row_of(1, MailPart::Body),
+            Some(3 + usize::from(!same) * 2)
+        );
+        assert_eq!(rows.row_of(1, MailPart::Head).is_some(), !same);
+    }
+
+    #[test]
+    fn the_key_of_a_conversation_s_rows_changes_with_its_mails_and_with_nothing_that_is_said_of_them()
+     {
+        let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
+        m.select(Selected::Yard);
+        assert_eq!(m.mail_key(), None, "no conversation is open");
+        m.select(Selected::Conversation("yardmaster".into()));
+        m.conversation(
+            "yardmaster",
+            vec![letter_at(
+                12,
+                "yardmaster",
+                "jo",
+                "2026-10-08T12:00:00Z",
+                "one",
+            )],
+        );
+        let key = m.mail_key().unwrap();
+        assert_eq!(m.mail_key(), Some(key.clone()));
+        // A copy holds the same mails and has the same layout.
+        assert_eq!(m.clone().mail_key(), Some(key.clone()));
+        // What a mail says of itself moves nothing of the layout: that it
+        // was read, nor a reaction put on it.
+        let mut again = letter_at(12, "yardmaster", "jo", "2026-10-08T12:00:00Z", "one");
+        again.read = true;
+        m.conversation("yardmaster", vec![again]);
+        assert_eq!(m.mail_key(), Some(key.clone()));
+        // A mail put in changes it, one older or newer, and a model that
+        // holds other mails never has the key of this one.
+        let mut other = m.clone();
+        m.conversation(
+            "yardmaster",
+            vec![letter_at(
+                13,
+                "yardmaster",
+                "jo",
+                "2026-10-08T12:10:00Z",
+                "two",
+            )],
+        );
+        assert_ne!(m.mail_key(), Some(key.clone()));
+        other.conversation(
+            "yardmaster",
+            vec![letter_at(
+                13,
+                "yardmaster",
+                "jo",
+                "2026-10-08T12:10:00Z",
+                "two",
+            )],
+        );
+        assert_ne!(other.mail_key(), m.mail_key());
+        // The row open is part of it.
+        m.select(Selected::Yard);
+        assert_eq!(m.mail_key(), None);
     }
 
     #[test]

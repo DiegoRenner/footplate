@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, App, Context, Corner, Div, Focusable, FontWeight, Image, ImageFormat, MouseButton,
     MouseDownEvent, ObjectFit, Pixels, Point, ScrollHandle, SharedString, WeakEntity, Window,
-    anchored, deferred, div, img, prelude::*, px, rems, rgba, white,
+    anchored, deferred, div, img, list, prelude::*, px, rems, rgba, white,
 };
 
 use super::Expanded;
@@ -35,7 +35,8 @@ use super::words::{
 use crate::api::{self, Address, BlobRef, Event, Reach, Reaction};
 use crate::draft::{self, Attachment, Found};
 use crate::model::{
-    self, ArrivalDetail, AskPreview, Entry, Kind, Model, News, Selected, Target, Top,
+    self, ArrivalDetail, AskPreview, Entry, EntryContext, Kind, MailPart, MailRows, Model, News,
+    Selected, Target, Top,
 };
 use crate::save;
 use crate::select;
@@ -51,7 +52,7 @@ pub(crate) fn hover_clock(head: bool, hover: Option<(u64, Piece)>, seq: u64) -> 
     !head && hover.is_some_and(|(at, _)| at == seq)
 }
 
-/// The rows of the conversation's list that stand before its mail: the
+/// The items of the conversation's list that stand before its mail: the
 /// line above the oldest mail, which `talk_conversation` puts first.
 pub(crate) const ROWS_BEFORE_MAIL: usize = 1;
 
@@ -2218,21 +2219,32 @@ impl Footplate {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        // How far under the list's top the row stands, as `keep_place`
-        // reckons it: the row's top in the layout, which the scroll has not
-        // moved, with the scroll offset and the list's top. The layout is
-        // the last frame's, so a change of it shows here a frame late; the
-        // bar shows while the pointer rests on a letter, after the scroll
-        // has settled, and the offset is the current one, so the wheel's
-        // scroll shows at once. With no layout yet there is nothing to stop
-        // the bar at.
-        let list = &self.conversation;
-        let top = match list.bounds_for_item(item) {
-            Some(row) => {
-                let below = row.top() + list.offset().y - list.bounds().top();
-                bar_top(below, row.size.height)?
+        // How far under the list's top the row stands: the row's top in the
+        // window and the list's, as the list laid them out for the view as
+        // it stands at the start of this frame (`react_place`). The layout
+        // is the last frame's, so a change of it shows here a frame late;
+        // the bar shows while the pointer rests on a letter, after the
+        // scroll has settled, and the view is the current one, so the
+        // wheel's scroll shows at once. With no layout yet there is nothing
+        // to stop the bar at.
+        let top = match self.mail_open() {
+            true => match self.react_place.get() {
+                Some((at, row, view)) if at == item => bar_top(row.top() - view, row.size.height)?,
+                _ => px(-36.),
+            },
+            // The yard row's mail is a column that scrolls: the row's top
+            // in its layout, which the scroll has not moved, with the
+            // scroll offset and the column's top.
+            false => {
+                let list = &self.conversation;
+                match list.bounds_for_item(item) {
+                    Some(row) => {
+                        let below = row.top() + list.offset().y - list.bounds().top();
+                        bar_top(below, row.size.height)?
+                    }
+                    None => px(-36.),
+                }
             }
-            None => px(-36.),
         };
         let me = self.model.as_ref().map(Model::me).unwrap_or_default();
         let mine = reactions
@@ -2407,41 +2419,78 @@ impl Footplate {
     /// reads under the sender's name above joins its group, and every other
     /// one starts a group, with the day's separator above it where the day
     /// changes. Each group stands in the reading column. The rows are the
-    /// list's own, one for each day break, head and body, from the first
-    /// after the line above the oldest mail: each head and body is told
-    /// the row it stands in, for the bar of reactions to stop at the
-    /// list's top by.
-    pub(crate) fn mail_rows(
+    /// list's own items, one for each day break, head and body, from the
+    /// first after the line above the oldest mail; the list asks for the
+    /// ones in view, and each head and body is told the item it stands in,
+    /// for the bar of reactions to stop at the list's top by. An item keeps
+    /// the mail's side edges on the composer's 12px margin, and the first and
+    /// the last stand in the 16px of breathing room above and below the
+    /// mail. Items have no gap between them: the breathing room between rows
+    /// stands inside the head and the body, so a letter's two touch and the
+    /// pointer never stands between them.
+    pub(crate) fn mail_item(
         &self,
-        entries: Vec<Entry>,
+        ix: usize,
+        rows: &MailRows,
+        ctx: &EntryContext,
         palette: Palette,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let mut out: Vec<AnyElement> = Vec::new();
-        for entry in entries {
-            // The head and day break are separate scroll rows. An older
-            // page can then add mail to this group without moving the
-            // message that was already in view inside a growing wrapper.
-            if let Some(day) = entry.day.clone() {
-                out.push(day_break(day, palette));
+    ) -> AnyElement {
+        #[cfg(test)]
+        self.mail_items_made.set(self.mail_items_made.get() + 1);
+        let item = div().w_full().px_3();
+        let Some(model) = self.model.as_ref() else {
+            return item.into_any_element();
+        };
+        let last = ix == ROWS_BEFORE_MAIL + rows.rows().saturating_sub(1);
+        let row = match ix
+            .checked_sub(ROWS_BEFORE_MAIL)
+            .and_then(|row| rows.at(row))
+        {
+            // The line above the oldest mail is always the first item: a
+            // mail keeps its place among the rows but for the mails put in
+            // above it.
+            None => {
+                let top = match model.top() {
+                    Top::Older => "Loading older mail…",
+                    Top::Start => "The conversation starts here.",
+                    Top::Unread => "",
+                };
+                reading_column(
+                    div()
+                        .debug_selector(|| "conversation top".to_string())
+                        .flex()
+                        .justify_center()
+                        .text_sm()
+                        .text_color(palette.faint)
+                        .child(top)
+                        .into_any_element(),
+                )
+                // What the rows' gap carried under a row with no body.
+                .mb_1()
+                .into_any_element()
             }
-            if entry.head {
-                // A separator above names the day, over this group or an
-                // earlier one of it: the head says the time alone.
-                let at = model::clock_time(&entry.at, &chrono::Local);
-                let item = ROWS_BEFORE_MAIL + out.len();
-                out.push(reading_row(
-                    self.entry_head(&entry, at, item, palette, cx),
-                    true,
-                ));
+            Some((k, part)) => {
+                let entry = model.entry(rows, k, ctx);
+                match part {
+                    MailPart::Day => match entry.day {
+                        Some(day) => day_break(day, palette),
+                        None => div().into_any_element(),
+                    },
+                    // A separator above names the day, over this group or an
+                    // earlier one of it: the head says the time alone.
+                    MailPart::Head => {
+                        let at = model::clock_time(&entry.at, &chrono::Local);
+                        reading_row(self.entry_head(&entry, at, ix, palette, cx), true)
+                    }
+                    MailPart::Body => reading_row(self.entry_body(entry, ix, palette, cx), false),
+                }
             }
-            let item = ROWS_BEFORE_MAIL + out.len();
-            out.push(reading_row(
-                self.entry_body(entry, item, palette, cx),
-                false,
-            ));
-        }
-        out
+        };
+        item.when(ix == 0, |el| el.pt_4())
+            .when(last, |el| el.pb_4())
+            .child(row)
+            .into_any_element()
     }
 
     pub(crate) fn talk_conversation(
@@ -2510,62 +2559,52 @@ impl Footplate {
                     .child(line)
             }));
 
-        let entries = model.entries();
         // The mail reads as a column: each row stands full width up to the
-        // reading width, centred in the pane.
-        let mail = div()
-            .id("conversation")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.conversation)
-            // Keep the mail's side edges on the composer's 12px margin;
-            // the vertical breathing room stays 16px.
-            .px_3()
-            .py_4()
-            .flex()
-            .flex_col()
-            .items_center()
-            // No gap of its own: the breathing room between rows stands
-            // inside the head and the body, so a letter's two touch and
-            // the pointer never stands between them.
-            .gap_0();
-        let mail = if entries.is_empty() {
-            mail.child(reading_column(
-                div()
-                    .text_color(palette.faint)
-                    .child(if with == model.me() {
-                        "No notes to yourself yet. What you write here is mail to yourself."
-                            .to_string()
-                    } else {
-                        format!("No mail between you and {with} yet. What you write here is mail.")
-                    })
-                    .into_any_element(),
-            ))
-        } else {
-            // The line above the oldest mail is always the first child:
-            // a mail keeps its place among the children but for the mails
-            // put in above it.
-            let top = match model.top() {
-                Top::Older => "Loading older mail…",
-                Top::Start => "The conversation starts here.",
-                Top::Unread => "",
-            };
-            mail.child(
-                reading_column(
+        // reading width, centred in the pane. The list draws the rows in view
+        // and no others; it was told what they are at the start of the frame
+        // ([`Footplate::sync_mail`]).
+        let rows = self
+            .mail_seen
+            .borrow()
+            .as_ref()
+            .map(|seen| seen.rows.clone())
+            .filter(|rows| rows.rows() > 0);
+        let mail = match rows {
+            None => div()
+                .id("conversation")
+                .flex_1()
+                .min_h_0()
+                .px_3()
+                .py_4()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(reading_column(
                     div()
-                        .debug_selector(|| "conversation top".to_string())
-                        .flex()
-                        .justify_center()
-                        .text_sm()
                         .text_color(palette.faint)
-                        .child(top)
+                        .child(if with == model.me() {
+                            "No notes to yourself yet. What you write here is mail to yourself."
+                                .to_string()
+                        } else {
+                            format!(
+                                "No mail between you and {with} yet. What you write here is mail."
+                            )
+                        })
                         .into_any_element(),
+                ))
+                .into_any_element(),
+            Some(rows) => {
+                let ctx = Rc::new(model.entry_context());
+                list(
+                    self.mail.clone(),
+                    cx.processor(move |this, ix: usize, _, cx| {
+                        this.mail_item(ix, &rows, &ctx, palette, cx)
+                    }),
                 )
-                // What the rows' gap carried under a row with no body.
-                .mb_1(),
-            )
-            .children(self.mail_rows(entries, palette, cx))
+                .flex_1()
+                .min_h_0()
+                .into_any_element()
+            }
         };
         // The jump control stands over the mail, at its bottom right,
         // while the view is above its newest.

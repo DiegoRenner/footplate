@@ -9,14 +9,16 @@
 // gate builds no release.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 
 use gpui::{
-    Action, AnyElement, App, ClipboardItem, Context, Div, Focusable, FontWeight, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Rgba, ScrollHandle, SharedString, Stateful, Task, Window, div,
-    img, prelude::*, px, relative, rems, rgba,
+    Action, AnyElement, App, ClipboardItem, Context, Div, Focusable, FontWeight, ListOffset,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Rgba, ScrollHandle, SharedString,
+    Stateful, Task, Window, div, img, prelude::*, px, relative, rems, rgba,
 };
 
 use crate::api::{self, Address, Client, Reach};
@@ -24,7 +26,8 @@ use crate::draft;
 use crate::fetch::Seen;
 use crate::input;
 use crate::model::{
-    self, Effect, Kind, Mode, Model, News, Read, Route, Row, Selected, Target, Top,
+    self, Effect, Kind, MailPart, MailRows, Mode, Model, News, Read, Route, Row, Selected, Target,
+    Top,
 };
 use crate::notify::{self, Permission};
 use crate::select;
@@ -39,17 +42,19 @@ use crate::yard::{self, Env};
 use super::Footplate;
 use super::ask::group_head;
 use super::asks::{dir_url, yard_field, yard_help, yard_submit};
+use super::bead::ROWS_BEFORE_MAIL;
 use super::firstrun::{Ended, FirstRun};
 use super::keys::{KeysView, SECONDARY, keys_for};
 use super::metrics::{
-    DRAWER_WIDTH, HEAD_INSET, INPUT_KEPT, INPUT_NAME, INPUT_NOTE, RAIL, RAIL_LABEL, RAIL_TILE,
-    VOICE_LABEL, VOICE_NOTE, grown,
+    DRAWER_WIDTH, HEAD_INSET, INPUT_KEPT, INPUT_NAME, INPUT_NOTE, MAIL_NEAR_TOP, RAIL, RAIL_LABEL,
+    RAIL_TILE, VOICE_LABEL, VOICE_NOTE, grown,
 };
 use super::rail::{PROBE_AGAIN, Picture, Probe, RailTip, Unsent, ViewUp, reaches, run_address_of};
 #[cfg(debug_assertions)]
 use super::state::ApprovalPairing;
 use super::state::{
-    About, Adding, Anchor, Away, Counts, Held, NOT_OPENED, Place, SwitchBusy, rail_counts, waiting,
+    About, Adding, Anchor, Away, Counts, Held, MailSeen, NOT_OPENED, Place, SwitchBusy,
+    rail_counts, waiting,
 };
 use super::ui::{
     band, card_layer, checkbox, gear_glyph, keys_hint, lamp_glyph, segment, segmented,
@@ -70,6 +75,29 @@ pub const VOICE_PLAIN: &str = "Microphone audio from this machine streams to Ope
 /// after ([`VOICE_LABEL`]).
 fn voice_label(text: &'static str) -> Div {
     div().w(rems(VOICE_LABEL)).flex_none().child(text)
+}
+
+/// What the list of a conversation is told when its rows went from `old` to
+/// `new`, as the items it holds (the line above the oldest mail is the first):
+/// the items that stand in place of others, and how many stand there now. The
+/// rows that are the same at the front and at the back stay as they are, with
+/// the heights the list measured for them.
+fn mail_splice(old: &MailRows, new: &MailRows) -> (Range<usize>, usize) {
+    let (was, now) = (old.rows(), new.rows());
+    let mut front = 0;
+    while front < was.min(now) && old.key(front) == new.key(front) {
+        front += 1;
+    }
+    let mut back = 0;
+    while back < (was - front).min(now - front)
+        && old.key(was - 1 - back) == new.key(now - 1 - back)
+    {
+        back += 1;
+    }
+    (
+        ROWS_BEFORE_MAIL + front..ROWS_BEFORE_MAIL + was - back,
+        now - front - back,
+    )
 }
 
 impl Footplate {
@@ -901,6 +929,10 @@ impl Footplate {
         self.line_new_group = None;
         self.declining = None;
         self.back_position = None;
+        // The row kept in place for older mail, and the view that moves back
+        // to it, were of the conversation of the yard just left.
+        self.anchor = None;
+        self.settle = None;
         // A paging request and its scroll position belonged to the yard
         // just left; a returning yard may need to ask for the same page.
         self.older_at = None;
@@ -1611,33 +1643,26 @@ impl Footplate {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Model) -> Vec<Effect>,
     ) {
-        let before_first_mail = self.first_mail_item();
         let Some(model) = self.model.as_mut() else {
             return;
         };
         let before_sel = model.selected().cloned();
-        let before_position = matches!(&before_sel, Some(Selected::Conversation(_)))
-            .then(|| self.conversation.offset());
         let before_span = model.span();
         let before_notices = model.notices().len() + model.yard_mail().len();
         let before_files = model.delivered_count();
         let effects = f(model);
         let after_sel = model.selected().cloned();
-        if let (Some(Selected::Conversation(name)), Some(position), Some(Selected::Decision(_))) =
-            (&before_sel, before_position, &after_sel)
+        if let (Some(Selected::Conversation(name)), Some(Selected::Decision(_))) =
+            (&before_sel, &after_sel)
         {
-            self.back_position = Some((name.clone(), position));
+            self.back_position = Some(name.clone());
         }
-        let returning_position = match (&before_sel, &after_sel) {
+        let returning_here = match (&before_sel, &after_sel) {
             (
                 Some(Selected::Decision(_) | Selected::Decided(_, _)),
                 Some(Selected::Conversation(name)),
-            ) => self
-                .back_position
-                .take()
-                .filter(|(back, _)| back == name)
-                .map(|(_, position)| position),
-            _ => None,
+            ) => self.back_position.take().is_some_and(|back| back == *name),
+            _ => false,
         };
         if before_sel != after_sel {
             // Another row is open than the one the yard was left on.
@@ -1664,7 +1689,9 @@ impl Footplate {
                 | Some(Selected::Bead(_)) => {
                     self.decision.scroll_to_item(0);
                 }
-                _ if returning_position.is_some() => {}
+                // The list of the conversation left for a decision stands as
+                // it stood.
+                _ if returning_here => {}
                 _ => {
                     self.back_position = None;
                     self.new_below = 0;
@@ -1676,15 +1703,14 @@ impl Footplate {
                 Some(Selected::Conversation(_)) => {
                     // What is older than the oldest shown before was put in
                     // above it, what is newer than the newest below.
-                    let entries = model.entries();
                     let (above, below) = match before_span {
                         Some((oldest, newest)) => (
-                            model.rows_above(oldest),
-                            entries.iter().filter(|e| e.seq > newest).count(),
+                            model.span().is_some_and(|(now, _)| now < oldest),
+                            model.mails_after(newest),
                         ),
-                        None => (0, entries.len()),
+                        None => (false, model.mails_after(0)),
                     };
-                    if above + below > 0 {
+                    if above || below > 0 {
                         if self.bottom_pending || self.at_bottom() {
                             self.scroll_to_newest();
                         } else {
@@ -1692,8 +1718,8 @@ impl Footplate {
                             // up: the view does not move by itself, and
                             // the jump control carries how many arrived.
                             // Nor does it move for older mail above it.
-                            if above > 0 {
-                                self.keep_place(above, before_first_mail);
+                            if above {
+                                self.keep_place();
                             }
                             self.new_below += below;
                         }
@@ -1715,9 +1741,6 @@ impl Footplate {
                 }
                 _ => {}
             }
-        }
-        if let Some(position) = returning_position {
-            self.conversation.set_offset(position);
         }
         // A decision dealt with by key leaves the focus on the window, and
         // the yard's answer comes with no window to move it by: what is
@@ -1763,12 +1786,44 @@ impl Footplate {
         cx.notify();
     }
 
-    /// Whether the conversation stands at its newest: its scroll offset
-    /// is at the bottom, within a pixel.
+    /// Whether the open row is a conversation of mail, whose view is the
+    /// list's. The yard row's notices are a column that scrolls, and a card
+    /// scrolls as it did.
+    pub(crate) fn mail_open(&self) -> bool {
+        self.model
+            .as_ref()
+            .and_then(|m| m.selected_conversation())
+            .is_some()
+    }
+
+    /// Whether the conversation stands at its newest: the list was told to,
+    /// or its last row ends at the bottom of the view; the yard row's scroll
+    /// offset is at the bottom, within a pixel.
     pub(crate) fn at_bottom(&self) -> bool {
+        if self.mail_open() {
+            let items = self.mail.item_count();
+            if self.mail.logical_scroll_top().item_ix >= items {
+                return true;
+            }
+            let view = self.mail.viewport_bounds();
+            return self
+                .mail
+                .bounds_for_item(items - 1)
+                .is_some_and(|last| last.bottom() <= view.bottom() + px(1.));
+        }
         let offset = self.conversation.offset();
         let max = self.conversation.max_offset();
         offset.y + max.height <= px(1.)
+    }
+
+    /// How far the view of the open conversation stands above its newest,
+    /// as the heights the list has measured say: the rows below the view
+    /// were all in it when the view came up from the newest, and what the
+    /// view moved over above it is measured a view and more ahead, so the
+    /// distance is exact over the ground a view has covered.
+    pub(crate) fn mail_above_newest(&self) -> Pixels {
+        (self.mail.max_offset_for_scrollbar().height + self.mail.scroll_px_offset_for_scrollbar().y)
+            .max(px(0.))
     }
 
     /// Whether the jump control stands over the open conversation: one
@@ -1785,104 +1840,202 @@ impl Footplate {
             && !self.at_bottom()
     }
 
-    /// Puts the conversation at its newest on the next frame: the layout
-    /// applies it, and the jump control stays out of the frame before
-    /// it.
+    /// Puts the conversation at its newest: the list is told to stand past
+    /// its last row, which the layout of the next frame turns into the
+    /// view that ends there, and the jump control stays out of the frame
+    /// before it.
     pub(crate) fn scroll_to_newest(&mut self) {
         self.conversation.scroll_to_bottom();
+        // A conversation that is not the open row stands as it stood: the
+        // place a decision's card was opened from is kept through what the
+        // yard answers meanwhile.
+        if self.mail_open() {
+            self.mail_to_newest();
+        }
         self.bottom_pending = true;
         self.anchor = None;
+        self.settle = None;
     }
 
-    /// The oldest shown mail's body among the conversation's children:
-    /// past the line above it, its day's break, and its group's head.
-    pub(crate) fn first_mail_item(&self) -> usize {
-        let breaks = self
-            .model
-            .as_ref()
-            .map(|m| m.entries().first().is_some_and(|e| e.day.is_some()))
-            .unwrap_or(false);
-        2 + usize::from(breaks)
+    /// The list of the conversation stands past its last row, as for the
+    /// newest, at once.
+    fn mail_to_newest(&self) {
+        self.mail.scroll_to(ListOffset {
+            item_ix: self.mail.item_count(),
+            offset_in_item: px(0.),
+        });
     }
 
-    /// `above` rows were put in above the view of the open conversation:
-    /// the mail at the top of the view stays where it stood. The scroll
-    /// offset is counted from the top of the conversation, and how high
-    /// the new rows are is known only once they are laid out. So the
-    /// layout of the next frame puts that mail at the top of the view, and
-    /// the frame after it moves the view by what the mail stood off the
-    /// top ([`Footplate::reconcile_scroll`]).
-    pub(crate) fn keep_place(&mut self, above: usize, first_mail: usize) {
-        let anchor = match self.anchor.take() {
-            // More was put in before the last was laid out.
-            Some((kept, _)) => Anchor {
-                item: kept.item + above,
-                off: kept.off,
-            },
-            None => {
-                // The line, day break and group head stay at the front
-                // when older mail joins the first group. Anchor its first
-                // body instead, which moves by the new mail rows.
-                let top = self.conversation.logical_scroll_top().0;
-                let item = if top < first_mail { first_mail } else { top };
-                let off = self
-                    .conversation
-                    .bounds_for_item(item)
-                    .map_or(px(0.), |bounds| {
-                        bounds.top() + self.conversation.offset().y
-                            - self.conversation.bounds().top()
-                    });
-                Anchor {
-                    item: item + above,
-                    off,
-                }
+    /// Older mail is to be put in above the view of the open conversation:
+    /// the row at the top of the view stays where it stood. The list keeps
+    /// its view through rows put in above a row it stands on, but the line
+    /// above the oldest mail, its day's break and its group's head stay at
+    /// the front, and older mail that joins the group takes the break and
+    /// the head away: where the view's top is in those, the oldest mail's
+    /// body is the one kept, with its distance under the top. Taken from
+    /// the rows the list was last told of, so that it holds wherever the
+    /// rows are put in ([`Footplate::sync_mail`]).
+    pub(crate) fn keep_place(&mut self) {
+        // More was put in before the last was laid out: the row that was
+        // kept first is the one that stands.
+        if self.anchor.is_some() {
+            return;
+        }
+        let top = self.mail.logical_scroll_top();
+        let anchor = {
+            let seen = self.mail_seen.borrow();
+            let Some(seen) = seen.as_ref() else {
+                return;
+            };
+            let Some(first) = seen.rows.row_of(0, MailPart::Body) else {
+                return;
+            };
+            let first = ROWS_BEFORE_MAIL + first;
+            if top.item_ix < first {
+                seen.rows
+                    .key(first - ROWS_BEFORE_MAIL)
+                    .zip(self.mail.bounds_for_item(first))
+                    .map(|(key, body)| Anchor {
+                        key,
+                        off: body.top() - self.mail.viewport_bounds().top(),
+                    })
+            } else {
+                seen.rows
+                    .key(top.item_ix - ROWS_BEFORE_MAIL)
+                    .map(|key| Anchor {
+                        key,
+                        off: px(0.) - top.offset_in_item,
+                    })
             }
         };
-        self.conversation.scroll_to_top_of_item(anchor.item);
-        self.anchor = Some((anchor, false));
+        self.anchor = anchor;
     }
 
-    /// The scroll handle moves outside any model change: the wheel moves
-    /// it, and the layout applies a jump to the newest. What the window
-    /// keeps of it is brought up to date whenever it draws, before it
-    /// decides on the jump control.
+    /// Tells the list of the open conversation what its mail is now, where
+    /// that is not what it was told: the rows that stand in place of the
+    /// ones that went, or all of them for another conversation. Made at the
+    /// start of a frame, so that the frame is of the list as it is told. A
+    /// conversation that is no other than the one the list stands for keeps
+    /// its view: what is put in above it, or below it, moves nothing the
+    /// reader sees, and the row [`Footplate::keep_place`] kept is put where
+    /// it stood.
+    pub(crate) fn sync_mail(&mut self, window: &mut Window) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let Some(key) = model.mail_key() else {
+            return;
+        };
+        if self
+            .mail_seen
+            .borrow()
+            .as_ref()
+            .is_some_and(|seen| seen.yard == self.yard && seen.key == key)
+        {
+            return;
+        }
+        let Some(rows) = model.mail_rows().map(Rc::new) else {
+            return;
+        };
+        let items = ROWS_BEFORE_MAIL + rows.rows();
+        let anchor = self.anchor.take();
+        let anchor = match self.mail_seen.take() {
+            Some(old) if old.yard == self.yard && old.key.row() == key.row() => {
+                let (range, count) = mail_splice(&old.rows, &rows);
+                self.mail.splice(range, count);
+                anchor
+            }
+            // Another conversation: the row that was kept was of the other.
+            _ => {
+                self.mail.reset(items);
+                None
+            }
+        };
+        *self.mail_seen.borrow_mut() = Some(MailSeen {
+            yard: self.yard.clone(),
+            key,
+            rows: rows.clone(),
+        });
+        if self.bottom_pending {
+            self.mail_to_newest();
+            return;
+        }
+        let Some(anchor) = anchor else {
+            return;
+        };
+        let Some(row) = rows.row_of_key(anchor.key) else {
+            return;
+        };
+        let item = ROWS_BEFORE_MAIL + row;
+        if anchor.off <= px(0.) {
+            // The view's top was inside the row, or at its top.
+            self.mail.scroll_to(ListOffset {
+                item_ix: item,
+                offset_in_item: px(0.) - anchor.off,
+            });
+        } else {
+            // The row stood under the top of the view, with rows above it
+            // that are not measured: the layout of this frame puts it at the
+            // top and measures them, and the next moves the view back up.
+            self.mail.scroll_to(ListOffset {
+                item_ix: item,
+                offset_in_item: px(0.),
+            });
+            self.settle = Some(anchor.off);
+            window.request_animation_frame();
+        }
+    }
+
+    /// The window keeps what it knows of the scroll beyond the model's
+    /// changes: the list is told what the mail is, the wheel moves it, and
+    /// the layout applies a jump to the newest. What the window keeps of it
+    /// is brought up to date whenever it draws, before it decides on the
+    /// jump control.
     pub(crate) fn reconcile_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.anchor.take() {
-            // The layout of the frame before put the kept mail at the top
-            // of the view: now it goes back to where it stood.
-            Some((anchor, true)) => {
-                let mut at = self.conversation.offset();
-                at.y = (at.y + anchor.off).min(px(0.));
-                self.conversation.set_offset(at);
-            }
-            Some((anchor, false)) => {
-                self.anchor = Some((anchor, true));
-                window.request_animation_frame();
-                return;
-            }
-            None => {}
+        // The row kept at the top of the view by the frame before: now the
+        // view goes back up by what it stood under the top.
+        let settled = self.settle.take();
+        self.sync_mail(window);
+        if let Some(off) = settled {
+            self.mail.scroll_by(px(0.) - off);
         }
         self.come_back(window);
+        self.react_place
+            .set(self.react_row_place(window.rem_size()));
         // A resize keeps a conversation that stood at its newest there:
-        // the offset counts from the top, so a smaller view ends above
+        // the view is counted from the top, so a smaller one ends above
         // it. One scrolled up is not moved. A jump the layout has not
-        // put there yet counts as standing there.
-        let size = self.conversation.bounds().size;
-        if let Some((stood_size, stood_bottom)) = self.stood
-            && size != stood_size
-            && stood_bottom
-        {
-            self.scroll_to_newest();
+        // put there yet counts as standing there. What a card shows is no
+        // part of it: the conversation stands as it stood, behind the card.
+        let shown = matches!(
+            self.model.as_ref().and_then(|m| m.selected()),
+            Some(Selected::Conversation(_) | Selected::Yard)
+        );
+        if shown {
+            let size = match self.mail_open() {
+                true => self.mail.viewport_bounds().size,
+                false => self.conversation.bounds().size,
+            };
+            if let Some((stood_size, stood_bottom)) = self.stood
+                && size != stood_size
+                && stood_bottom
+            {
+                self.scroll_to_newest();
+            }
+            self.stood = Some((size, self.bottom_pending || self.at_bottom()));
         }
-        self.stood = Some((size, self.bottom_pending || self.at_bottom()));
         if self.bottom_pending {
             self.bottom_pending = false;
             return;
         }
-        if self.at_bottom() {
+        if shown && self.at_bottom() {
             self.new_below = 0;
         }
-        self.reach_top(cx);
+        // Not in the frame that has the kept row at the top: it stands off
+        // its place until the next.
+        if self.settle.is_none() {
+            self.reach_top(cx);
+        }
         // The arrivals shots show the list's end, where the arrivals row
         // stands, and the decisions-more shot the same, where the history's
         // more row is: a debug build's alone, as the page shot's stand at
@@ -1903,32 +2056,53 @@ impl Footplate {
         }
         // The column-top shot stands the head of mail 15 at the list's top
         // once the layout has the conversation, still at its newest as it
-        // opens; past that the list is the reader's. The row is counted as
-        // `mail_rows` lays them out: a day's break, then a head where the
-        // mail has one, then its body. The offset is set here, before the
-        // rows are drawn, and not asked of the layout
-        // (`scroll_to_top_of_item`): that moves the view after they are
-        // drawn, a letter above the list has no bar, and nothing would
-        // draw the window again for it. A debug build's alone, as above.
+        // opens; past that the list is the reader's. The list is told where
+        // the head is among its rows, before they are drawn. A debug build's
+        // alone, as above.
         #[cfg(debug_assertions)]
         if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("column-top")
             && self.at_bottom()
-            && self.conversation.max_offset().height > px(0.)
+            && self.mail.max_offset_for_scrollbar().height > px(0.)
+            && let Some(row) = self
+                .mail_seen
+                .borrow()
+                .as_ref()
+                .and_then(|seen| seen.rows.row_of_key((15, MailPart::Head)))
         {
-            let mut row = super::bead::ROWS_BEFORE_MAIL;
-            for entry in self.model.iter().flat_map(|m| m.entries()) {
-                row += usize::from(entry.day.is_some());
-                if entry.seq == 15 {
-                    if let Some(bounds) = self.conversation.bounds_for_item(row) {
-                        let mut at = self.conversation.offset();
-                        at.y = self.conversation.bounds().top() - bounds.top();
-                        self.conversation.set_offset(at);
-                    }
-                    break;
-                }
-                row += usize::from(entry.head) + 1;
-            }
+            self.mail.scroll_to(ListOffset {
+                item_ix: ROWS_BEFORE_MAIL + row,
+                offset_in_item: px(0.),
+            });
         }
+    }
+
+    /// Where the row stands that draws the bar of reactions of the mail the
+    /// pointer is on: its head, or its body where it has none. Asked of the
+    /// list before the frame draws the rows, which it cannot be then.
+    fn react_row_place(&self, rem: Pixels) -> Option<(usize, gpui::Bounds<Pixels>, Pixels)> {
+        let (seq, _) = self.react_hover?;
+        let (item, headed) = {
+            let seen = self.mail_seen.borrow();
+            let rows = &seen.as_ref()?.rows;
+            match rows
+                .row_of_key((seq, MailPart::Head))
+                .filter(|row| rows.key(*row) == Some((seq, MailPart::Head)))
+            {
+                Some(row) => (ROWS_BEFORE_MAIL + row, true),
+                None => (
+                    ROWS_BEFORE_MAIL + rows.row_of_key((seq, MailPart::Body))?,
+                    false,
+                ),
+            }
+        };
+        let mut row = self.mail.bounds_for_item(item)?;
+        // A head stands under a margin that is part of its item: the bar
+        // is raised from the head itself (`reading_row`: half a rem).
+        if headed {
+            row.origin.y += rem * 0.5;
+            row.size.height -= rem * 0.5;
+        }
+        Some((item, row, self.mail.viewport_bounds().top()))
     }
 
     /// Where the open yard stands, on `row`: what is kept of it when
@@ -1942,9 +2116,8 @@ impl Footplate {
             // A jump to the newest that the layout has not applied yet
             // is where it stands all the same.
             Selected::Conversation(_) | Selected::Yard if self.bottom_pending => px(0.),
-            Selected::Conversation(_) | Selected::Yard => {
-                self.conversation.max_offset().height + self.conversation.offset().y
-            }
+            Selected::Conversation(_) => self.mail_above_newest(),
+            Selected::Yard => self.conversation.max_offset().height + self.conversation.offset().y,
             // The board, the lines, No line, the grants, the teammates,
             // the pairing and the bead read from the top, as a card does.
             Selected::Decision(_)
@@ -2016,21 +2189,33 @@ impl Footplate {
             window.request_animation_frame();
             return;
         }
-        if matches!(&row, Selected::Conversation(_))
-            && off > self.conversation.max_offset().height
-            && model.top() == Top::Older
-        {
-            // The saved position is beyond the newest page. Reach the
-            // oldest loaded mail to fetch older pages, then try the saved
-            // distance again after each page is laid out.
-            let mut at = self.conversation.offset();
-            at.y = px(0.);
-            self.conversation.set_offset(at);
-            self.returning = Some(((row, off), true));
-            return;
-        }
         match row {
-            Selected::Conversation(_) | Selected::Yard => {
+            Selected::Conversation(_) => {
+                // The view goes up by what is left of the distance, as far as
+                // the rows above it are measured, and the layout measures a
+                // view and more of them each time it moves: so over some
+                // frames it stands where it stood. Where the window holds no
+                // more mail above and the yard has more, the top asks for it,
+                // and the view goes on when it is in.
+                let left = off - self.mail_above_newest();
+                if left.abs() <= px(1.) {
+                    return;
+                }
+                let top = self.mail.logical_scroll_top();
+                if left > px(0.) && top.item_ix == 0 && top.offset_in_item <= px(0.) {
+                    // Nothing above to move over. Asked for at the top; with
+                    // no more mail to ask for the place is beyond the mail
+                    // there is, and the view stays at its oldest.
+                    if model.top() == Top::Older {
+                        self.returning = Some(((row, off), true));
+                    }
+                    return;
+                }
+                self.mail.scroll_by(px(0.) - left);
+                self.returning = Some(((row, off), true));
+                window.request_animation_frame();
+            }
+            Selected::Yard => {
                 let mut at = self.conversation.offset();
                 at.y = (off - self.conversation.max_offset().height).min(px(0.));
                 self.conversation.set_offset(at);
@@ -2070,11 +2255,17 @@ impl Footplate {
         else {
             return;
         };
-        let at = self.conversation.offset().y;
-        if at + self.conversation.bounds().size.height / 2. < px(0.) {
+        // The rows above the view are measured as far as a view and more
+        // above it, so the height they add up to is the distance to the
+        // top wherever that is less than half the view; it is more than
+        // that wherever the top is further. No more rows than a few stand
+        // above a view that is near the top.
+        let top = self.mail.logical_scroll_top();
+        let above = px(0.) - self.mail.scroll_px_offset_for_scrollbar().y;
+        if top.item_ix > MAIL_NEAR_TOP || above >= self.mail.viewport_bounds().size.height / 2. {
             return;
         }
-        let here = (name.to_string(), oldest, at);
+        let here = (name.to_string(), oldest, top.item_ix);
         if self.older_at.as_ref() == Some(&here) {
             return;
         }
@@ -2093,18 +2284,13 @@ impl Footplate {
     }
 
     /// Jumps the open conversation to its newest message: the control
-    /// and its key. The offset is set at once, so the control is gone in
+    /// and its key. The list is told at once, so the control is gone in
     /// the frame that follows, and the line keeps the keys.
     pub(crate) fn jump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .model
-            .as_ref()
-            .and_then(|m| m.selected_conversation())
-            .is_none()
-        {
+        if !self.mail_open() {
             return;
         }
-        Self::to_newest(&self.conversation);
+        self.mail_to_newest();
         self.new_below = 0;
         // The reader chose a place since the yard was opened.
         self.returning = None;
@@ -2112,16 +2298,16 @@ impl Footplate {
         cx.notify();
     }
 
-    /// The scroll of what is shown: the open conversation's, the open
-    /// card's, the board's or the bead's, or the yard row's, which is the
-    /// conversation's. None under the settings, where none of those is
-    /// shown, and none with nothing open.
+    /// The scroll of what is shown, where it is a scroll handle's: the open
+    /// card's, the board's or the bead's, or the yard row's. None under the
+    /// settings, where none of those is shown, with nothing open, and for a
+    /// conversation of mail, whose view is the list's.
     pub(crate) fn scrolled(&self) -> Option<&ScrollHandle> {
         if self.settings_open {
             return None;
         }
         match self.model.as_ref()?.selected() {
-            Some(Selected::Conversation(_) | Selected::Yard) => Some(&self.conversation),
+            Some(Selected::Yard) => Some(&self.conversation),
             Some(
                 Selected::Decision(_)
                 | Selected::Waiting(_)
@@ -2135,7 +2321,7 @@ impl Footplate {
                 | Selected::NoLine
                 | Selected::Bead(_),
             ) => Some(&self.decision),
-            None => None,
+            Some(Selected::Conversation(_)) | None => None,
         }
     }
 
@@ -2143,10 +2329,18 @@ impl Footplate {
     /// towards the oldest. A page is the height of the view less two
     /// lines, so the eye keeps its place; at an end the view stops.
     pub(crate) fn page(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let line = window.line_height();
+        if self.mail_open() && !self.settings_open {
+            let step = (self.mail.viewport_bounds().size.height - line - line).max(px(0.));
+            self.mail.scroll_by(if down { step } else { px(0.) - step });
+            // The reader chose a place since the yard was opened.
+            self.returning = None;
+            cx.notify();
+            return;
+        }
         let Some(shown) = self.scrolled() else {
             return;
         };
-        let line = window.line_height();
         let step = (shown.bounds().size.height - line - line).max(px(0.));
         let max = shown.max_offset();
         let mut at = shown.offset();
@@ -2167,6 +2361,14 @@ impl Footplate {
     /// it is: unlike the jump to the newest, this is no return to
     /// writing.
     pub(crate) fn jump_oldest(&mut self, _: &JumpOldest, _: &mut Window, cx: &mut Context<Self>) {
+        if self.mail_open() && !self.settings_open {
+            self.mail.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+            return;
+        }
         let Some(shown) = self.scrolled() else {
             return;
         };
@@ -2185,12 +2387,7 @@ impl Footplate {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .model
-            .as_ref()
-            .and_then(|m| m.selected_conversation())
-            .is_some()
-        {
+        if self.mail_open() {
             self.jump(window, cx);
         } else if let Some(shown) = self.scrolled() {
             Self::to_newest(shown);

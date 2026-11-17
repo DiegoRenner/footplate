@@ -5,6 +5,7 @@
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -13,7 +14,7 @@ use gpui::{Pixels, Task};
 use super::count_words;
 use crate::api::{self, Client};
 use crate::fetch::Seen;
-use crate::model::{Mode, Model, Outcome, Selected};
+use crate::model::{MailKey, MailPart, MailRows, Mode, Model, Outcome, Selected};
 use crate::session;
 use crate::settings;
 use crate::setup;
@@ -90,13 +91,24 @@ pub(crate) fn device_name(machine: &str) -> String {
     }
 }
 
-/// A mail of the open conversation to keep in place while older mail is
-/// put in above it: its place among the children of what scrolls, and how
-/// far its top stood off the top of the view.
+/// A row of the open conversation to keep in place while older mail is
+/// put in above it: what the row is, which holds wherever the rows above it
+/// stand, and how far its top stood under the top of the view (a negative
+/// distance where the top of the view is inside the row).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Anchor {
-    pub(crate) item: usize,
+    pub(crate) key: (u64, MailPart),
     pub(crate) off: Pixels,
+}
+
+/// What the open conversation's list was last told it stands for: the yard
+/// and the layout of the mail the window held of the conversation then. A
+/// frame finds a layout made under the same key as the one it would make,
+/// and tells the list nothing; one that finds another tells it what changed.
+pub(crate) struct MailSeen {
+    pub(crate) yard: String,
+    pub(crate) key: MailKey,
+    pub(crate) rows: Rc<MailRows>,
 }
 
 /// A piece of a letter the pointer can stand on: its head, its body, or

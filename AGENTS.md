@@ -53,13 +53,25 @@ The window, its state and the yard:
     both: a picture's full-size view with its Save, the menu a right press on
     a picture opens (gpui has none, so `picture_menu_layer` draws one), and
     the save itself (`save_picture`), which `src/save.rs` writes off the
-    window's thread.
+    window's thread. The thread's mail is gpui's `list` (`Footplate::mail`,
+    a `ListState`), whose items are the line above the oldest mail and then
+    the conversation's rows (a day's break, a head, a body: `MailRows`),
+    made by `mail_item` for the rows in view alone: what a frame costs does
+    not grow with the mail the window holds, which typing in a long
+    conversation had paid (footplate-0v97). The yard row's notices stay a
+    div with a `ScrollHandle` (`Footplate::conversation`).
   - `src/window/chrome.rs`: the shell the views stand in: the rail, the list
     and the open conversation, the settings and the keys, the tray and the
     badge. `told` takes in what the yard says, and `Footplate::run_in`
     performs the `Effect`s the model asks for, each a call by the yard's
-    client. `change`, `change_in`, `keep_place`, `reach_top` and `jump` are
-    the plumbing that applies a change of the model to the view.
+    client. `change`, `change_in`, `keep_place`, `sync_mail`, `reach_top` and
+    `jump` are the plumbing that applies a change of the model to the view:
+    `sync_mail` tells the conversation's list at the start of each frame what
+    its rows are now (a splice of what changed, or a reset for another
+    conversation), and a view that stands in the list is counted in what the
+    list measures: rows are measured as they come into view and a view and
+    more beyond it (`MAIL_OVERDRAW`), so a place is exact over the ground
+    the view has covered.
   - `src/window/feedback.rs`: the Feedback form over the window; what it
     sends is `src/feedback.rs`'s.
   - `src/window/firstrun.rs`: the first run, "Set up a yard here", where the
@@ -99,8 +111,9 @@ The window, its state and the yard:
     every approval is Decide's.
   - `src/window/metrics.rs`: the window's measures: fixed sizes in pixels,
     sizes the words set in rems, the char budgets of the rows that end a long
-    string in an ellipsis (`ui::shorten`), and the small functions that fit a
-    pane or a drawer to them.
+    string in an ellipsis (`ui::shorten`), the small functions that fit a
+    pane or a drawer to them, and what the conversation's list measures
+    beyond its view (`MAIL_OVERDRAW`, `MAIL_NEAR_TOP`).
   - `src/window/panel.rs`: the reading pane's column, day breaks and rows,
     and the panel's heads, tracks and cards.
   - `src/window/rail.rs`: the images a mail names, the tooltips under the
@@ -146,7 +159,11 @@ The window, its state and the yard:
   them and keeps only the text and its SGR styling.
 - `src/model.rs`: what the window shows, without the window (rows, the open
   conversation, unread); never calls the yard, it answers an `Effect` the
-  window performs.
+  window performs. The open conversation is laid out as `MailRows` from its
+  letters alone (`Model::mail_rows`, asked again only when `Model::mail_key`
+  says a mail was put in), and each mail's `Entry` is made when its row is in
+  view (`Model::entry`), since it depends on the crew's state, the beads and
+  the time, which change with no mail.
 - `src/api.rs`: the yard's socket API (calls, event stream, their JSON), by
   socket (unix alone) or at an address over TCP+TLS; HTTP hand-written, no
   client library.

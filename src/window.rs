@@ -2,7 +2,7 @@
 //! conversation and the line to write in. What it shows is the model's
 //! (model.rs); this file draws it and makes the calls the model asks for.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use gpui::{
     AnyWindowHandle, App, Context, Entity, ExternalPaths, FocusHandle, Focusable, Image,
-    ImageFormat, KeyBinding, Pixels, ScrollHandle, Size, Task, Window, actions, div, prelude::*,
-    rems,
+    ImageFormat, KeyBinding, ListAlignment, ListState, Pixels, ScrollHandle, Size, Task, Window,
+    actions, div, prelude::*, rems,
 };
 
 use crate::api::{self, Address, Client};
@@ -50,14 +50,14 @@ mod yards;
 use feedback::Feedback;
 use firstrun::{FirstRun, Means};
 use keys::{APPROVE_KEY, CONTEXT, NO_LINE_CONTEXT, SETUP_SECRET_CONTEXT, SWITCH_CONTEXT};
-use metrics::READING_WIDTH;
+use metrics::{MAIL_OVERDRAW, READING_WIDTH};
 // The window's floor, which main.rs sets as the window's minimum.
 pub(crate) use metrics::WINDOW_MIN;
 use rail::{ImageOpen, Picture, PictureMenu, ViewUp};
 use screen::ScreenOpen;
 use state::{
-    About, Adding, AgentsBusy, Anchor, ApprovalPairing, Away, Held, Piece, Place, SwitchBusy,
-    SwitchFor, Talk,
+    About, Adding, AgentsBusy, Anchor, ApprovalPairing, Away, Held, MailSeen, Piece, Place,
+    SwitchBusy, SwitchFor, Talk,
 };
 use ui::small_button;
 use words::count_words;
@@ -306,30 +306,46 @@ pub struct Footplate {
     /// Of a yard at an address: who it says this device is.
     said: Option<api::Me>,
     line: Entity<Line>,
+    /// The yard row's scroll: its notices are a column that scrolls. A
+    /// conversation's mail is `mail`'s.
     conversation: ScrollHandle,
+    /// The open conversation's mail, as a list that lays out and draws the
+    /// rows in view alone, so that what a frame costs does not grow with
+    /// how much mail the window holds. Its items are the line above the
+    /// oldest mail, then the conversation's rows ([`MailRows`]); what it was
+    /// last told they are is `mail_seen`.
+    mail: ListState,
+    mail_seen: RefCell<Option<MailSeen>>,
+    /// How many items the list has asked for since the window opened: what
+    /// a test reads to hold that a frame makes the rows in view and no more.
+    #[cfg(test)]
+    mail_items_made: Cell<usize>,
     /// How many mails arrived in the open conversation below its view
     /// while it stood scrolled up: what the jump control carries.
     new_below: usize,
     /// The conversation was told to its newest and the layout has not
     /// put it there yet: the jump control stays out of the frame before
-    /// it, whose scroll offset is the old view's.
+    /// it, whose view is the old one.
     bottom_pending: bool,
-    /// Older mail was put in above the view: the mail to keep where it
-    /// stood, and whether the layout has put it at the top of the view
-    /// yet. See [`Footplate::keep_place`].
-    anchor: Option<(Anchor, bool)>,
+    /// Older mail is to be put in above the view: the row to keep where it
+    /// stood. See [`Footplate::keep_place`].
+    anchor: Option<Anchor>,
+    /// A row kept where it stood is at the top of the view since the layout
+    /// of the frame before, and the view moves back up by what it stood
+    /// under the top: the rows above it are measured only by that layout.
+    settle: Option<Pixels>,
     /// The conversation's viewport size and whether it stood at its
     /// newest when last laid out: a resize that finds it there puts it
-    /// at its newest again, since its offset is counted from the top.
+    /// at its newest again, since the view is counted from the top.
     stood: Option<(Size<Pixels>, bool)>,
     /// Where the open conversation stood when its older mail was last
-    /// asked for: the conversation, its oldest mail and the scroll offset.
-    /// Standing there still asks for nothing again, so a page the yard
-    /// did not answer is not asked for with every frame.
-    older_at: Option<(String, u64, Pixels)>,
-    /// The conversation's position when it was left for a decision, so
-    /// dealing with that decision can return to the same place.
-    back_position: Option<(String, gpui::Point<gpui::Pixels>)>,
+    /// asked for: the conversation, its oldest mail and the row at the
+    /// top of the view. Standing there still asks for nothing again, so a
+    /// page the yard did not answer is not asked for with every frame.
+    older_at: Option<(String, u64, usize)>,
+    /// The conversation that was left for a decision, so dealing with that
+    /// decision can return to the same place: the list keeps its view.
+    back_position: Option<String>,
     /// The open card's own scroll: mail and notices arriving never move it.
     decision: ScrollHandle,
     /// The bead the drawer at the window's right shows, if one is open
@@ -452,6 +468,10 @@ pub struct Footplate {
     /// The mail the pointer stands on, by seq, and the piece of it, if
     /// any: its bar of reactions to tap floats over it.
     react_hover: Option<(u64, Piece)>,
+    /// Where the row that draws that mail's bar stands in the list, with
+    /// the top of the list's view, read at the start of the frame: the list
+    /// holds its state while it draws the rows, so a row cannot ask it.
+    react_place: Cell<Option<(usize, gpui::Bounds<Pixels>, Pixels)>>,
     /// The bar's emoji the pointer stands on, by mail and emoji, if any:
     /// it draws larger in its square. A piece left clears only its own
     /// mark, as a letter's does.
@@ -953,9 +973,14 @@ impl Footplate {
             said: None,
             line,
             conversation: ScrollHandle::new(),
+            mail: ListState::new(0, ListAlignment::Top, gpui::px(MAIL_OVERDRAW)),
+            mail_seen: RefCell::new(None),
+            #[cfg(test)]
+            mail_items_made: Cell::new(0),
             new_below: 0,
             bottom_pending: false,
             anchor: None,
+            settle: None,
             stood: None,
             older_at: None,
             back_position: None,
@@ -998,6 +1023,7 @@ impl Footplate {
             feedback: None,
             rail_hover: None,
             react_hover: None,
+            react_place: Cell::new(None),
             emoji_hover: None,
             declining: None,
             secret,
@@ -1441,7 +1467,7 @@ mod tests {
         typeback_mismatch, words_send,
     };
     use super::asks::{dir_url, file_url};
-    use super::bead::{Button, bar_top, hover_clock};
+    use super::bead::{Button, ROWS_BEFORE_MAIL, bar_top, hover_clock};
     use super::keys::{KeysView, SECONDARY, keys_for};
     use super::metrics::{
         DRAWER_WIDTH, IMAGE_HEIGHT, IMAGE_MARGIN, INPUT_NAME, INPUT_NOTE, PANEL_MIN, RAIL,
@@ -3168,10 +3194,19 @@ mod tests {
     /// floating over a letter must leave as it was.
     fn letters_stand(view: &Entity<Footplate>, cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
         frames(cx);
-        let (mut stand, mails) = view.read_with(cx, |v, _| {
-            let rows: Vec<Bounds<Pixels>> = (0..)
-                .map_while(|ix| v.conversation.bounds_for_item(ix))
-                .collect();
+        let (mut stand, mails, shown) = view.read_with(cx, |v, _| {
+            // A conversation's rows are the list's, drawn from the one at the
+            // top of its view, and no mail is drawn but those; the yard row's
+            // are a column's children, all drawn.
+            let shown = v.mail_open().then(|| shown_rows(v));
+            let rows: Vec<Bounds<Pixels>> = match v.mail_open() {
+                true => (v.mail.logical_scroll_top().item_ix..)
+                    .map_while(|ix| v.mail.bounds_for_item(ix))
+                    .collect(),
+                false => (0..)
+                    .map_while(|ix| v.conversation.bounds_for_item(ix))
+                    .collect(),
+            };
             let mails: Vec<(u64, bool, bool)> = v
                 .model
                 .as_ref()
@@ -3182,15 +3217,18 @@ mod tests {
                         .collect()
                 })
                 .unwrap_or_default();
-            (rows, mails)
+            (rows, mails, shown)
         });
+        let has = |seq: u64, part| shown.as_ref().is_none_or(|s| s.contains(&(seq, part)));
         for (seq, head, reacted) in mails {
-            if head {
+            if head && has(seq, crate::model::MailPart::Head) {
                 stand.push(bounds_now(cx, &format!("head {seq}")));
             }
-            stand.push(bounds_now(cx, &format!("text {seq}")));
-            if reacted {
-                stand.push(bounds_now(cx, &format!("reactions {seq}")));
+            if has(seq, crate::model::MailPart::Body) {
+                stand.push(bounds_now(cx, &format!("text {seq}")));
+                if reacted {
+                    stand.push(bounds_now(cx, &format!("reactions {seq}")));
+                }
             }
         }
         stand
@@ -3288,7 +3326,7 @@ mod tests {
         // This is the first letter: the line above the oldest mail leaves
         // room for its bar, which stands in the list and not over the
         // pane's head.
-        let list = view.read_with(cx, |v, _| v.conversation.bounds());
+        let list = view.read_with(cx, |v, _| v.mail.viewport_bounds());
         assert!(
             bar.top() >= list.top(),
             "the first letter's bar stands above the list: {bar:?} over {list:?}"
@@ -3363,7 +3401,7 @@ mod tests {
                 bar.bottom() <= under.top(),
                 "at {text} px the bar runs over the text under the head: {bar:?} over {under:?}"
             );
-            let list = view.read_with(cx, |v, _| v.conversation.bounds());
+            let list = view.read_with(cx, |v, _| v.mail.viewport_bounds());
             assert!(
                 bar.top() >= list.top(),
                 "at {text} px the first letter's bar stands above the list: {bar:?} over {list:?}"
@@ -4015,17 +4053,30 @@ mod tests {
         // The default window, as main.rs opens it.
         cx.simulate_resize(gpui::size(px(960.), px(640.)));
         frames(cx);
-        let list = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.conversation.bounds());
+        let list = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.mail.viewport_bounds());
         // The head of the mail `seq` stands `under` pixels below the list's
         // top, or above it where that is negative.
         let stand = |cx: &mut VisualTestContext, seq: u64, under: f32| {
+            // The head is told to the top of the view, which the layout
+            // draws; then the view goes by what its element stands off
+            // where it is to stand (the row has a margin above it, which is
+            // the list item's), over rows that are measured by then.
+            view.read_with(cx, |v, _| {
+                let row = v
+                    .mail_seen
+                    .borrow()
+                    .as_ref()
+                    .and_then(|seen| seen.rows.row_of_key((seq, crate::model::MailPart::Head)))
+                    .expect("the head is a row of the conversation");
+                v.mail.scroll_to(gpui::ListOffset {
+                    item_ix: ROWS_BEFORE_MAIL + row,
+                    offset_in_item: px(0.),
+                });
+            });
+            frames(cx);
             let head = bounds_of(cx, &format!("head {seq}"));
             let top = list(cx).top();
-            view.read_with(cx, |v, _| {
-                let mut at = v.conversation.offset();
-                at.y += top + px(under) - head.top();
-                v.conversation.set_offset(at);
-            });
+            view.read_with(cx, |v, _| v.mail.scroll_by(head.top() - top - px(under)));
             frames(cx);
         };
 
@@ -4549,8 +4600,9 @@ mod tests {
 
         // The chip opens the bead beside the conversation, which stays
         // open on its row, in its mode, with its scroll.
-        let (rows, conversation) =
-            view.read_with(cx, |v, _| (v.rows.offset(), v.conversation.offset()));
+        let (rows, conversation) = view.read_with(cx, |v, _| {
+            (v.rows.offset(), v.mail.scroll_px_offset_for_scrollbar())
+        });
         click(cx, 12, mail, 8, 1.);
         assert_eq!(drawer_of(&view, cx), Some("bead-a".to_string()));
         assert_eq!(
@@ -4560,7 +4612,7 @@ mod tests {
         assert_eq!(view.read_with(cx, |v, _| v.mode()), Mode::Chat);
         view.read_with(cx, |v, _| {
             assert_eq!(v.rows.offset(), rows);
-            assert_eq!(v.conversation.offset(), conversation);
+            assert_eq!(v.mail.scroll_px_offset_for_scrollbar(), conversation);
         });
         wait(cx, "bead-a read whole", |cx| has_bead(&view, cx, "bead-a"));
         assert!(drawn(cx, "drawer"));
@@ -10247,7 +10299,8 @@ yardr.dev
         });
         wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-a"));
 
-        // Chat has its own selected conversation and scroll.
+        // Chat has its own selected conversation, and its view stands at the
+        // conversation's newest.
         to_chat(&view, cx);
         view.update_in(cx, |v, window, cx| {
             v.select(Selected::Conversation("yardmaster".into()), window, cx)
@@ -10255,10 +10308,8 @@ yardr.dev
         wait(cx, "the full conversation", |cx| {
             texts(&view, cx).len() == 12
         });
-        view.read_with(cx, |v, _| v.conversation.scroll_to_top_of_item(3));
-        cx.run_until_parked();
-        let place = view.read_with(cx, |v, _| v.conversation.offset());
-        assert!(place.y < px(0.));
+        frames(cx);
+        assert!(at_bottom(&view, cx));
         cx.simulate_input("half a thought");
         to_decisions(&view, cx);
         assert_eq!(rail_mode(&view, cx), Mode::Decisions);
@@ -10278,7 +10329,11 @@ yardr.dev
             open(&view, cx) == Some(Selected::Conversation("yardmaster".into()))
         });
         assert_eq!(typed(&view, cx), "half a thought");
-        assert_eq!(view.read_with(cx, |v, _| v.conversation.offset()), place);
+        // The pick took the decision's row away, which ended the way back to
+        // the place the conversation was left at: it opens at its newest, as
+        // a conversation opened from another row does.
+        frames(cx);
+        assert!(at_bottom(&view, cx));
     }
 
     /// After a pick, returning to chat restores its row and puts focus in
@@ -19290,18 +19345,17 @@ yardr.dev
         );
     }
 
-    /// No two of the open conversation's rows overlap: each of the
-    /// scroll handle's children stands below the one before, and each
-    /// mail's head and text stand below the text before. Within a
+    /// No two of the open conversation's rows overlap: each of the list's
+    /// rows the layout measured stands below the one before, and each
+    /// mail's head and text in view stand below the text before. Within a
     /// pixel, for gpui's rounding to device pixels. Drawn once, and
-    /// the bounds read off that frame: a redraw per mail would lay
-    /// the whole conversation out again for each.
+    /// the bounds read off that frame.
     fn rows_tile(view: &Entity<Footplate>, cx: &mut VisualTestContext) {
         frames(cx);
         let rows: Vec<Bounds<Pixels>> = view.read_with(cx, |v, _| {
             let mut rows = Vec::new();
-            let mut ix = 0;
-            while let Some(bounds) = v.conversation.bounds_for_item(ix) {
+            let mut ix = v.mail.logical_scroll_top().item_ix;
+            while let Some(bounds) = v.mail.bounds_for_item(ix) {
                 rows.push(bounds);
                 ix += 1;
             }
@@ -19326,7 +19380,15 @@ yardr.dev
         });
         let mut below = px(0.);
         let mut first = true;
-        for (seq, headed) in mails {
+        let shown = view.read_with(cx, |v, _| shown_rows(v));
+        let whole = |seq: u64, headed: bool| {
+            shown.contains(&(seq, crate::model::MailPart::Body))
+                && (!headed || shown.contains(&(seq, crate::model::MailPart::Head)))
+        };
+        for (seq, headed) in mails
+            .into_iter()
+            .filter(|(seq, headed)| whole(*seq, *headed))
+        {
             let text = bounds_now(cx, &format!("text {seq}"));
             if headed {
                 let head = bounds_now(cx, &format!("head {seq}"));
@@ -34951,21 +35013,29 @@ yardr.dev
         view.read_with(cx, |v, _| v.new_below)
     }
 
+    /// Where the open conversation's view stands: how far under its top, in
+    /// the heights the list has measured, as the scroll offset has it.
     fn offset_of(
         view: &Entity<Footplate>,
         cx: &mut VisualTestContext,
     ) -> gpui::Point<gpui::Pixels> {
-        view.read_with(cx, |v, _| v.conversation.offset())
+        view.read_with(cx, |v, _| match v.mail_open() {
+            true => v.mail.scroll_px_offset_for_scrollbar(),
+            false => v.conversation.offset(),
+        })
     }
 
-    /// Stands the open conversation forty pixels above its newest, as a
-    /// reader that scrolled up: the layout keeps the offset, and the next
+    /// Stands the open conversation forty pixels above where it stands, as
+    /// a reader that scrolled up: the layout keeps the view, and the next
     /// frame draws the conversation there.
     fn scroll_up(view: &Entity<Footplate>, cx: &mut VisualTestContext) {
-        view.read_with(cx, |v, _| {
-            let mut at = v.conversation.offset();
-            at.y += px(40.);
-            v.conversation.set_offset(at);
+        view.read_with(cx, |v, _| match v.mail_open() {
+            true => v.mail.scroll_by(px(-40.)),
+            false => {
+                let mut at = v.conversation.offset();
+                at.y += px(40.);
+                v.conversation.set_offset(at);
+            }
         });
         cx.run_until_parked();
         cx.update(|window, _| window.refresh());
@@ -34975,11 +35045,14 @@ yardr.dev
     /// Stands the open conversation at its newest by hand, as a reader
     /// that scrolled down to it.
     fn scroll_down(view: &Entity<Footplate>, cx: &mut VisualTestContext) {
-        view.read_with(cx, |v, _| {
-            let max = v.conversation.max_offset();
-            let mut at = v.conversation.offset();
-            at.y = px(0.) - max.height;
-            v.conversation.set_offset(at);
+        view.read_with(cx, |v, _| match v.mail_open() {
+            true => v.mail.scroll_by(px(1_000_000.)),
+            false => {
+                let max = v.conversation.max_offset();
+                let mut at = v.conversation.offset();
+                at.y = px(0.) - max.height;
+                v.conversation.set_offset(at);
+            }
         });
         cx.run_until_parked();
         cx.update(|window, _| window.refresh());
@@ -34999,7 +35072,7 @@ yardr.dev
         mails(&yard, &full);
         let (view, cx) = opened(&yard, &full, cx);
         // Thirty mails overflow the pane: there is further up to stand.
-        let over = view.read_with(cx, |v, _| v.conversation.max_offset().height);
+        let over = view.read_with(cx, |v, _| v.mail.max_offset_for_scrollbar().height);
         assert!(over > px(40.), "the conversation does not scroll: {over:?}");
 
         // At the newest the control is nowhere.
@@ -35107,7 +35180,7 @@ yardr.dev
         let (view, cx) = opened(&yard, &full, cx);
         frames(cx);
         // Sixty mails overflow the pane: there is further up to stand.
-        let over = view.read_with(cx, |v, _| v.conversation.max_offset().height);
+        let over = view.read_with(cx, |v, _| v.mail.max_offset_for_scrollbar().height);
         assert!(over > px(40.), "the conversation does not scroll: {over:?}");
         assert!(at_bottom(&view, cx));
 
@@ -35244,14 +35317,94 @@ yardr.dev
         }
     }
 
+    /// The rows the open conversation's list draws, from the top of its view
+    /// down, as the mail and the part each is: the list draws the rows that
+    /// stand in its view and no others, so no other row has bounds the frame
+    /// just drawn made.
+    fn shown_rows(v: &Footplate) -> Vec<(u64, crate::model::MailPart)> {
+        let seen = v.mail_seen.borrow();
+        let Some(seen) = seen.as_ref() else {
+            return Vec::new();
+        };
+        let shown = v.mail.viewport_bounds();
+        let mut keys = Vec::new();
+        let mut ix = v.mail.logical_scroll_top().item_ix;
+        while let Some(row) = v.mail.bounds_for_item(ix) {
+            if row.top() >= shown.bottom() {
+                break;
+            }
+            if row.bottom() > shown.top()
+                && let Some(key) = ix
+                    .checked_sub(ROWS_BEFORE_MAIL)
+                    .and_then(|row| seen.rows.key(row))
+            {
+                keys.push(key);
+            }
+            ix += 1;
+        }
+        keys
+    }
+
+    /// The seqs of the mails the open conversation's list draws a row of,
+    /// from the top of its view down, each once, after a frame.
+    fn shown_seqs(view: &Entity<Footplate>, cx: &mut VisualTestContext) -> Vec<u64> {
+        frames(cx);
+        let mut seqs: Vec<u64> = Vec::new();
+        for (seq, _) in view.read_with(cx, |v, _| shown_rows(v)) {
+            if seqs.last() != Some(&seq) {
+                seqs.push(seq);
+            }
+        }
+        seqs
+    }
+
+    /// Where the list stands the row of `part` of the mail `seq`, as the
+    /// list lays it out for its view, if it has measured it: asked without
+    /// a frame between, so what answers is the view as the test left it.
+    fn row_bounds(v: &Footplate, seq: u64, part: crate::model::MailPart) -> Option<Bounds<Pixels>> {
+        let row = v
+            .mail_seen
+            .borrow()
+            .as_ref()?
+            .rows
+            .row_of_key((seq, part))?;
+        v.mail.bounds_for_item(ROWS_BEFORE_MAIL + row)
+    }
+
     /// Stands the open conversation `down` pixels below its top, as a
-    /// reader that scrolled up there.
+    /// reader that scrolled up there: at its top, in one move; further down,
+    /// a page at a time from where it stands, over the rows the layout
+    /// measures as it goes, as the wheel moves it, and no further than the
+    /// mail that stood above it when it began (a page that comes in above it
+    /// on the way is another top). Heights count over the ground a view has
+    /// covered, so a jump that leaves out the ground between does not stand
+    /// where it says.
     fn scroll_to(view: &Entity<Footplate>, cx: &mut VisualTestContext, down: f32) {
-        view.read_with(cx, |v, _| {
-            let mut at = v.conversation.offset();
-            at.y = px(0.) - px(down);
-            v.conversation.set_offset(at);
-        });
+        if down == 0. {
+            view.read_with(cx, |v, _| {
+                v.mail.scroll_to(gpui::ListOffset {
+                    item_ix: 0,
+                    offset_in_item: px(0.),
+                })
+            });
+            frames(cx);
+            return;
+        }
+        let items = view.read_with(cx, |v, _| v.mail.item_count());
+        for _ in 0..200 {
+            let (above, now) = view.read_with(cx, |v, _| {
+                (
+                    px(0.) - v.mail.scroll_px_offset_for_scrollbar().y,
+                    v.mail.item_count(),
+                )
+            });
+            let by = (above - px(down)).clamp(px(-900.), px(900.));
+            if by.abs() <= px(1.) || now != items {
+                break;
+            }
+            view.read_with(cx, |v, _| v.mail.scroll_by(px(0.) - by));
+            frames(cx);
+        }
         frames(cx);
     }
 
@@ -35278,25 +35431,36 @@ yardr.dev
         let entries = view.read_with(cx, |v, _| v.model.as_ref().unwrap().entries());
         assert_eq!((entries[0].seq, entries[49].seq), (451, 500));
         // A page is several views high: at its newest nothing is asked.
-        let view_height = view.read_with(cx, |v, _| v.conversation.bounds().size.height);
-        let over = view.read_with(cx, |v, _| v.conversation.max_offset().height);
+        let view_height = view.read_with(cx, |v, _| v.mail.viewport_bounds().size.height);
+        let over = view.read_with(cx, |v, _| v.mail.max_offset_for_scrollbar().height);
         assert!(over > view_height, "a page is no view high: {over:?}");
 
-        // Above the top half of a view nothing is asked either.
+        // Above the top half of a view nothing is asked either. Three of the
+        // mails in view stand where they stand: the list draws no others.
         let half: f32 = (view_height / 2.).into();
         scroll_to(&view, cx, half + 40.);
         assert_eq!(yard.asked("Conversation").len(), 1);
-        let far = [451, 452, 453].map(|seq| bounds_now(cx, &format!("text {seq}")));
+        let far: Vec<(u64, Bounds<Pixels>)> = shown_seqs(&view, cx)
+            .into_iter()
+            .take(3)
+            .map(|seq| (seq, bounds_now(cx, &format!("text {seq}"))))
+            .collect();
+        assert_eq!(far.len(), 3);
 
         // Near the top, with a mail cut by the top of the view, the page
         // before is asked for, and that mail and those below it stand
         // where the view put them: as far below where they stood as the
-        // view went up, with the older mails above them or without.
+        // view went up, with the older mails above them or without. (The
+        // view goes up by what the layout measured, within a pixel.)
         scroll_to(&view, cx, 100.);
-        let stood = far.map(|mut bounds| {
-            bounds.origin.y += px(half + 40. - 100.);
-            bounds
-        });
+        let stood: Vec<(u64, Bounds<Pixels>)> = far
+            .iter()
+            .map(|(seq, bounds)| {
+                let mut bounds = *bounds;
+                bounds.origin.y += px(half + 40. - 100.);
+                (*seq, bounds)
+            })
+            .collect();
         wait(cx, "the page before", |cx| texts(&view, cx).len() == 100);
         frames(cx);
         assert_eq!(
@@ -35306,37 +35470,51 @@ yardr.dev
                 json!({"a": "jo", "b": "yardmaster", "limit": 50, "before": 451})
             ]
         );
-        assert_eq!(
-            [451, 452, 453].map(|seq| bounds_now(cx, &format!("text {seq}"))),
-            stood
-        );
+        for (seq, bounds) in &stood {
+            let now = bounds_now(cx, &format!("text {seq}"));
+            assert_eq!(now.size, bounds.size, "mail {seq}");
+            assert!(
+                (now.origin.y - bounds.origin.y).abs() <= px(1.),
+                "mail {seq} stands off the place the view put it: {now:?} past {bounds:?}"
+            );
+        }
         assert!(!at_bottom(&view, cx));
         // The older mails are no mail that arrived below.
         assert_eq!(new_below(&view, cx), 0);
         assert_eq!(yard.asked("Conversation").len(), 2);
 
-        // At the very top the oldest mail is the one that stays.
-        scroll_to(&view, cx, 0.);
+        // At the very top the oldest mail is the one that stays: 401 stands
+        // where the layout has it under the line above it, and stands there
+        // still under the mails that came in before it. Where it stands is
+        // read as the view is told to the top, before a frame asks for the
+        // page. gpui rounds layout to device pixels, so the same row stands
+        // up to half a pixel off: the place is pinned within that rounding,
+        // not to the pixel.
+        // (The view goes up to within a page of the top first, over the page
+        // that came in, so that the layout has measured its rows.)
+        scroll_to(&view, cx, half + 40.);
+        let at_top = view.read_with(cx, |v, _| {
+            v.mail.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+            row_bounds(v, 401, crate::model::MailPart::Body)
+        });
+        let at_top = at_top.expect("the oldest mail's row is measured");
+        frames(cx);
         wait(cx, "the third page", |cx| texts(&view, cx).len() == 150);
         frames(cx);
-        // 401 was the oldest, at the top of the view where 451 would
-        // have stood there: it stands there still, under the mails before.
-        // gpui rounds layout to device pixels, so the same text stands up
-        // to half a pixel off where another mail's stood: the place is
-        // pinned within that rounding, not to the pixel.
-        let mut at_top = far[0];
-        at_top.origin.y += px(half + 40.);
-        let stood = bounds_now(cx, "text 401");
-        assert_eq!(stood.origin.x, at_top.origin.x);
-        assert_eq!(stood.size.width, at_top.size.width);
+        let stood = view
+            .read_with(cx, |v, _| row_bounds(v, 401, crate::model::MailPart::Body))
+            .expect("the oldest mail's row is measured");
         assert!(
             (stood.origin.y - at_top.origin.y).abs() <= px(1.),
-            "mail 401 stands off where 451 stood: {:?} past {at_top:?}",
+            "mail 401 stands off where it stood at the top: {:?} past {at_top:?}",
             stood.origin.y
         );
         assert!(
             (stood.size.height - at_top.size.height).abs() <= px(1.),
-            "mail 401 stands off 451's height: {:?} past {at_top:?}",
+            "mail 401's row changed its height: {:?} past {at_top:?}",
             stood.size.height
         );
         assert_eq!(
@@ -35370,10 +35548,12 @@ yardr.dev
         a_yard_of_jo(&yard);
         long_grouped_conversation(&yard, 100);
         let (view, cx) = opened_on(&yard, 50, cx);
-        let view_height = view.read_with(cx, |v, _| v.conversation.bounds().size.height);
+        let view_height = view.read_with(cx, |v, _| v.mail.viewport_bounds().size.height);
         let half: f32 = (view_height / 2.).into();
         scroll_to(&view, cx, half + 40.);
-        let far = text_bounds(cx, 51);
+        // The first mail in view, whichever it is: the list draws no other.
+        let kept = shown_seqs(&view, cx)[0];
+        let far = text_bounds(cx, kept);
         scroll_to(&view, cx, 100.);
         let expected_y = far.origin.y + px(half + 40. - 100.);
 
@@ -35381,12 +35561,12 @@ yardr.dev
             texts(&view, cx).len() == 100
         });
         frames(cx);
-        let stood = text_bounds(cx, 51);
+        let stood = text_bounds(cx, kept);
         assert_eq!(stood.origin.x, far.origin.x);
         assert_eq!(stood.size.width, far.size.width);
         assert!(
             (stood.origin.y - expected_y).abs() <= px(1.),
-            "mail 51 moved while its group grew: {:?} past {expected_y:?}",
+            "mail {kept} moved while its group grew: {:?} past {expected_y:?}",
             stood.origin.y
         );
         assert_eq!(
@@ -35533,7 +35713,7 @@ yardr.dev
         let (view, cx) = opened(&yard, &full, cx);
         // Sixty mails overflow the pane twice over: there is more than
         // a page above to stand.
-        let over = view.read_with(cx, |v, _| v.conversation.max_offset().height);
+        let over = view.read_with(cx, |v, _| v.mail.max_offset_for_scrollbar().height);
         assert!(over > px(40.), "the conversation does not scroll: {over:?}");
         assert!(at_bottom(&view, cx));
         let in_line = view.update_in(cx, |v, window, cx| {
@@ -35543,23 +35723,27 @@ yardr.dev
 
         // A page is the view less two lines: smaller than what stands
         // above, so one key moves by exactly it.
-        let viewport = view.read_with(cx, |v, _| v.conversation.bounds().size.height);
+        let viewport = view.read_with(cx, |v, _| v.mail.viewport_bounds().size.height);
         let line = cx.update(|window, _| window.line_height());
         let page = viewport - line - line;
         assert!(
             page > px(0.) && page < over,
             "no page to move by: {page:?} of {over:?}"
         );
-        // Enough keys to cross the whole overflow and stop: over/page
-        // to cross, and two more standing past the end.
-        let enough = (f32::from(over) / f32::from(page)).ceil() as usize + 2;
+        // Enough keys to cross the whole conversation and stop: its sixty
+        // mails are a few pages high, and the rest stand past the end.
+        let enough = 30;
 
         // What is typed stays through the paging, and typing goes on.
         cx.simulate_input("hello");
         assert_eq!(typed(&view, cx), "hello");
         cx.simulate_keystrokes("pageup");
         cx.run_until_parked();
-        assert_eq!(offset_of(&view, cx).y, px(0.) - over + page);
+        let up = above_newest(&view, cx);
+        assert!(
+            (up - page).abs() <= px(1.),
+            "a page up leaves the view {up:?} above the newest, not {page:?}"
+        );
         assert!(shows_jump(&view, cx));
         assert_eq!(typed(&view, cx), "hello");
         cx.simulate_input(" world");
@@ -35986,8 +36170,9 @@ yardr.dev
 
     /// How far above its newest the open conversation stands.
     fn above_newest(view: &Entity<Footplate>, cx: &mut VisualTestContext) -> gpui::Pixels {
-        view.read_with(cx, |v, _| {
-            v.conversation.max_offset().height + v.conversation.offset().y
+        view.read_with(cx, |v, _| match v.mail_open() {
+            true => v.mail_above_newest(),
+            false => v.conversation.max_offset().height + v.conversation.offset().y,
         })
     }
 
@@ -37219,7 +37404,7 @@ yardr.dev
             cx.update(|window, _| window.refresh());
             texts(&view, cx) == full && above_newest(&view, cx) == px(0.)
         });
-        let over = view.read_with(cx, |v, _| v.conversation.max_offset().height);
+        let over = view.read_with(cx, |v, _| v.mail.max_offset_for_scrollbar().height);
         assert!(over > px(40.), "the conversation does not scroll: {over:?}");
         scroll_up(&view, cx);
         assert_eq!(above_newest(&view, cx), px(40.));
@@ -37493,24 +37678,22 @@ yardr.dev
         let env = env_on(&near, &file);
         let (view, cx) = opened_at(env, &file, cx);
         wait(cx, "the newest page", |cx| texts(&view, cx).len() == 50);
-        let newest_page = view.read_with(cx, |v, _| v.conversation.max_offset().height);
+        // A page is several views high, and the view stands at its end.
+        frames(cx);
+        let newest_page = view.read_with(cx, |v, _| v.mail.max_offset_for_scrollbar().height);
         scroll_to(&view, cx, 0.);
         wait(cx, "the older page", |cx| texts(&view, cx).len() == 100);
         frames(cx);
 
-        let target = newest_page + px(200.);
-        let loaded = view.read_with(cx, |v, _| v.conversation.max_offset().height);
-        assert!(
-            loaded > target,
-            "the saved position is beyond the loaded mail"
-        );
-        view.read_with(cx, |v, _| {
-            let mut at = v.conversation.offset();
-            at.y = target - v.conversation.max_offset().height;
-            v.conversation.set_offset(at);
-        });
+        // The view goes up from the oldest mail of the newest page, over the
+        // older page that is in above it.
+        view.read_with(cx, |v, _| v.mail.scroll_by(px(-200.)));
         frames(cx);
-        assert_eq!(above_newest(&view, cx), target);
+        let target = above_newest(&view, cx);
+        assert!(
+            target > newest_page + px(100.),
+            "the saved position is beyond the newest page: {target:?} past {newest_page:?}"
+        );
 
         cx.simulate_keystrokes("secondary-2");
         wait(cx, "the second home's yard", |cx| {
@@ -37522,7 +37705,130 @@ yardr.dev
             texts(&view, cx).len() == 100
         });
         frames(cx);
-        assert_eq!(above_newest(&view, cx), target);
+        // The view comes back to the place within a pixel: it goes up by what
+        // is left of the distance, as far as the rows are measured.
+        let now = above_newest(&view, cx);
+        assert!(
+            (now - target).abs() <= px(1.),
+            "the view stands {now:?} above its newest, where it stood {target:?}"
+        );
         assert!(view.read_with(cx, |v, _| v.returning.is_none()));
+    }
+
+    /// A conversation that stands scrolled up and is left for the card of an
+    /// ask stands where it stood when the card is left for it again, though
+    /// mail arrived below meanwhile: the list keeps its view while another
+    /// row is open, and what the card shows is no resize of it.
+    #[gpui::test]
+    fn a_conversation_scrolled_up_stands_where_it_stood_when_the_card_it_led_to_is_left(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer("UserAsks", &asks_three());
+        yard.answer("Bead", &bead_three());
+        long_conversation(&yard, 120);
+        let (view, cx) = opened_on(&yard, 50, cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(800.)));
+        frames(cx);
+        view.read_with(cx, |v, _| v.mail.scroll_by(px(-300.)));
+        frames(cx);
+        let stood = view.read_with(cx, |v, _| v.mail.logical_scroll_top());
+        assert!(!at_bottom(&view, cx));
+
+        // Mail arrives below while it is behind the card.
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Decision("bead-a".into()), window, cx)
+        });
+        wait(cx, "the card", |cx| {
+            open_row(&view, cx) == Some(Selected::Decision("bead-a".into()))
+        });
+        yard.emit(
+            &json!({"seq": 121, "kind": "mail", "actor": "yardmaster",
+                "at": "2026-10-08T09:31:00Z",
+                "data": {"to": "jo", "to_user": true, "text": "Landed."}})
+            .to_string(),
+        );
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Conversation("yardmaster".into()), window, cx)
+        });
+        wait(cx, "the mail below", |cx| texts(&view, cx).len() == 51);
+        frames(cx);
+        let now = view.read_with(cx, |v, _| v.mail.logical_scroll_top());
+        assert_eq!(
+            (now.item_ix, now.offset_in_item),
+            (stood.item_ix, stood.offset_in_item)
+        );
+        assert!(!at_bottom(&view, cx));
+        assert!(shows_jump(&view, cx));
+    }
+
+    /// footplate-0v97: typing in a long conversation was sluggish, since
+    /// every frame built, laid out and painted every row of it: a third of a
+    /// millisecond a mail in a debug build, a keystroke in two thousand mails
+    /// costing two thirds of a second to the empty conversation's four
+    /// thousandths. The conversation's list asks for the rows in view and
+    /// draws no others, so a keystroke there costs what it costs in an empty
+    /// one: the rows made for a frame do not grow with the mail, and the
+    /// time of the keystroke stays within a few times the empty
+    /// conversation's. (Its least of thirty, so that load on the machine
+    /// slows the empty conversation's keystrokes as it slows these.)
+    #[gpui::test]
+    fn a_keystroke_in_a_conversation_of_thousands_of_mails_costs_what_it_costs_in_an_empty_one(
+        cx: &mut TestAppContext,
+    ) {
+        const MAILS: u64 = 2000;
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        long_conversation(&yard, MAILS);
+        yard.converse("clerk@north", vec![]);
+        let (view, cx) = opened_on(&yard, 50, cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(800.)));
+        // The older mail, as the pages put it in above what the window
+        // opened on, all at once: what the person has after a day of it.
+        let older: Vec<crate::api::Letter> = (1..=MAILS - 50)
+            .map(|seq| {
+                serde_json::from_value(json!({"seq": seq, "at": mailed(seq - 1),
+                    "from": "yardmaster", "to": "jo", "read": true,
+                    "text": format!("Mail {seq}\nof the shed\nand the fence.")}))
+                .unwrap()
+            })
+            .collect();
+        view.update(cx, |v, cx| {
+            v.change(cx, |m| m.page("yardmaster", MAILS - 49, older, false))
+        });
+        frames(cx);
+        assert_eq!(texts(&view, cx).len(), MAILS as usize);
+
+        // The least time of thirty keystrokes into the conversation `name`,
+        // and the most items the list was asked for by one of them.
+        let typed_in = |cx: &mut VisualTestContext, name: &str| {
+            view.update_in(cx, |v, window, cx| {
+                v.select(Selected::Conversation(name.into()), window, cx)
+            });
+            frames(cx);
+            let (mut least, mut most) = (Duration::MAX, 0);
+            for _ in 0..30 {
+                let before = view.read_with(cx, |v, _| v.mail_items_made.get());
+                let start = std::time::Instant::now();
+                cx.simulate_keystrokes("x");
+                least = least.min(start.elapsed());
+                most = most.max(view.read_with(cx, |v, _| v.mail_items_made.get()) - before);
+            }
+            (least, most)
+        };
+        let (empty, _) = typed_in(cx, "clerk@north");
+        let (long, made) = typed_in(cx, "yardmaster");
+
+        // The list holds every row of the conversation (each mail heads its
+        // own group here, a head and a body), and a frame made those of its
+        // view: a screenful, not four thousand.
+        let rows = view.read_with(cx, |v, _| v.mail.item_count());
+        assert!(rows > 2 * MAILS as usize, "the list holds {rows} items");
+        assert!(made <= 80, "a keystroke made {made} items of the {rows}");
+        assert!(
+            long <= empty * 4 + Duration::from_millis(20),
+            "a keystroke takes {long:?} in {MAILS} mails and {empty:?} in none"
+        );
     }
 }

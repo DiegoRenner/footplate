@@ -215,6 +215,21 @@ pub(crate) const BACKLOG_TITLES: usize = 6;
 /// composer stand full width up to 880 pixels, centred in the pane.
 pub(crate) const READING_WIDTH: f32 = 880.;
 
+/// How far above and below its view the conversation's list measures the
+/// rows it does not draw, in pixels: once measured, a row's height is kept,
+/// so a view that moves a page finds the rows it moves over measured, and
+/// what the page keys and the place a view is put back to count in heights
+/// is exact over that distance. More than a half of the tallest view the
+/// window has (`reach_top` reasons from it) and a page of it.
+pub(crate) const MAIL_OVERDRAW: f32 = 1500.;
+
+/// How many rows above the view still count as near the top of the
+/// conversation, where its older mail is asked for: the view is within
+/// half its height of the top and no more rows than these stand above it
+/// (rows that are not measured count no height, and the rows above a view
+/// that stands far down are not all measured).
+pub(crate) const MAIL_NEAR_TOP: usize = 12;
+
 /// How far a letter's body stands in from the reading column's left,
 /// in rems: past the head's clock, so the clock's place is a gutter
 /// the letter's own time stands in while the pointer is on it. The
