@@ -9329,6 +9329,18 @@ yardr.dev
         cx.debug_bounds(at).is_some()
     }
 
+    /// Whether `selector` is drawn in a frame drawn now, with no turn of the
+    /// executor. A call is a background task, which a turn runs where it
+    /// stands, so that one held at the yard holds the test for its whole
+    /// timeout: a test that looks at what the window says while a call is
+    /// held draws it this way, and lets the call go before it turns the
+    /// executor. See `drawn` for what an absence says.
+    fn drawn_untick(cx: &mut VisualTestContext, selector: &str) -> bool {
+        cx.update(|window, cx| window.draw(cx).clear());
+        let at: &'static str = Box::leak(selector.to_string().into_boxed_str());
+        cx.debug_bounds(at).is_some()
+    }
+
     /// Where `selector` is drawn. An element that has gone can still return
     /// stale bounds, depending on which reused frame is read (see `drawn`).
     fn bounds_of(cx: &mut VisualTestContext, selector: &str) -> Bounds<Pixels> {
@@ -31204,9 +31216,13 @@ yardr.dev
     /// back, and anything else leaves the card; its button opens the gate
     /// before approving.
     /// Enter approves nothing, with words or without; the card's own key
-    /// calls `ApproveAsk` with the ask and nothing of the command. A call
-    /// with no answer never says approved; a refusal is shown whole; an
-    /// approved ask reads `approved, ran:` with the command and its result.
+    /// calls `ApproveAsk` with the ask and nothing of the command. While
+    /// the call is with the yard the card says so, and takes no second
+    /// approval; a call with no answer never says approved or refused: the
+    /// card waits while the queue is read again, and says the yard has not
+    /// recorded it where the queue still lists the card open; a refusal is
+    /// shown whole; an approved ask reads `approved, ran:` with the command
+    /// and its result.
     #[gpui::test]
     fn a_run_ask_s_card_shows_the_command_whole_and_is_approved_with_its_own_key(
         cx: &mut TestAppContext,
@@ -31302,13 +31318,28 @@ yardr.dev
         cx.run_until_parked();
         assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
 
-        // Passing the gate starts the call. The yard goes away over it:
-        // never "approved".
+        // Passing the gate starts the call. The yard is slow to answer: the
+        // call is held, and the card says the approval is with it, in no
+        // word of failure, and takes no second approval until it has
+        // answered. A turn of the executor would run the held call where
+        // it stands, so the card is drawn without one.
         unlock_as(&view, cx, true, true);
+        yard.hold_calls("ApproveAsk");
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+        assert!(drawn_untick(cx, "approval out bead-s 7"));
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+        assert_eq!(notice(&view, cx), "");
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+
+        // The yard goes away over it: never "approved", and not "refused"
+        // either, since the call may have run all the same. The queue is
+        // read again, and still lists the card open: the yard has not
+        // recorded the approval, which the card says, with its control
+        // back. It is no refusal of the yard's.
         yard.answer_nothing("ApproveAsk");
-        cx.simulate_keystrokes("secondary-enter");
-        wait(cx, "no answer", |cx| {
-            refused_of(&view, cx, "bead-s", 7) == "the yard did not answer; read the card again"
+        yard.release_calls("ApproveAsk");
+        wait(cx, "the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-s", 7) == model::APPROVAL_NOT_TAKEN
         });
         assert!(drawn(cx, "refused bead-s 7"));
         assert_eq!(notice(&view, cx), "");
@@ -31348,19 +31379,48 @@ yardr.dev
         );
         // The number, not an unlock, passes this card's gate on the final
         // approval; the earlier attempts still cover the offered unlock.
+        // The yard is slow to answer: the card says the approval is with
+        // it, and no word of failure stands, until the call is let go.
         unlock_as(&view, cx, false, false);
         view.update(cx, |v, cx| {
             v.typeback.update(cx, |field, cx| field.set_text("7", cx))
         });
-        cx.simulate_keystrokes("secondary-enter");
+        yard.hold_calls("ApproveAsk");
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+        assert!(drawn_untick(cx, "approval out bead-s 7"));
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+        assert_eq!(notice(&view, cx), "");
+        yard.release_calls("ApproveAsk");
         wait(cx, "approved", |cx| {
             notice(&view, cx) == format!("approved, ran: {command} · {WEIGHTY_RUN_RESULT}")
         });
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+        assert_eq!(
+            view.read_with(cx, |v, _| v.model.as_ref().unwrap().sending("bead-s", 7)),
+            None
+        );
         assert_eq!(yard.asked("ApproveAsk").len(), 3);
         assert_eq!(typeback_text(&view, cx), "");
         assert_eq!(answered_otherwise(&yard), Vec::<String>::new());
         let detail = decided_detail_of(&view, cx, "bead-s", 7);
         assert_eq!(detail.state_line, format!("approved, ran: {command}"));
+
+        // If another device had approved after the queue said it was still
+        // open, a later queue read would close the ask; its old "approve
+        // again" warning must leave the decided card.
+        view.update(cx, |v, _| {
+            v.refused
+                .insert(("bead-s".into(), 7), model::APPROVAL_NOT_TAKEN.to_string());
+        });
+        yard.answer("UserAsks", &queue_after_the_weighty_run_ran());
+        view.update(cx, |v, cx| {
+            let session = v.session;
+            v.run_in(session, vec![crate::model::Effect::Asks], cx);
+        });
+        wait(cx, "the stale wait warning cleared", |cx| {
+            refused_of(&view, cx, "bead-s", 7).is_empty()
+        });
+
         open_decided(&view, cx, "bead-s", 7);
         wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-s"));
         assert!(drawn(cx, "ran bead-s 7"));
@@ -31372,6 +31432,121 @@ yardr.dev
         cx.run_until_parked();
         assert_eq!(yard.asked("ApproveAsk").len(), 3);
         assert_eq!(answered_otherwise(&yard), Vec::<String>::new());
+    }
+
+    /// The queue as the yard lists it once it ran the run ask 7 of
+    /// `opened_on_a_weighty_run_ask`: among the decided, answered.
+    fn queue_after_the_weighty_run_ran() -> String {
+        let mut answered = queued_run("answered", true);
+        answered["run"] = weighty_run_of();
+        answered["weight"] = weighed("outside", WEIGHTY_RUN_LINE);
+        answered["ran"] = json!({"argv": weighty_run_of()["argv"], "result": WEIGHTY_RUN_RESULT});
+        json!({"result": {"open": [], "decided": [answered]}}).to_string()
+    }
+
+    /// An approval the yard ran whose answer was lost on the way is never
+    /// shown as one it did not take. The call ends with no answer, and the
+    /// queue is read: it says the yard approved it, and the card ends as
+    /// approved, with what ran. No refusal is ever drawn for it, and the
+    /// yard is asked once.
+    #[gpui::test]
+    fn an_approval_the_yard_ran_whose_answer_was_lost_ends_as_approved(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("footplate/settings.json");
+        let yard = Yard::start();
+        let (view, cx) = opened_on_a_weighty_run_ask(&yard, &file, cx);
+        let command = weighty_long_command();
+
+        // The yard ran it: its queue says so from now on, and the answer
+        // is lost on the way.
+        yard.answer("UserAsks", &queue_after_the_weighty_run_ran());
+        yard.answer_nothing("ApproveAsk");
+        unlock_as(&view, cx, false, false);
+        view.update(cx, |v, cx| {
+            v.typeback.update(cx, |field, cx| field.set_text("7", cx))
+        });
+        cx.simulate_keystrokes("secondary-enter");
+
+        // The queue says the yard approved it: the card ends as approved,
+        // with what ran, as an answered call would have said it.
+        wait(cx, "approved", |cx| {
+            notice(&view, cx) == format!("approved, ran: {command}")
+        });
+        assert_eq!(
+            view.read_with(cx, |v, _| v.model.as_ref().unwrap().sending("bead-s", 7)),
+            None
+        );
+        assert!(view.read_with(cx, |v, _| v.refused.is_empty()));
+        let detail = decided_detail_of(&view, cx, "bead-s", 7);
+        assert_eq!(detail.state_line, format!("approved, ran: {command}"));
+        assert!(view.read_with(cx, |v, _| {
+            v.model.as_ref().unwrap().approving("bead-s", 7).is_none()
+        }));
+        // No failure was ever drawn for it, and no second approval went.
+        assert!(!drawn(cx, "refused bead-s 7"));
+        cx.simulate_keystrokes("secondary-enter");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("ApproveAsk"), [weighed_approval(&yard)]);
+    }
+
+    /// The connection is cut over an approval the yard ran, and restored:
+    /// the card never says it failed. It waits while the yard is away, and
+    /// when the yard is back the state it reads says the ask was approved:
+    /// the card ends as approved, and nothing is asked a second time.
+    // Names the socket: a yard stopped and started again at its path.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn an_approval_lost_with_the_yard_ends_as_approved_when_the_yard_is_back(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("footplate/settings.json");
+        let yard = Yard::start();
+        let (view, cx) = opened_on_a_weighty_run_ask(&yard, &file, cx);
+        let socket = yard.socket().to_path_buf();
+        let command = weighty_long_command();
+
+        // The yard goes away as the approval is pressed: the window has
+        // not been told yet, so the call goes, and its answer is lost.
+        unlock_as(&view, cx, false, false);
+        view.update(cx, |v, cx| {
+            v.typeback.update(cx, |field, cx| field.set_text("7", cx))
+        });
+        yard.stop();
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+        wait(cx, "that the yard is away", |cx| {
+            view.read_with(cx, |v, _| v.reconnecting())
+        });
+        // The card waits, with no word of failure and nothing to press.
+        wait(cx, "the card waiting", |cx| {
+            view.read_with(cx, |v, _| {
+                matches!(
+                    v.model.as_ref().unwrap().sending("bead-s", 7),
+                    Some(crate::model::Sending::Unsure { .. })
+                )
+            })
+        });
+        assert!(drawn(cx, "approval unsure bead-s 7"));
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+
+        // The yard is back, and its state says it ran the approval.
+        let yard = Yard::start_at(&socket);
+        a_yard_of_jo(&yard);
+        yard.answer("UserAsks", &queue_after_the_weighty_run_ran());
+        wait(cx, "the yard again", |cx| {
+            view.read_with(cx, |v, _| v.down.is_none())
+        });
+        wait(cx, "approved", |cx| {
+            notice(&view, cx) == format!("approved, ran: {command}")
+        });
+        assert_eq!(
+            view.read_with(cx, |v, _| v.model.as_ref().unwrap().sending("bead-s", 7)),
+            None
+        );
+        assert!(view.read_with(cx, |v, _| v.refused.is_empty()));
+        assert!(!drawn(cx, "refused bead-s 7"));
+        cx.run_until_parked();
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
     }
 
     /// A pairing card says the door its approval crosses beside the
@@ -32567,7 +32742,8 @@ yardr.dev
     /// A run ask is declined with words as any ask is: `d` asks for them
     /// in a line the card has for nothing else, and Enter there sends the
     /// decline and approves nothing. One put aside is approved from its
-    /// card among the decided, after the Mac's unlock.
+    /// card among the decided, after the Mac's unlock, and the card says
+    /// the approval is with the yard while it is.
     #[gpui::test]
     fn a_run_ask_is_declined_with_words_and_approved_after_it_was_put_aside(
         cx: &mut TestAppContext,
@@ -32652,7 +32828,13 @@ yardr.dev
             "UserAsks",
             &json!({"result": {"open": [], "decided": [answered]}}).to_string(),
         );
-        click_on(cx, "approve bead-s 7");
+        // The yard is slow to answer: the card among the decided says the
+        // approval is with it, as an open card does, and takes no second.
+        yard.hold_calls("ApproveAsk");
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+        assert!(drawn_untick(cx, "approval out bead-s 7"));
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+        yard.release_calls("ApproveAsk");
         wait(cx, "approved", |cx| {
             notice(&view, cx).starts_with("approved, ran: yardr source grant crm send")
         });
@@ -33570,8 +33752,9 @@ yardr.dev
 
     /// An approval the yard refuses is shown whole on a setup ask's card.
     /// A call that ends without an answer is never said to be approved or
-    /// not, and the queue is read again for what the yard says, since the
-    /// call may have approved all the same.
+    /// refused: the card waits while the queue is read again, since the
+    /// call may have approved all the same, and takes no second approval
+    /// meanwhile.
     #[gpui::test]
     fn a_setup_approval_the_yard_refuses_is_shown_whole(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -33581,21 +33764,33 @@ yardr.dev
         click_on(cx, "account bead-s 7 courier-existing");
         cx.run_until_parked();
 
-        // The yard goes away over the call: never "approved". The call
-        // may have approved all the same, so the queue is read again for
-        // what the yard says.
+        // The call is held: the card says the approval is with the yard, in
+        // no word of failure, and takes no second approval. A turn of the
+        // executor would run the held call where it stands, so the card is
+        // drawn without one.
         let reads = yard.asked("UserAsks").len();
+        yard.hold_calls("ApproveSetup");
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+        assert!(drawn_untick(cx, "approval out bead-s 7"));
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+        assert_eq!(notice(&view, cx), "");
+        view.update_in(cx, |v, _, cx| v.approve(cx));
+
+        // The yard goes away over the call: never "approved", and not
+        // "refused" either, since the call may have approved all the same.
+        // The queue is read again for what the yard says, and still lists
+        // the card open: the yard has not recorded the approval, which the
+        // card says, with its control back.
         yard.answer_nothing("ApproveSetup");
-        cx.simulate_keystrokes("secondary-enter");
-        wait(cx, "no answer", |cx| {
-            refused_of(&view, cx, "bead-s", 7) == "the yard did not answer; read the card again"
+        yard.release_calls("ApproveSetup");
+        wait(cx, "the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-s", 7) == model::APPROVAL_NOT_TAKEN
         });
         assert!(drawn(cx, "refused bead-s 7"));
         assert_eq!(notice(&view, cx), "");
         assert!(drawn(cx, "approve bead-s 7"));
-        wait(cx, "the queue read again", |_| {
-            yard.asked("UserAsks").len() == reads + 1
-        });
+        assert_eq!(yard.asked("ApproveSetup").len(), 1);
+        assert_eq!(yard.asked("UserAsks").len(), reads + 1);
 
         // The yard refuses, since it changed after the ask was written:
         // its words, whole, and nothing ran, so nothing is read again.

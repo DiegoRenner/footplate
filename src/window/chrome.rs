@@ -3296,6 +3296,9 @@ impl Footplate {
                         move |this, asks, cx| match asks {
                             Ok(asks) => {
                                 if this.fresh_in(session, Read::Asks, stamp, cx, |m| m.asks(asks)) {
+                                    // What the queue says settles the
+                                    // approvals that got no answer.
+                                    this.settled_in(session, stamp, cx);
                                     this.schedule_return_in(session, cx);
                                 }
                             }

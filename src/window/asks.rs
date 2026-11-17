@@ -34,7 +34,7 @@ use crate::draft::{self, Attachment};
 use crate::input::Line;
 use crate::model::{
     self, AnswerAction, DecidedEntry, DecidedFold, DecidedRow, DecisionAsk, DecisionDetail,
-    DecisionRow, Effect, Mode, Model, Selected, Target,
+    DecisionRow, Effect, Mode, Model, Selected, Sending, Target,
 };
 use crate::select::{self};
 use crate::theme::{Palette, yard_color};
@@ -549,6 +549,28 @@ impl Footplate {
         approval(weighty, self.unlock_available(), elsewhere)
     }
 
+    /// Where the ask's approval stands with the yard, while it is with it:
+    /// the control offers no second approval until the yard says what came
+    /// of it.
+    pub(crate) fn approval_sending(&self, bead: &str, ask: u64) -> Option<Sending> {
+        self.model.as_ref()?.sending(bead, ask)
+    }
+
+    /// What the card says while its approval is with the yard, faint:
+    /// nothing in it is a failure, which stands in warn where the yard
+    /// refused, or has not recorded what it was sent. None where the
+    /// approval is not with it.
+    pub(crate) fn approval_words(&self, bead: &str, ask: u64, palette: Palette) -> Option<Div> {
+        let sending = self.approval_sending(bead, ask)?;
+        Some(
+            div()
+                .debug_selector(|| format!("approval {} {bead} {ask}", sending.name()))
+                .text_xs()
+                .text_color(palette.faint)
+                .child(sending.words()),
+        )
+    }
+
     /// Whether the number field holds exactly the ask's number: the gate
     /// of a weighty card where no unlock is offered. What is pasted often
     /// ends in a line break, which is trimmed as a value's is; anything
@@ -777,6 +799,7 @@ impl Footplate {
         let at = (bead.clone(), ask);
         if self.approve_elsewhere.contains(&at)
             || self.approving.is_some()
+            || self.approval_sending(&bead, ask).is_some()
             || self.client.is_none()
             || self.reconnecting()
             || matches!(self.card_approval(&bead, ask), Approval::Nowhere)
@@ -825,9 +848,12 @@ impl Footplate {
 
     /// Approves the open card's run ask. What the window says afterwards
     /// is the yard's: the command as it ran with what it printed, or the
-    /// refusal whole, on the card. A call that ended without an answer is
-    /// never said to be approved or not, and a yard without the call for
-    /// this window has its card say where to approve.
+    /// refusal whole, on the card. While the call is out the card says it
+    /// is with the yard. A call that ended without an answer is never said
+    /// to be approved or refused: the card waits while the queue is read
+    /// for what the yard did, and ends as approved, or says the yard has
+    /// not recorded it ([`Footplate::approval_failed_in`]). A yard without
+    /// the call for this window has its card say where to approve.
     pub(crate) fn send_approve(&mut self, bead: String, ask: u64, cx: &mut Context<Self>) {
         self.send_approve_in(self.session, bead, ask, false, cx);
     }
@@ -858,6 +884,12 @@ impl Footplate {
             held.refused.remove(&at);
             self.notice_in(session, String::new(), cx);
         }
+        // The card says the approval is with the yard, and takes no second
+        // one, until the yard says what came of it.
+        self.change_in(session, cx, |m| {
+            m.approval_out(&at.0, at.1);
+            Vec::new()
+        });
         // The approval is the yard's it was pressed in: what came of it is
         // that yard's, and is said there, wherever the window is by then.
         self.ask_in(
@@ -896,14 +928,109 @@ impl Footplate {
                     }
                     Err(err) if model::approves_elsewhere(&err) => {
                         elsewhere.insert(at);
+                        this.change_in(session, cx, |m| {
+                            m.approval_ended(&bead, ask);
+                            Vec::new()
+                        });
                         this.notice_in(session, String::new(), cx);
                     }
                     Err(err) => {
-                        this.refused_in(session, (bead.clone(), ask), model::not_approved(&err), cx)
+                        let why = model::not_approved(&err);
+                        this.approval_failed_in(session, (bead.clone(), ask), &err, why, cx)
                     }
                 }
             },
         );
+    }
+
+    /// An approval of the following `session`'s yard ended in `err`,
+    /// which is a refusal, a connect that gave up, or a call with no
+    /// answer. The first two the card says as `refusal`: the yard's words,
+    /// whole, or that nothing was sent. A call with no answer may have run
+    /// all the same, so the card says nothing of the sort: it waits, and
+    /// the queue is read for what the yard did, at once where the yard
+    /// answers and else when it is back ([`Model::resumed`] settles it
+    /// from the state it reads). Never a failure for an approval the yard
+    /// ran: the read says it was taken, or that the yard has not recorded
+    /// it ([`Footplate::settled_in`]), and the control stays off meanwhile,
+    /// so that no second approval goes on a guess; the yard refuses one
+    /// of an ask it ran in any case.
+    fn approval_failed_in(
+        &mut self,
+        session: u64,
+        at: (String, u64),
+        err: &api::Error,
+        refusal: String,
+        cx: &mut Context<Self>,
+    ) {
+        if model::answer_lost(err) {
+            // A yard known to be away is read when it is back, which
+            // settles the card from the state read.
+            let up = self.up_in(session);
+            self.change_in(session, cx, |m| {
+                let read = m.approval_unanswered(&at.0, at.1);
+                match up {
+                    true => read,
+                    false => Vec::new(),
+                }
+            });
+            return;
+        }
+        self.change_in(session, cx, |m| {
+            m.approval_ended(&at.0, at.1);
+            Vec::new()
+        });
+        self.refused_in(session, at, refusal, cx);
+    }
+
+    /// The queue of the following `session`'s yard was read, stamped
+    /// `stamp`: the approvals whose call ended without an answer are
+    /// settled by it ([`Model::settle_approvals`]), and each the yard
+    /// still lists open says so on its card.
+    pub(crate) fn settled_in(&mut self, session: u64, stamp: u64, cx: &mut Context<Self>) {
+        let mut not_taken = Vec::new();
+        if let Some(model) = self.model_in(session) {
+            not_taken = model.settle_approvals(stamp);
+        }
+        for at in not_taken {
+            self.refused_in(session, at, model::APPROVAL_NOT_TAKEN.to_string(), cx);
+        }
+        // A later queue read may close an ask another way after this card
+        // said it was still open. That warning describes only the queue
+        // read that made it: do not leave it under a decided card.
+        let warnings: Vec<(String, u64)> = if session == self.session {
+            self.refused
+                .iter()
+                .filter(|(_, why)| why.as_str() == model::APPROVAL_NOT_TAKEN)
+                .map(|(at, _)| at.clone())
+                .collect()
+        } else {
+            self.held
+                .values()
+                .find(|held| held.session == session)
+                .map(|held| {
+                    held.refused
+                        .iter()
+                        .filter(|(_, why)| why.as_str() == model::APPROVAL_NOT_TAKEN)
+                        .map(|(at, _)| at.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        for at in warnings {
+            let still_approvable = self.model_in(session).is_some_and(|model| {
+                model.approving(&at.0, at.1).is_some()
+                    || model.setup_approving(&at.0, at.1).is_some()
+            });
+            if !still_approvable {
+                if session == self.session {
+                    self.refused.remove(&at);
+                } else if let Some(held) = self.held.values_mut().find(|h| h.session == session) {
+                    held.refused.remove(&at);
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// A pairing approval's transient goes on its decided card: the QR
@@ -1394,7 +1521,8 @@ impl Footplate {
     /// the system unlock for a weighty card, or typed its number back where
     /// no unlock is offered. What the window says afterwards is the yard's:
     /// that the server carries the setup out, or the refusal whole, on the
-    /// card.
+    /// card. While the call is out, and after a call with no answer, the
+    /// card waits as a run ask's does ([`Footplate::send_approve`]).
     #[allow(clippy::too_many_arguments)]
     fn send_approve_setup_in(
         &mut self,
@@ -1424,6 +1552,10 @@ impl Footplate {
             held.refused.remove(&at);
             self.notice_in(session, String::new(), cx);
         }
+        self.change_in(session, cx, |m| {
+            m.approval_out(&at.0, at.1);
+            Vec::new()
+        });
         // The approval is the yard's it was pressed in: what came of it is
         // that yard's, and is said there, wherever the window is by then.
         self.ask_in(
@@ -1474,10 +1606,13 @@ impl Footplate {
                     }
                     Err(err) if model::approves_elsewhere(&err) => {
                         elsewhere.insert(at);
+                        this.change_in(session, cx, |m| {
+                            m.approval_ended(&bead, ask);
+                            Vec::new()
+                        });
                         this.notice_in(session, String::new(), cx);
                     }
                     Err(err) => {
-                        let down = matches!(err, api::Error::Down(_));
                         let why = model::not_approved(&err);
                         // The yard repeats no value in a refusal. Should
                         // anything on the way do so, it is not shown.
@@ -1488,13 +1623,7 @@ impl Footplate {
                             true => "not approved: the yard refused it".to_string(),
                             false => why,
                         };
-                        this.refused_in(session, (bead.clone(), ask), why, cx);
-                        // A call that ended without an answer may have
-                        // approved all the same: the queue is read again
-                        // for what the yard says.
-                        if down {
-                            this.change_in(session, cx, |_| vec![Effect::Asks]);
-                        }
+                        this.approval_failed_in(session, (bead.clone(), ask), &err, why, cx);
                     }
                 }
             },
@@ -3641,12 +3770,20 @@ impl Footplate {
                             format!("approve {bead_id} {ask_seq}"),
                             &self.yard,
                             matches!(approval, Approval::Unlock),
-                            self.approving.is_none() && !held,
+                            self.approving.is_none()
+                                && !held
+                                && self.approval_sending(&bead_id, ask_seq).is_none(),
                             palette,
                             cx,
                         ))
                     })
                     .when(held, |el| el.child(send_held(palette)))
+                    // Under the control, as the held words are: where the
+                    // approval stands with the yard, until it says.
+                    .when_some(
+                        self.approval_words(&bead_id, ask_seq, palette),
+                        |el, words| el.child(words),
+                    )
                     .child(ask_about)
                     .child(
                         small_button("Later (x)".to_string(), palette)
@@ -4551,7 +4688,9 @@ impl Footplate {
                         format!("approve {bead} {ask}"),
                         &self.yard,
                         matches!(approval, Approval::Unlock),
-                        self.approving.is_none() && !self.reconnecting(),
+                        self.approving.is_none()
+                            && !self.reconnecting()
+                            && self.approval_sending(bead, ask).is_none(),
                         palette,
                         cx,
                     )));
@@ -4588,13 +4727,20 @@ impl Footplate {
                             format!("approve {bead} {ask}"),
                             &self.yard,
                             matches!(approval, Approval::Unlock),
-                            self.approving.is_none() && !self.reconnecting(),
+                            self.approving.is_none()
+                                && !self.reconnecting()
+                                && self.approval_sending(bead, ask).is_none(),
                             palette,
                             cx,
                         )));
                     }
                 }
             }
+            // Where an approval put aside and approved from here stands
+            // with the yard, under its control.
+            body = body.when_some(self.approval_words(bead, ask, palette), |body, words| {
+                body.child(words)
+            });
             // A line for words with the later pick, the field of a secret
             // to give it again, or the field of a put-aside setup for its
             // account: a declined one takes none, one taken back has

@@ -46,7 +46,15 @@ The window, its state and the yard:
     are `waiting.rs`'s; its head folds them away) and its decided history
     (a page at a time, a row for more),
     each open ask's card with its secret, run and setup blocks, and what the
-    cards do (answer, approve, give, decline, put aside).
+    cards do (answer, approve, give, decline, put aside). An approval is
+    the card's wait too: `Model::sending` says it is with the yard (`Out`) or
+    that its call got no answer (`Unsure`, the yard may have run it), so the
+    card says so, in no word of failure, and takes no second approval.
+    `approval_failed_in` starts that wait (or says the yard's refusal), and
+    `Model::settle_approvals` ends it from each queue read (the `Asks` arm
+    of `Footplate::run_in` calls `settled_in`, which says on the card what
+    the read found) and `Model::resumed` from the state of a yard found
+    again.
   - `src/window/bead.rs`: one bead's views: the bead whole (in the reading
     pane it ends with `waiting.rs`'s moves where the bead is parked), the
     conversation thread with its mail, and the pictures and attachments of

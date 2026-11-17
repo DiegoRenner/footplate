@@ -326,12 +326,19 @@ calls `ApproveAsk`, which names the ask and nothing of the command: the
 yard runs what it stored. Afterwards the window says `approved, ran:` with
 the command and what it printed, `approved, being carried out:` where the
 yard carries the approval out after the call, or the yard's refusal whole,
-as when the yard has changed since the ask was written. When the call ends
-with no answer it says "the yard did not answer; read the card again",
-never that it was approved. A yard that does not have the call, or does not
-serve it to this window, has the card say so in place of the button, with
-the command that approves in a terminal on the yard's machine in a block
-that copies it: `yardr bead answer <bead> <ask> --approve`. A run ask the
+as when the yard has changed since the ask was written. While the call is
+with the yard the card says "the approval is with the yard" and takes no
+second approval. When the call ends with no answer the yard may have run
+the command all the same, so the card says it did not answer and that its
+queue is being read, never that it was approved or refused: the card then
+ends as approved (`approved, ran:`), or, where the queue read since still
+lists the card open, says the yard has not recorded it and offers Approve
+again (the yard runs a command once for one ask and refuses a second
+approval of it). A yard that is away is read when it is back. A yard that
+does not have the call, or does not serve it to this window, has the card
+say so in place of the button, with the command that approves in a
+terminal on the yard's machine in a block that copies it: `yardr bead
+answer <bead> <ask> --approve`. A run ask the
 yard weighed weighty shows each class's line first on its card, in rust:
 `WEIGHTY · trust: …`. On a Mac its approval passes Touch ID, a paired
 watch or the login password first, and the control says so:
@@ -373,8 +380,9 @@ reads `approved, ran:` once the yard has carried it out, or `approved,
 failed:` where that failed, with what it printed under it. An approval
 the yard refuses is shown whole on the card, as when the yard has changed
 since the ask was written, and a call that ends with no answer is never
-said to be approved or not: the queue is read again for what the yard
-says. Where the yard takes no approval from this window, the card says so
+said to be approved or refused: the card waits as a run ask's does, while
+the queue is read again for what the yard says. Where the yard takes no
+approval from this window, the card says so
 in place of the button, with the command that approves in a terminal in a
 block that copies it. Every setup ask is weighty: its card shows the
 yard's lines for what approving does first, in rust, and its approval

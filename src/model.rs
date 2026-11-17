@@ -1295,6 +1295,42 @@ impl Reads {
     }
 }
 
+/// Where an approval stands from the window sending it to the yard's word
+/// on it. The card says which, in words that are no failure, and offers no
+/// second approval meanwhile: the yard runs a command once for one ask and
+/// refuses another approval, but a card believed to have failed would
+/// invite one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sending {
+    /// The call is with the yard.
+    Out,
+    /// The call ended with no answer, so the yard may have run it all the
+    /// same: its queue is read for which. `after` is the stamp taken when
+    /// the call ended: a read made before it may predate the approval, and
+    /// can say the yard took it but not that it did not.
+    Unsure { after: u64 },
+}
+
+impl Sending {
+    /// What the card says of it.
+    pub fn words(self) -> &'static str {
+        match self {
+            Sending::Out => "the approval is with the yard",
+            Sending::Unsure { .. } => {
+                "the yard did not answer; reading its queue to see whether it took the approval"
+            }
+        }
+    }
+
+    /// The word the card's selector names it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Sending::Out => "out",
+            Sending::Unsure { .. } => "unsure",
+        }
+    }
+}
+
 /// How many mails of a conversation the yard is asked for at once: the
 /// newest when it opens, and as many older each time its top is reached.
 pub const PAGE: u64 = 50;
@@ -1620,6 +1656,10 @@ pub struct Model {
     aside: bool,
     /// The stamps of the reads made of the yard, and what they answered.
     reads: Reads,
+    /// The approvals that are with the yard, by ask: until the yard says
+    /// what came of one, its card says it is waiting, and a read of the
+    /// queue settles it ([`Model::settle_approvals`]).
+    sending: HashMap<(String, u64), Sending>,
     /// What went wrong last, in words; empty when nothing.
     pub notice: String,
 }
@@ -1846,6 +1886,20 @@ impl Model {
         m.ask_news(&self.open, &self.decided);
         m.notice_news(&self.notifications);
         effects.extend(m.ack());
+        // An approval that was with the yard when it was lost is the
+        // yard's to say now: the state read again lists the ask as it
+        // stands, and says whether it took the approval. A state read says
+        // only that it did (stamp 0 is older than any call's end), since it
+        // may predate the call; for what it does not say the queue is read
+        // once more, which can.
+        m.sending = self.sending.clone();
+        m.settle_approvals(0);
+        if m.sending
+            .values()
+            .any(|sending| matches!(sending, Sending::Unsure { .. }))
+        {
+            effects.push(Effect::Asks);
+        }
         (m, effects)
     }
 
@@ -4533,12 +4587,88 @@ impl Model {
         self.run(bead, ask).filter(|_| !closed)
     }
 
+    /// The approval of a run or setup ask goes out to the yard: its card
+    /// says so, and takes no second approval, until the yard says what
+    /// came of it.
+    pub fn approval_out(&mut self, bead: &str, ask: u64) {
+        self.sending.insert((bead.to_string(), ask), Sending::Out);
+    }
+
+    /// The approval's call ended with no answer ([`answer_lost`]): the yard
+    /// may have run it all the same. The card waits, and the queue is read
+    /// for what the yard says; the read is the effect returned.
+    pub fn approval_unanswered(&mut self, bead: &str, ask: u64) -> Vec<Effect> {
+        let after = self.reads.make();
+        self.sending
+            .insert((bead.to_string(), ask), Sending::Unsure { after });
+        vec![Effect::Asks]
+    }
+
+    /// The yard said what came of the approval, or it never went: the card
+    /// has nothing more to wait for.
+    pub fn approval_ended(&mut self, bead: &str, ask: u64) {
+        self.sending.remove(&(bead.to_string(), ask));
+    }
+
+    /// Where the ask's approval stands with the yard, while it is with it.
+    pub fn sending(&self, bead: &str, ask: u64) -> Option<Sending> {
+        self.sending.get(&(bead.to_string(), ask)).copied()
+    }
+
+    /// The queue was read, the read stamped `stamp`: what it says settles
+    /// each approval whose call ended with no answer.
+    ///
+    /// - An ask the yard has among the decided as answered was approved:
+    ///   the card says what ran, which is what an answered call would
+    ///   have said ([`Model::notice`]).
+    /// - One it has declined or taken back, or no longer has, was not
+    ///   approved from here, and its card says what became of it.
+    /// - One still open (or put aside, which is approvable still) was not
+    ///   taken, where the read is newer than the call's end: the cards
+    ///   returned are those, for the window to say why on them. An older
+    ///   read says nothing of that, and the card waits for one that does.
+    ///
+    /// Stamp 0 is older than any call's end, so it settles only what the
+    /// queue says was taken: what a yard read again can say.
+    pub fn settle_approvals(&mut self, stamp: u64) -> Vec<(String, u64)> {
+        let unsure: Vec<((String, u64), u64)> = self
+            .sending
+            .iter()
+            .filter_map(|(at, sending)| match sending {
+                Sending::Unsure { after } => Some((at.clone(), *after)),
+                Sending::Out => None,
+            })
+            .collect();
+        let mut not_taken = Vec::new();
+        for (at, after) in unsure {
+            let dealt = self
+                .decided
+                .iter()
+                .find(|a| a.bead == at.0 && a.ask == at.1);
+            let open = dealt.is_some_and(|a| a.state == "put aside")
+                || self.open.iter().any(|a| a.bead == at.0 && a.ask == at.1);
+            match dealt {
+                Some(dealt) if dealt.state == "answered" => {
+                    if dealt.ran.is_some() {
+                        self.notice = decided_state(dealt, &chrono::Local);
+                    }
+                }
+                _ if open && stamp <= after => continue,
+                _ if open => not_taken.push(at.clone()),
+                _ => {}
+            }
+            self.sending.remove(&at);
+        }
+        not_taken
+    }
+
     /// The yard approved a run ask and ran its command: the ask moves to
     /// "Decided" at once, as one that `ran` it, and the queue and the bead
     /// are read again for what the yard says. An approval the yard carries
     /// out after the call answers with `CARRY_PENDING`, and reads as being
     /// carried out until the queue is read again.
     pub fn approved(&mut self, bead: &str, ask: u64, ran: &api::Approved) -> Vec<Effect> {
+        self.approval_ended(bead, ask);
         let ran = Some(Ran {
             argv: ran.argv.clone(),
             result: ran.result.clone(),
@@ -4644,6 +4774,7 @@ impl Model {
         option: u64,
         approved: &api::SetupApproved,
     ) -> Vec<Effect> {
+        self.approval_ended(bead, ask);
         // `You decide` is an option on the card, but the yard records the
         // recommended preset it resolved to. Keep the dealt card on that
         // preset when the approval arrives, before the queue is read again.
@@ -8839,27 +8970,43 @@ pub fn setup_approve_command(bead: &str, ask: u64, setup: &Setup) -> String {
     }
 }
 
-/// Why a run or setup ask was not approved, for the card. A call that
-/// ended without an answer may have run all the same, so it is never said
-/// to be approved or not: the card, read again, says which, unless the
-/// connect gave up, which sent nothing. A refusal is the yard's words,
-/// whole.
+/// Why a run or setup ask was not approved, for the card: that the connect
+/// gave up, which sent nothing, or the yard's words, whole. A call that
+/// ended without an answer is neither ([`answer_lost`]): it may have run
+/// all the same, so it is never said to be refused.
 pub fn not_approved(err: &api::Error) -> String {
     match err {
         api::Error::Slow {
             idempotent: false,
             sent: false,
         } => "the yard did not answer; nothing was approved. Approve it again.".to_string(),
-        api::Error::Down(_)
-        | api::Error::Protocol(_)
-        | api::Error::Slow {
-            idempotent: false,
-            sent: true,
-        } => "the yard did not answer; read the card again".to_string(),
-        err if err.may_have_run() => "the yard did not answer; read the card again".to_string(),
         _ => format!("not approved: {err}"),
     }
 }
+
+/// Whether a call ended without an answer that says what came of it: the
+/// connection went, what answered could not be read, the wait ran out after
+/// the request went, or the edge heard nothing back in time. The yard may
+/// have run it all the same, so the card waits and the queue is read for
+/// what the yard says ([`Model::approval_unanswered`]) where a refusal or a
+/// connect that gave up, which sent nothing, would have the card say so.
+pub fn answer_lost(err: &api::Error) -> bool {
+    matches!(
+        err,
+        api::Error::Down(_)
+            | api::Error::Protocol(_)
+            | api::Error::Slow {
+                idempotent: false,
+                sent: true,
+            }
+    ) || err.may_have_run()
+}
+
+/// What the card says of an approval whose call ended without an answer,
+/// when the queue, read since, still lists the ask open: not that the yard
+/// refused it, which it did not say, but that it has not recorded it, and
+/// what a second approval does.
+pub const APPROVAL_NOT_TAKEN: &str = "the yard did not answer, and its queue still lists this card as open. Approve it again: the yard runs a command once for one ask.";
 
 /// Why a move was not made, for the parked bead's card. A call that ended
 /// without an answer may have moved the bead all the same, so it is never
@@ -19523,6 +19670,126 @@ mod tests {
         );
     }
 
+    /// An approval whose call ended with no answer waits for the yard's
+    /// queue, and no word of failure stands for it: the queue settles it.
+    /// An ask it has answered was approved, and says what ran; one it still
+    /// lists open was not taken, but a read made before the call ended
+    /// cannot say so, nor can a state read again; one declined, taken back
+    /// or gone has nothing of the approval's to say.
+    #[test]
+    fn an_approval_with_no_answer_waits_for_the_queue_and_is_settled_by_it() {
+        let bead = || "yd-link".to_string();
+        let mut m = with_a_run_ask(&[]);
+        // The call is out: the card says so.
+        m.approval_out("yd-link", 2710);
+        assert_eq!(m.sending("yd-link", 2710), Some(Sending::Out));
+        assert_eq!(m.sending("yd-link", 2711), None);
+        // A queue read has nothing to settle of a call that is out.
+        assert!(m.settle_approvals(u64::MAX).is_empty());
+        assert_eq!(m.sending("yd-link", 2710), Some(Sending::Out));
+
+        // It ended with no answer: the queue is read, and the card waits.
+        assert_eq!(m.approval_unanswered("yd-link", 2710), [Effect::Asks]);
+        let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
+            panic!("the approval is not unsure");
+        };
+        assert_ne!(
+            Sending::Out.words(),
+            m.sending("yd-link", 2710).unwrap().words()
+        );
+        // The ask is listed open still. A read made before the call ended
+        // (or at it), and a state read again, cannot say the yard did not
+        // take it: the card waits.
+        assert!(m.settle_approvals(after).is_empty());
+        assert!(m.settle_approvals(0).is_empty());
+        assert!(matches!(
+            m.sending("yd-link", 2710),
+            Some(Sending::Unsure { .. })
+        ));
+        // A read made after says the yard has not recorded it: the card is
+        // given back for the window to say so, and waits for nothing.
+        assert_eq!(m.settle_approvals(after + 1), [(bead(), 2710)]);
+        assert_eq!(m.sending("yd-link", 2710), None);
+        assert_eq!(m.notice, "");
+
+        // Put aside is approvable still: the same.
+        m.deferred("yd-link", 2710);
+        m.approval_unanswered("yd-link", 2710);
+        let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
+            panic!("the approval is not unsure");
+        };
+        assert!(m.settle_approvals(after).is_empty());
+        assert_eq!(m.settle_approvals(after + 1), [(bead(), 2710)]);
+
+        // The yard says the ask was answered: approved, with what ran, as
+        // an answered call would have said it, and the state read again
+        // says as much.
+        m.approved("yd-link", 2710, &approved());
+        m.approval_unanswered("yd-link", 2710);
+        assert!(m.settle_approvals(0).is_empty());
+        assert_eq!(m.sending("yd-link", 2710), None);
+        assert_eq!(
+            m.notice,
+            "approved, ran: yardr peer allow airy --mail-limit 300"
+        );
+
+        // Declined meanwhile, or taken back: the approval did not go, and
+        // the card says what became of the ask. Nothing is said of it.
+        m.notice.clear();
+        m.decided[0].state = "declined".into();
+        m.approval_unanswered("yd-link", 2710);
+        assert!(m.settle_approvals(u64::MAX).is_empty());
+        assert_eq!((m.sending("yd-link", 2710), m.notice.as_str()), (None, ""));
+        // Gone from the queue: nothing to say either.
+        m.decided.clear();
+        m.approval_unanswered("yd-link", 2710);
+        assert!(m.settle_approvals(u64::MAX).is_empty());
+        assert_eq!((m.sending("yd-link", 2710), m.notice.as_str()), (None, ""));
+    }
+
+    /// A yard lost over an approval is read again: its state says whether
+    /// it took the approval, and what it does not say is read once more. A
+    /// call that is still out stands as it was.
+    #[test]
+    fn an_approval_lost_with_the_yard_is_settled_by_the_state_read_when_it_is_back() {
+        let mut m = with_a_run_ask(&[]);
+        m.approval_unanswered("yd-link", 2710);
+        m.approval_out("yd-other", 9);
+        // The state read again lists the ask open: it cannot say the yard
+        // did not take it, so the queue is read once more, and both wait.
+        let mut state = yard(&[]);
+        state.asks.open = m.open.clone();
+        let (mut back, effects) = m.resumed(state, Mode::Chat);
+        assert!(effects.contains(&Effect::Asks));
+        assert!(matches!(
+            back.sending("yd-link", 2710),
+            Some(Sending::Unsure { .. })
+        ));
+        assert_eq!(back.sending("yd-other", 9), Some(Sending::Out));
+        // The read made then, after the state, is newer than the call's
+        // end, and settles it.
+        let after = back.reads().make();
+        assert_eq!(
+            back.settle_approvals(after),
+            [("yd-link".to_string(), 2710)]
+        );
+
+        // The state read again lists the ask answered: it is approved, and
+        // nothing is read once more.
+        let mut m = with_a_run_ask(&[]);
+        m.approved("yd-link", 2710, &approved());
+        m.approval_unanswered("yd-link", 2710);
+        let mut state = yard(&[]);
+        state.asks.decided = m.decided.clone();
+        let (back, effects) = m.resumed(state, Mode::Chat);
+        assert!(!effects.contains(&Effect::Asks));
+        assert_eq!(back.sending("yd-link", 2710), None);
+        assert_eq!(
+            back.notice,
+            "approved, ran: yardr peer allow airy --mail-limit 300"
+        );
+    }
+
     /// A run ask's carried texts stand shown behind its sentences, or
     /// hidden again; those that stood shown before the yard was left
     /// stand shown on its return, as expanded cards do.
@@ -19593,7 +19860,9 @@ mod tests {
             code: "error".into(),
             message: message.into(),
         };
-        // No answer: the command may have run, and the card says which.
+        // No answer: the command may have run, so it is no refusal and no
+        // word of not having been approved: the card waits, and the queue
+        // is read for what the yard says.
         for none in [
             api::Error::Down(std::io::Error::other("the yard went away")),
             api::Error::Protocol("ApproveAsk: status 200, and no JSON object".into()),
@@ -19608,10 +19877,7 @@ mod tests {
             },
         ] {
             assert!(!approves_elsewhere(&none));
-            assert_eq!(
-                not_approved(&none),
-                "the yard did not answer; read the card again"
-            );
+            assert!(answer_lost(&none), "{none}");
         }
         // A connect that gave up sent nothing: it is safe to approve again.
         let unsent = api::Error::Slow {
@@ -19619,13 +19885,29 @@ mod tests {
             sent: false,
         };
         assert!(!approves_elsewhere(&unsent));
+        assert!(!answer_lost(&unsent));
         assert_eq!(
             not_approved(&unsent),
             "the yard did not answer; nothing was approved. Approve it again."
         );
+        // The edge turned it away before sending it, and a yard that does
+        // not let the device in ran nothing: the yard's words, or ours.
+        for before in ["away", "busy"] {
+            let turned = api::Error::Refused {
+                code: before.into(),
+                message: format!("the yard is {before}"),
+            };
+            assert!(!answer_lost(&turned), "{turned}");
+            assert_eq!(
+                not_approved(&turned),
+                format!("not approved: the yard is {before}")
+            );
+        }
+        assert!(!answer_lost(&api::Error::NotLetIn));
         // A refusal is the yard's words, whole.
         let stale = "ask 2710 says the link with airy takes 30 mails an hour now, and it takes 100: the card is from before that changed. Nothing ran. Decline it; it is asked again if it is still wanted.";
         assert!(!approves_elsewhere(&refused(stale)));
+        assert!(!answer_lost(&refused(stale)));
         assert_eq!(
             not_approved(&refused(stale)),
             format!("not approved: {stale}")
