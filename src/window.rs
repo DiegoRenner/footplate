@@ -492,6 +492,10 @@ pub struct Footplate {
     secret_typed: Vec<String>,
     /// The ask the field and those values are for.
     secret_for: Option<(String, u64)>,
+    /// How many times the card the field is for was left for another: a
+    /// give's values come back to the card they were typed on only if it
+    /// was not left meanwhile, since leaving the card forgets them.
+    secret_left: u64,
     /// The field draws the secret as typed, for a look: its toggle's
     /// state, for the ask the field is for, and kept for no other.
     secret_shown: bool,
@@ -1030,6 +1034,7 @@ impl Footplate {
             filter,
             secret_typed: Vec::new(),
             secret_for: None,
+            secret_left: 0,
             secret_shown: false,
             typeback,
             typeback_for: None,
@@ -6994,6 +6999,409 @@ yardr.dev
         cx.simulate_keystrokes("up");
         assert_eq!(chosen_of(&view, cx, "bead-a", 3), 3);
         assert_eq!(typed(&view, cx), "tonight?");
+    }
+
+    /// The window on a yard whose three open asks are `asks_three`'s, ask
+    /// 3's card open and its bead read, the yard taking every write of the
+    /// cards.
+    fn opened_on_the_links<'a>(
+        yard: &Yard,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Footplate>, &'a mut VisualTestContext) {
+        a_yard_of_jo(yard);
+        yard.answer("UserAsks", &asks_three());
+        yard.answer("Bead", &bead_three());
+        for write in ["AnswerAsk", "DeferAsk", "DeclineAsk", "AddNote"] {
+            yard.answer(write, "{}");
+        }
+        cx.update(|cx| {
+            input::bind_keys(cx);
+            bind_keys(cx);
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let view = Footplate::new(yard.client(), "jo".into(), window, cx);
+            window.focus(&view.line.focus_handle(cx));
+            view
+        });
+        wait(cx, "the decision", |cx| {
+            to_decisions(&view, cx);
+            view.read_with(cx, |v, _| {
+                v.model
+                    .as_ref()
+                    .is_some_and(|m| m.selected() == Some(&Selected::Decision("bead-a".into())))
+            })
+        });
+        wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-a"));
+        cx.run_until_parked();
+        (view, cx)
+    }
+
+    /// The queue as the yard lists it once it dealt with ask `ask` of
+    /// `asks_three`: that ask among the decided, with `fields` of its entry
+    /// (its state, what went with it), and the others open still.
+    fn links_queue_after(ask: u64, fields: Value) -> String {
+        let all: Value = serde_json::from_str(&asks_three()).unwrap();
+        let asks = all["result"]["open"].as_array().unwrap();
+        let mut dealt = asks.iter().find(|a| a["ask"] == ask).unwrap().clone();
+        for (name, value) in fields.as_object().unwrap() {
+            dealt[name] = value.clone();
+        }
+        let open: Vec<&Value> = asks.iter().filter(|a| a["ask"] != ask).collect();
+        json!({"result": {"open": open, "decided": [dealt]}}).to_string()
+    }
+
+    /// `bead_three` once the yard holds the note `text` from jo, with
+    /// `files` files, after the notes it had.
+    fn bead_three_with_note(text: &str, files: usize) -> String {
+        let mut bead: Value = serde_json::from_str(&bead_three()).unwrap();
+        let carried: Vec<Value> = (0..files)
+            .map(|_| json!({"hash": HASH, "type": "text/html; charset=utf-8", "bytes": 51}))
+            .collect();
+        bead["result"]["notes"].as_array_mut().unwrap().push(json!({
+            "seq": 9, "kind": "note", "author": "jo", "text": text,
+            "at": "2026-10-10T12:00:00Z", "files": carried
+        }));
+        bead.to_string()
+    }
+
+    /// Where the card's write stands with the yard, as the model has it.
+    fn sending_of(
+        view: &Entity<Footplate>,
+        cx: &mut VisualTestContext,
+        bead: &str,
+        ask: u64,
+    ) -> Option<crate::model::Sending> {
+        view.read_with(cx, |v, _| v.model.as_ref().unwrap().sending(bead, ask))
+    }
+
+    /// Whether the yard's queue, as the window has it, lists the ask among
+    /// the decided.
+    fn decided_in_queue(
+        view: &Entity<Footplate>,
+        cx: &mut VisualTestContext,
+        bead: &str,
+        ask: u64,
+    ) -> bool {
+        view.read_with(cx, |v, _| {
+            v.model
+                .as_ref()
+                .unwrap()
+                .decided_detail(bead, ask, &chrono::Utc)
+                .is_some()
+        })
+    }
+
+    /// A pick the yard took whose answer was lost on the way is never shown
+    /// as one it did not take. While the call is with the yard the card says
+    /// so, and takes no second write of any kind; the call ends with no
+    /// answer, and the card waits for the queue, which says the yard
+    /// answered: the words that came back are gone, no refusal was ever
+    /// drawn, and the yard was asked once. Where the queue still lists the
+    /// ask open the card says the yard has not recorded it, the words stay
+    /// in the line, and sending them again is the person's.
+    #[gpui::test]
+    fn a_pick_whose_answer_was_lost_ends_as_the_queue_says_and_is_never_sent_again(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        let (view, cx) = opened_on_the_links(&yard, cx);
+
+        // A pick with words, and the yard slow to answer. A turn of the
+        // executor would run the held call where it stands, so the card is
+        // drawn without one.
+        cx.simulate_keystrokes("escape 2 i");
+        cx.simulate_input("because");
+        yard.hold_calls("AnswerAsk");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        assert!(drawn_untick(cx, "answer out bead-a 3"));
+        assert_eq!(refused_of(&view, cx, "bead-a", 3), "");
+        assert_eq!(notice(&view, cx), "");
+        // No second write of any kind goes while this one is with the yard.
+        view.update_in(cx, |v, window, cx| {
+            v.decide(cx);
+            v.later_now(cx);
+            v.decline_now(window, cx);
+        });
+
+        // The yard took it, and its answer is lost on the way: its queue
+        // says so, and the card ends as answered.
+        yard.answer(
+            "UserAsks",
+            &links_queue_after(
+                3,
+                json!({"state": "answered", "option": 2, "option_label": "After Friday",
+                       "words": "because"}),
+            ),
+        );
+        yard.answer_nothing("AnswerAsk");
+        yard.release_calls("AnswerAsk");
+        wait(cx, "the card ending as answered", |cx| {
+            sending_of(&view, cx, "bead-a", 3).is_none() && decided_in_queue(&view, cx, "bead-a", 3)
+        });
+        assert_eq!(typed(&view, cx), "");
+        assert_eq!(refused_of(&view, cx, "bead-a", 3), "");
+        assert!(!drawn(cx, "refused bead-a 3"));
+        assert_eq!(notice(&view, cx), "");
+        assert_eq!(yard.asked("AnswerAsk").len(), 1);
+
+        // The next ask: its answer is lost too, but the yard did not take
+        // it, and its queue still lists the ask open. The card says the
+        // yard has not recorded it, its words stay in the line, and nothing
+        // is sent again by itself.
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 4, cx));
+        cx.simulate_keystrokes("escape 1 i");
+        cx.simulate_input("send them tonight");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-a", 4) == model::ANSWER_NOT_TAKEN
+        });
+        assert!(drawn(cx, "refused bead-a 4"));
+        assert_eq!(typed(&view, cx), "send them tonight");
+        assert_eq!(sending_of(&view, cx, "bead-a", 4), None);
+        assert_eq!(notice(&view, cx), "");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("AnswerAsk").len(), 2);
+
+        // The person sends it again, and the yard answers now.
+        yard.answer("AnswerAsk", "{}");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        wait(cx, "the answer sent again", |_| {
+            yard.asked("AnswerAsk").len() == 3
+        });
+        assert_eq!(refused_of(&view, cx, "bead-a", 4), "");
+        assert_eq!(typed(&view, cx), "");
+
+        // The yard is lost over the next one, and the window is told only
+        // after the call, so no read of the queue goes while it is away: the
+        // card waits, in no word of failure, with the words in the line and
+        // nothing sent again. When the yard is back its queue is read, and
+        // still lists the ask open.
+        yard.answer_nothing("AnswerAsk");
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 5, cx));
+        cx.simulate_keystrokes("escape 1 i");
+        cx.simulate_input("close it, then");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        view.update(cx, |v, _| v.down = Some("away".into()));
+        cx.run_until_parked();
+        assert!(drawn(cx, "answer unsure bead-a 5"));
+        assert_eq!(typed(&view, cx), "close it, then");
+        assert_eq!(refused_of(&view, cx, "bead-a", 5), "");
+        assert_eq!(notice(&view, cx), "");
+        assert_eq!(yard.asked("AnswerAsk").len(), 4);
+        view.update(cx, |v, _| v.down = None);
+        view.update(cx, |v, cx| {
+            let session = v.session;
+            v.run_in(session, vec![crate::model::Effect::Asks], cx);
+        });
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-a", 5) == model::ANSWER_NOT_TAKEN
+        });
+        assert_eq!(typed(&view, cx), "close it, then");
+        assert_eq!(yard.asked("AnswerAsk").len(), 4);
+    }
+
+    /// A decline whose answer was lost: the same truth. While it is out the
+    /// card says so; the words come back to the line and wait for the
+    /// queue, which ends the card as declined, or says the yard still lists
+    /// the ask open, the words kept for the person to send again.
+    #[gpui::test]
+    fn a_decline_whose_answer_was_lost_ends_as_the_queue_says_and_is_never_sent_again(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        let (view, cx) = opened_on_the_links(&yard, cx);
+
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 5, cx));
+        cx.simulate_keystrokes("escape i");
+        cx.simulate_input("not mine to take");
+        yard.hold_calls("DeclineAsk");
+        view.update_in(cx, |v, window, cx| v.decline_now(window, cx));
+        assert!(drawn_untick(cx, "decline out bead-a 5"));
+        assert_eq!(notice(&view, cx), "");
+        view.update_in(cx, |v, window, cx| {
+            v.decline_now(window, cx);
+            v.later_now(cx);
+        });
+
+        yard.answer(
+            "UserAsks",
+            &links_queue_after(5, json!({"state": "declined", "words": "not mine to take"})),
+        );
+        yard.answer_nothing("DeclineAsk");
+        yard.release_calls("DeclineAsk");
+        wait(cx, "the card ending as declined", |cx| {
+            sending_of(&view, cx, "bead-a", 5).is_none() && decided_in_queue(&view, cx, "bead-a", 5)
+        });
+        assert_eq!(typed(&view, cx), "");
+        assert_eq!(notice(&view, cx), "");
+        assert_eq!(refused_of(&view, cx, "bead-a", 5), "");
+        assert_eq!(yard.asked("DeclineAsk").len(), 1);
+
+        // The yard did not take the next one: said so, the words kept.
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 4, cx));
+        cx.simulate_keystrokes("escape i");
+        cx.simulate_input("the greeting can wait");
+        view.update_in(cx, |v, window, cx| v.decline_now(window, cx));
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-a", 4) == model::DECLINE_NOT_TAKEN
+        });
+        assert_eq!(typed(&view, cx), "the greeting can wait");
+        assert_eq!(sending_of(&view, cx, "bead-a", 4), None);
+        assert_eq!(notice(&view, cx), "");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("DeclineAsk").len(), 2);
+
+        yard.answer("DeclineAsk", "{}");
+        view.update_in(cx, |v, window, cx| v.decline_now(window, cx));
+        wait(cx, "the decline sent again", |_| {
+            yard.asked("DeclineAsk").len() == 3
+        });
+        assert_eq!(refused_of(&view, cx, "bead-a", 4), "");
+    }
+
+    /// Later whose answer was lost: the same truth. The card says it is
+    /// putting the ask aside while the call is out, ends as put aside where
+    /// the queue says so, and says the yard still lists it open where it
+    /// does; the words typed on the card, which Later takes none of, are
+    /// back in the line meanwhile and go where the yard took it.
+    #[gpui::test]
+    fn later_whose_answer_was_lost_ends_as_the_queue_says_and_is_never_sent_again(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        let (view, cx) = opened_on_the_links(&yard, cx);
+
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 4, cx));
+        cx.simulate_keystrokes("escape i");
+        cx.simulate_input("not yet");
+        yard.hold_calls("DeferAsk");
+        view.update_in(cx, |v, _, cx| v.later_now(cx));
+        assert!(drawn_untick(cx, "later out bead-a 4"));
+        assert_eq!(notice(&view, cx), "");
+        view.update_in(cx, |v, window, cx| {
+            v.later_now(cx);
+            v.decline_now(window, cx);
+        });
+
+        yard.answer(
+            "UserAsks",
+            &links_queue_after(
+                4,
+                json!({"state": "put aside", "return_at": "2099-10-10T18:00:00Z"}),
+            ),
+        );
+        yard.answer_nothing("DeferAsk");
+        yard.release_calls("DeferAsk");
+        wait(cx, "the card ending as put aside", |cx| {
+            sending_of(&view, cx, "bead-a", 4).is_none() && decided_in_queue(&view, cx, "bead-a", 4)
+        });
+        assert_eq!(typed(&view, cx), "");
+        assert_eq!(notice(&view, cx), "");
+        assert_eq!(refused_of(&view, cx, "bead-a", 4), "");
+        assert_eq!(yard.asked("DeferAsk").len(), 1);
+
+        // The yard did not put the next one aside: said so, the words kept.
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 5, cx));
+        cx.simulate_keystrokes("escape i");
+        cx.simulate_input("later, then");
+        view.update_in(cx, |v, _, cx| v.later_now(cx));
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-a", 5) == model::LATER_NOT_TAKEN
+        });
+        assert_eq!(typed(&view, cx), "later, then");
+        assert_eq!(sending_of(&view, cx, "bead-a", 5), None);
+        assert_eq!(notice(&view, cx), "");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("DeferAsk").len(), 2);
+
+        yard.answer("DeferAsk", "{}");
+        view.update_in(cx, |v, _, cx| v.later_now(cx));
+        wait(cx, "Later sent again", |_| {
+            yard.asked("DeferAsk").len() == 3
+        });
+        assert_eq!(refused_of(&view, cx, "bead-a", 5), "");
+    }
+
+    /// A note whose answer was lost: the same truth, but the queue cannot
+    /// say, since a note leaves the ask open: the bead's notes do. The card
+    /// says the note is with the yard; the words and the file are back with
+    /// the ask meanwhile; a bead that holds the note ends the card with
+    /// both gone, and one that does not says the yard has not recorded it,
+    /// both kept for the person to send again.
+    #[gpui::test]
+    fn a_note_whose_answer_was_lost_ends_as_the_bead_says_and_is_never_sent_again(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        let (view, cx) = opened_on_the_links(&yard, cx);
+        let dir = tempfile::tempdir().unwrap();
+        let mockup = dir.path().join("mockup.html");
+        std::fs::write(&mockup, PAGE).unwrap();
+        yard.answer(
+            "PutBlob",
+            &json!({"result": {"hash": HASH, "type": "text/html; charset=utf-8", "bytes": 51}})
+                .to_string(),
+        );
+
+        // A note with a page, and the yard slow to answer.
+        view.update(cx, |v, cx| v.select_ask("bead-a".into(), 5, cx));
+        view.update(cx, |v, cx| v.dropped(std::slice::from_ref(&mockup), cx));
+        wait(cx, "the page", |cx| {
+            card_attached(&view, cx, "bead-a", 5).len() == 1
+        });
+        cx.simulate_keystrokes("escape i");
+        cx.simulate_input("the mockup, third pass");
+        yard.hold_calls("AddNote");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        assert!(drawn_untick(cx, "note out bead-a 5"));
+        assert_eq!(refused_of(&view, cx, "bead-a", 5), "");
+        assert_eq!(notice(&view, cx), "");
+        view.update_in(cx, |v, window, cx| {
+            v.decide(cx);
+            v.later_now(cx);
+            v.decline_now(window, cx);
+        });
+
+        // The yard took it: its bead says so, and the card ends with the
+        // words and the page gone.
+        yard.answer("Bead", &bead_three_with_note("the mockup, third pass", 1));
+        yard.answer_nothing("AddNote");
+        yard.release_calls("AddNote");
+        wait(cx, "the card ending as noted", |cx| {
+            sending_of(&view, cx, "bead-a", 5).is_none()
+                && typed(&view, cx).is_empty()
+                && card_attached(&view, cx, "bead-a", 5).is_empty()
+        });
+        assert_eq!(notice(&view, cx), "");
+        assert_eq!(refused_of(&view, cx, "bead-a", 5), "");
+        assert_eq!(yard.asked("AddNote").len(), 1);
+
+        // Again, and this time the bead does not hold the note: the yard
+        // has not recorded it, and the words and the page are kept.
+        yard.answer("Bead", &bead_three());
+        view.update(cx, |v, cx| v.dropped(std::slice::from_ref(&mockup), cx));
+        wait(cx, "the page again", |cx| {
+            card_attached(&view, cx, "bead-a", 5).len() == 1
+        });
+        cx.simulate_keystrokes("escape i");
+        cx.simulate_input("the mockup, fourth pass");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-a", 5) == model::NOTE_NOT_TAKEN
+        });
+        assert_eq!(typed(&view, cx), "the mockup, fourth pass");
+        assert_eq!(card_attached(&view, cx, "bead-a", 5).len(), 1);
+        assert_eq!(sending_of(&view, cx, "bead-a", 5), None);
+        assert_eq!(notice(&view, cx), "");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("AddNote").len(), 2);
+
+        yard.answer("AddNote", "{}");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        wait(cx, "the note sent again", |_| {
+            yard.asked("AddNote").len() == 3
+        });
+        assert_eq!(refused_of(&view, cx, "bead-a", 5), "");
     }
 
     #[gpui::test]
@@ -30438,26 +30846,30 @@ yardr.dev
         nowhere(&view, cx, "no such call");
 
         // The yard goes away over the call: never "sent", and not "not
-        // sent" either.
+        // sent" either, since the yard may have stored the value all the
+        // same. The card waits while its queue is read, which still lists
+        // the ask open: the yard has not recorded it. The value is back in
+        // the field, where it stays, in no line or notice, and nothing is
+        // given again by itself.
         yard.answer_nothing("GiveSecret");
         cx.simulate_input(VALUE);
         cx.simulate_keystrokes("enter");
-        assert_eq!(secret_field(&view, cx).0, "");
-        wait(cx, "no answer", |cx| {
-            refused_of(&view, cx, "bead-s", 7)
-                == "the yard did not answer. The value may be written. Give it again."
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-s", 7) == model::GIVE_NOT_TAKEN
         });
         assert!(drawn(cx, "refused bead-s 7"));
         assert_eq!(notice(&view, cx), "");
+        assert_eq!(secret_field(&view, cx).0, VALUE);
+        assert_eq!(typed(&view, cx), "");
         assert_eq!(yard.asked("GiveSecret").len(), 2);
         nowhere(&view, cx, "no answer");
 
-        // The yard says no, in its words.
+        // The yard says no, in its words, to the value kept in the field,
+        // which Enter gives again with no retyping.
         yard.answer(
             "GiveSecret",
             r#"{"error": {"code": "error", "message": "GiveSecret is the operator's to give"}}"#,
         );
-        cx.simulate_input(VALUE);
         cx.simulate_keystrokes("enter");
         assert_eq!(secret_field(&view, cx).0, "");
         wait(cx, "refused", |cx| {
@@ -34976,6 +35388,247 @@ yardr.dev
             yard.asked("AnswerAsk")
                 == [json!({"bead": "bead-d", "ask": 11, "option": 2, "actor": "jo"})]
         });
+    }
+
+    /// A give the yard stored whose answer was lost on the way is never
+    /// shown as one it did not take. While the call is with the yard the card
+    /// says the value is with it, and Give is off; the call ends with no
+    /// answer, and the card waits for the queue, which says the yard took the
+    /// names: the card ends as given, the value forgotten, no refusal drawn,
+    /// and the yard was asked once.
+    #[gpui::test]
+    fn a_secret_the_yard_stored_whose_answer_was_lost_ends_as_given(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("footplate/settings.json");
+        let yard = Yard::start();
+        let (view, cx) = opened_on_a_secret_ask(&yard, &["BOOKS_TOKEN"], &file, cx);
+        let nowhere = |view: &Entity<Footplate>, cx: &mut VisualTestContext, when: &str| {
+            let kept = kept_outside_the_field(view, cx, dir.path());
+            assert!(!kept.contains(VALUE), "{when}: {kept}");
+        };
+
+        // The yard is slow to answer. A turn of the executor would run the
+        // held call where it stands, so the card is drawn without one.
+        cx.simulate_keystrokes("i");
+        cx.simulate_input(VALUE);
+        yard.hold_calls("GiveSecret");
+        view.update_in(cx, |v, _, cx| v.give(cx));
+        assert!(drawn_untick(cx, "give out bead-s 7"));
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+        assert_eq!(notice(&view, cx), "");
+        // Give is off while it is out: what is typed meanwhile stays where
+        // it is, and nothing goes.
+        view.update(cx, |v, cx| {
+            v.secret.update(cx, |field, cx| field.set_text("next", cx))
+        });
+        view.update_in(cx, |v, _, cx| v.give(cx));
+        assert_eq!(
+            view.read_with(cx, |v, cx| v.secret.read(cx).text().to_string()),
+            "next"
+        );
+        view.update(cx, |v, cx| v.forget_secret(cx));
+
+        // The yard stored it, and its answer is lost on the way: its queue
+        // says so, with the names it was given.
+        yard.answer(
+            "UserAsks",
+            &json!({"result": {"open": [], "decided": [
+                queued_secret(&["BOOKS_TOKEN"], 7, "answered", &["BOOKS_TOKEN"])
+            ]}})
+            .to_string(),
+        );
+        yard.answer_nothing("GiveSecret");
+        yard.release_calls("GiveSecret");
+        wait(cx, "the card ending as given", |cx| {
+            sending_of(&view, cx, "bead-s", 7).is_none() && decided_in_queue(&view, cx, "bead-s", 7)
+        });
+        assert_eq!(
+            decided_detail_of(&view, cx, "bead-s", 7).state_line,
+            "you gave BOOKS_TOKEN"
+        );
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+        assert!(!drawn(cx, "refused bead-s 7"));
+        assert_eq!(notice(&view, cx), "");
+        assert_eq!(yard.asked("GiveSecret").len(), 1);
+        // A confirmed give never shows the value again: not in the field,
+        // not among the values typed so far, nowhere.
+        assert_eq!(secret_field(&view, cx).0, "");
+        view.read_with(cx, |v, _| assert!(v.secret_typed.is_empty()));
+        nowhere(&view, cx, "given");
+    }
+
+    /// A give the yard may have stored is kept in the field of its card and
+    /// nowhere else while the yard has not said: the last value in the
+    /// field, the rest among those typed so far, the mail line never. Give
+    /// is off meanwhile. Leaving the card forgets it, with no return, and
+    /// the card the person comes back to says what the yard said.
+    #[gpui::test]
+    fn a_secret_the_yard_may_have_stored_is_kept_in_its_field_alone_until_the_yard_says(
+        cx: &mut TestAppContext,
+    ) {
+        const OTHER: &str = "bk-live-9z9z-2Ab";
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("footplate/settings.json");
+        let yard = Yard::start();
+        let (view, cx) = opened_on_a_secret_ask(&yard, &["BOOKS_TOKEN", "BOOKS_URL"], &file, cx);
+        let nowhere = |view: &Entity<Footplate>, cx: &mut VisualTestContext, when: &str| {
+            let kept = kept_outside_the_field(view, cx, dir.path());
+            assert!(
+                !kept.contains(VALUE) && !kept.contains(OTHER),
+                "{when}: {kept}"
+            );
+        };
+
+        // Both values typed, the second sent, and the yard lost over the
+        // call: the window is told only now, so no read of its queue goes.
+        yard.answer_nothing("GiveSecret");
+        cx.simulate_keystrokes("i");
+        cx.simulate_input(VALUE);
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input(OTHER);
+        view.update_in(cx, |v, _, cx| v.give(cx));
+        view.update(cx, |v, _| v.down = Some("away".into()));
+        cx.run_until_parked();
+        assert_eq!(yard.asked("GiveSecret").len(), 1);
+
+        // The card waits, in no word of failure. The values are back where
+        // they were typed: the last in the field, the first among the
+        // values typed, and in no line, draft, notice, refusal or file.
+        assert!(drawn(cx, "give unsure bead-s 7"));
+        assert_eq!(refused_of(&view, cx, "bead-s", 7), "");
+        assert_eq!(notice(&view, cx), "");
+        assert_eq!(secret_field(&view, cx).0, OTHER);
+        view.read_with(cx, |v, _| assert_eq!(v.secret_typed, [VALUE]));
+        assert_eq!(typed(&view, cx), "");
+        nowhere(&view, cx, "unsure");
+
+        // Give is off: Enter does nothing, and what is kept stays.
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("GiveSecret").len(), 1);
+        assert_eq!(secret_field(&view, cx).0, OTHER);
+        view.read_with(cx, |v, _| assert_eq!(v.secret_typed, [VALUE]));
+
+        // Leaving the card forgets both: from the field and from the
+        // values typed, and they are not back with the card.
+        cx.simulate_keystrokes("secondary-[");
+        cx.run_until_parked();
+        assert_eq!(secret_field(&view, cx).0, "");
+        view.read_with(cx, |v, _| assert!(v.secret_typed.is_empty()));
+        nowhere(&view, cx, "the card left");
+
+        // The yard is back, and its queue still lists the ask open: it has
+        // not recorded the value. The card says so, with nothing kept.
+        view.update(cx, |v, _| v.down = None);
+        view.update(cx, |v, cx| {
+            let session = v.session;
+            v.run_in(session, vec![crate::model::Effect::Asks], cx);
+        });
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-s", 7) == model::GIVE_NOT_TAKEN
+        });
+        cx.simulate_keystrokes("secondary-]");
+        wait(cx, "the card again", |cx| drawn(cx, "secret bead-s 7"));
+        assert_eq!(secret_field(&view, cx).0, "");
+        view.read_with(cx, |v, _| assert!(v.secret_typed.is_empty()));
+        assert_eq!(sending_of(&view, cx, "bead-s", 7), None);
+        nowhere(&view, cx, "the card again");
+        assert_eq!(yard.asked("GiveSecret").len(), 1);
+    }
+
+    /// The values of a give whose call got no answer come back only to the
+    /// card they were typed on, and only if it was not left meanwhile:
+    /// leaving forgets them, with no return, not even to the card opened
+    /// again before the call ended.
+    #[gpui::test]
+    fn a_secret_whose_card_was_left_while_its_call_was_out_is_not_kept(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("footplate/settings.json");
+        let yard = Yard::start();
+        let (view, cx) = opened_on_a_secret_ask(&yard, &["BOOKS_TOKEN"], &file, cx);
+        yard.answer_nothing("GiveSecret");
+        cx.simulate_keystrokes("i");
+        cx.simulate_input(VALUE);
+        view.update_in(cx, |v, _, cx| v.give(cx));
+        // The card is left and opened again before the call ends, and the
+        // window is told the yard is away only after it: no read goes.
+        view.update(cx, |v, cx| {
+            v.secret_for = None;
+            v.shown(cx);
+        });
+        view.update(cx, |v, _| v.down = Some("away".into()));
+        cx.run_until_parked();
+        assert_eq!(yard.asked("GiveSecret").len(), 1);
+
+        // The card waits, with nothing kept: not in the field, not among the
+        // values typed, nowhere.
+        assert!(drawn(cx, "give unsure bead-s 7"));
+        assert_eq!(secret_field(&view, cx).0, "");
+        view.read_with(cx, |v, _| assert!(v.secret_typed.is_empty()));
+        let kept = kept_outside_the_field(&view, cx, dir.path());
+        assert!(!kept.contains(VALUE), "{kept}");
+    }
+
+    /// A weighty give sent again after the card says the yard has not
+    /// recorded it passes its gate again: the number is typed back again,
+    /// weighed is the send's alone, and the value is the one kept in the
+    /// field, in no other place.
+    #[gpui::test]
+    fn a_weighty_give_sent_again_passes_its_gate_again(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("footplate/settings.json");
+        let yard = Yard::start();
+        let (view, cx) = opened_on_a_weighty_secret_ask(&yard, &file, cx);
+        unlock_as(&view, cx, false, false);
+
+        // The number typed back, the value given, and the answer lost; the
+        // queue still lists the ask open.
+        yard.answer_nothing("GiveSecret");
+        view.update(cx, |v, cx| {
+            v.typeback.update(cx, |field, cx| field.set_text("7", cx))
+        });
+        cx.simulate_keystrokes("i");
+        cx.simulate_input(VALUE);
+        cx.simulate_keystrokes("enter");
+        wait(cx, "that the yard has not recorded it", |cx| {
+            refused_of(&view, cx, "bead-s", 7) == model::GIVE_NOT_TAKEN
+        });
+        // The value is kept in the field, and the number was used up.
+        assert_eq!(secret_field(&view, cx).0, VALUE);
+        assert_eq!(typeback_text(&view, cx), "");
+        assert_eq!(typed(&view, cx), "");
+        assert_eq!(yard.asked("GiveSecret").len(), 1);
+
+        // Sent again with no number typed back: nothing goes, as for any
+        // give of a weighty card, and the value stays.
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("GiveSecret").len(), 1);
+        assert_eq!(
+            notice(&view, cx),
+            "ask 7's number was not typed back, so nothing was done"
+        );
+        assert_eq!(secret_field(&view, cx).0, VALUE);
+
+        // With the number typed back it passes the gate again, weighed, and
+        // gives the same value.
+        yard.answer(
+            "GiveSecret",
+            r#"{"result": {"given": ["BOOKS_TOKEN"], "file": "/home/jo/.yardr/sources/books.env",
+                "credential": "BOOKS_TOKEN is set in /home/jo/.yardr/sources/books.env"}}"#,
+        );
+        view.update(cx, |v, cx| {
+            v.typeback.update(cx, |field, cx| field.set_text("7", cx))
+        });
+        cx.simulate_keystrokes("enter");
+        wait(cx, "the give sent again", |_| {
+            yard.asked("GiveSecret").len() == 2
+        });
+        let call = json!({"bead": "bead-s", "ask": 7, "values": {"BOOKS_TOKEN": VALUE},
+                          "actor": "jo", "weighed": true});
+        assert_eq!(yard.asked("GiveSecret"), [call.clone(), call]);
+        assert_eq!(typeback_text(&view, cx), "");
+        assert_eq!(secret_field(&view, cx).0, "");
     }
 
     /// The Give button beside a secret's field gives the typed value by the

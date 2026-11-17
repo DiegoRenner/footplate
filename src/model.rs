@@ -1295,33 +1295,24 @@ impl Reads {
     }
 }
 
-/// Where an approval stands from the window sending it to the yard's word
-/// on it. The card says which, in words that are no failure, and offers no
-/// second approval meanwhile: the yard runs a command once for one ask and
-/// refuses another approval, but a card believed to have failed would
-/// invite one.
+/// Where a write stands from the window sending it to the yard's word on
+/// it. The card says which, in words that are no failure, and offers no
+/// second write meanwhile: the yard runs a command once for one ask and
+/// takes a value for one name, but a card believed to have failed would
+/// invite a second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sending {
     /// The call is with the yard.
     Out,
-    /// The call ended with no answer, so the yard may have run it all the
-    /// same: its queue is read for which. `after` is the stamp taken when
-    /// the call ended: a read made before it may predate the approval, and
-    /// can say the yard took it but not that it did not.
+    /// The call ended with no answer, so the yard may have taken it all the
+    /// same: what it says of the write is read (the queue's, or the bead's
+    /// for a note). `after` is the stamp taken when the call ended: a read
+    /// made before it may predate the write, and can say the yard took it
+    /// but not that it did not.
     Unsure { after: u64 },
 }
 
 impl Sending {
-    /// What the card says of it.
-    pub fn words(self) -> &'static str {
-        match self {
-            Sending::Out => "the approval is with the yard",
-            Sending::Unsure { .. } => {
-                "the yard did not answer; reading its queue to see whether it took the approval"
-            }
-        }
-    }
-
     /// The word the card's selector names it by.
     pub fn name(self) -> &'static str {
         match self {
@@ -1329,6 +1320,113 @@ impl Sending {
             Sending::Unsure { .. } => "unsure",
         }
     }
+}
+
+/// What a card sends the yard that can end with no answer, with what its
+/// re-read needs to say whether the yard took it. A card is with the yard
+/// for one of these at a time ([`Model::write_out`]). Never a value: a give
+/// is held by the names it was given for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Write {
+    /// The approval of a run or setup ask.
+    Approval,
+    /// A pick, or the words that are the answer (`option` 0).
+    Answer { option: u64 },
+    /// Words as a plain note on the ask's bead, with the attachments (by
+    /// id) that went with them: the ask stays open, so the queue cannot
+    /// say whether it was taken, and the bead's notes do.
+    Note { files: Vec<u64> },
+    /// The ask put aside.
+    Later,
+    /// The ask declined.
+    Decline,
+    /// The values of a secret ask, by the names they were given for.
+    Give { names: Vec<String> },
+}
+
+impl Write {
+    /// The word the card's selector names it by.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Write::Approval => "approval",
+            Write::Answer { .. } => "answer",
+            Write::Note { .. } => "note",
+            Write::Later => "later",
+            Write::Decline => "decline",
+            Write::Give { .. } => "give",
+        }
+    }
+
+    /// What the card says of the write while it is with the yard, or the
+    /// yard has not said what came of it: no word in it is a failure.
+    pub fn words(&self, sending: Sending) -> &'static str {
+        match (self, sending) {
+            (Write::Approval, Sending::Out) => "the approval is with the yard",
+            (Write::Approval, Sending::Unsure { .. }) => {
+                "the yard did not answer; reading its queue to see whether it took the approval"
+            }
+            (Write::Answer { .. }, Sending::Out) => "the answer is with the yard",
+            (Write::Answer { .. }, Sending::Unsure { .. }) => {
+                "the yard did not answer; reading its queue to see whether it took the answer"
+            }
+            (Write::Note { .. }, Sending::Out) => "the note is with the yard",
+            (Write::Note { .. }, Sending::Unsure { .. }) => {
+                "the yard did not answer; reading the bead to see whether it took the note"
+            }
+            (Write::Later, Sending::Out) => "putting it aside is with the yard",
+            (Write::Later, Sending::Unsure { .. }) => {
+                "the yard did not answer; reading its queue to see whether it put it aside"
+            }
+            (Write::Decline, Sending::Out) => "the decline is with the yard",
+            (Write::Decline, Sending::Unsure { .. }) => {
+                "the yard did not answer; reading its queue to see whether it took the decline"
+            }
+            (Write::Give { .. }, Sending::Out) => "the value is with the yard",
+            (Write::Give { .. }, Sending::Unsure { .. }) => {
+                "the yard did not answer; reading its queue to see whether it took the value"
+            }
+        }
+    }
+
+    /// What the card says when the read that came after the call says the
+    /// yard has not recorded the write, and what to do about it.
+    pub fn not_taken(&self) -> &'static str {
+        match self {
+            Write::Approval => APPROVAL_NOT_TAKEN,
+            Write::Answer { .. } => ANSWER_NOT_TAKEN,
+            Write::Note { .. } => NOTE_NOT_TAKEN,
+            Write::Later => LATER_NOT_TAKEN,
+            Write::Decline => DECLINE_NOT_TAKEN,
+            Write::Give { .. } => GIVE_NOT_TAKEN,
+        }
+    }
+}
+
+/// A write the card is with the yard for: what it is, where it stands, and
+/// what is needed to read the yard's word on it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Held {
+    write: Write,
+    sending: Sending,
+    /// The words that went with it, which are back in the line while the
+    /// yard is not known to have taken it: what a read that says it did
+    /// takes out again. Empty on an approval, and on a give, whose value is
+    /// never kept here.
+    words: String,
+    /// The newest seq among the notes the bead had when a note went: a note
+    /// the yard took is newer.
+    seen: u64,
+}
+
+/// A write a read of the yard says it took, after a call with no answer:
+/// the window takes back out what it kept of it (the words that came back
+/// to the line, the value kept in the field of a give).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Taken {
+    pub bead: String,
+    pub ask: u64,
+    pub write: Write,
+    pub words: String,
 }
 
 /// How many mails of a conversation the yard is asked for at once: the
@@ -1656,10 +1754,13 @@ pub struct Model {
     aside: bool,
     /// The stamps of the reads made of the yard, and what they answered.
     reads: Reads,
-    /// The approvals that are with the yard, by ask: until the yard says
-    /// what came of one, its card says it is waiting, and a read of the
-    /// queue settles it ([`Model::settle_approvals`]).
-    sending: HashMap<(String, u64), Sending>,
+    /// The writes that are with the yard, by ask: until the yard says what
+    /// came of one, its card says it is waiting, and a read of the queue
+    /// (of the bead, for a note) settles it ([`Model::settle_writes`]).
+    sending: HashMap<(String, u64), Held>,
+    /// The writes a read said the yard took, which the window has not
+    /// taken back what it kept of yet ([`Model::take_taken`]).
+    taken: Vec<Taken>,
     /// What went wrong last, in words; empty when nothing.
     pub notice: String,
 }
@@ -1886,20 +1987,34 @@ impl Model {
         m.ask_news(&self.open, &self.decided);
         m.notice_news(&self.notifications);
         effects.extend(m.ack());
-        // An approval that was with the yard when it was lost is the
-        // yard's to say now: the state read again lists the ask as it
-        // stands, and says whether it took the approval. A state read says
-        // only that it did (stamp 0 is older than any call's end), since it
-        // may predate the call; for what it does not say the queue is read
-        // once more, which can.
+        // A write that was with the yard when it was lost is the yard's to
+        // say now: the state read again lists the ask as it stands, and
+        // says whether it took the write. A state read says only that it
+        // did (stamp 0 is older than any call's end), since it may predate
+        // the call; for what it does not say the queue is read once more,
+        // which can, and the bead for a note, which the state does not
+        // hold.
         m.sending = self.sending.clone();
-        m.settle_approvals(0);
+        m.taken = self.taken.clone();
+        m.settle_writes(0);
+        let unsure = |held: &Held| matches!(held.sending, Sending::Unsure { .. });
         if m.sending
             .values()
-            .any(|sending| matches!(sending, Sending::Unsure { .. }))
+            .any(|held| unsure(held) && !matches!(held.write, Write::Note { .. }))
         {
             effects.push(Effect::Asks);
         }
+        let mut noted: Vec<&str> = m
+            .sending
+            .iter()
+            .filter(|(_, held)| unsure(held) && matches!(held.write, Write::Note { .. }))
+            .map(|((bead, _), _)| bead.as_str())
+            .collect();
+        noted.sort_unstable();
+        noted.dedup();
+        effects.extend(noted.into_iter().map(|bead| Effect::Bead {
+            bead: bead.to_string(),
+        }));
         (m, effects)
     }
 
@@ -4376,6 +4491,7 @@ impl Model {
     /// the calls that read the queue and the bead again, for what the yard
     /// says.
     pub fn picked(&mut self, bead: &str, ask: u64, option: u64, words: &str) -> Vec<Effect> {
+        self.write_ended(bead, ask);
         let words = words.trim().to_string();
         let label = self
             .bead_ask(bead, ask)
@@ -4502,6 +4618,7 @@ impl Model {
     /// wrote: the ask moves to "Decided" at once, as one that `gave` them,
     /// and the queue and the bead are read again for what the yard says.
     pub fn gave(&mut self, bead: &str, ask: u64, names: &[String]) -> Vec<Effect> {
+        self.write_ended(bead, ask);
         if let Some(dealt) = self
             .decided
             .iter_mut()
@@ -4587,79 +4704,240 @@ impl Model {
         self.run(bead, ask).filter(|_| !closed)
     }
 
-    /// The approval of a run or setup ask goes out to the yard: its card
-    /// says so, and takes no second approval, until the yard says what
+    /// A write of the ask's card goes out to the yard: the card says so,
+    /// and takes no second write of any kind, until the yard says what
     /// came of it.
-    pub fn approval_out(&mut self, bead: &str, ask: u64) {
-        self.sending.insert((bead.to_string(), ask), Sending::Out);
+    pub fn write_out(&mut self, bead: &str, ask: u64, write: Write) {
+        let seen = self.notes_seen(bead);
+        self.sending.insert(
+            (bead.to_string(), ask),
+            Held {
+                write,
+                sending: Sending::Out,
+                words: String::new(),
+                seen,
+            },
+        );
     }
 
-    /// The approval's call ended with no answer ([`answer_lost`]): the yard
-    /// may have run it all the same. The card waits, and the queue is read
-    /// for what the yard says; the read is the effect returned.
-    pub fn approval_unanswered(&mut self, bead: &str, ask: u64) -> Vec<Effect> {
+    /// The write's call ended with no answer ([`answer_lost`]): the yard
+    /// may have taken it all the same. The card waits, and what the yard
+    /// says of the write is read, never the write sent again; the read is
+    /// the effect returned. `words` are those that went with it and are back
+    /// in the line: what a read that says the yard took them takes out
+    /// again.
+    pub fn write_unanswered(
+        &mut self,
+        bead: &str,
+        ask: u64,
+        write: Write,
+        words: String,
+    ) -> Vec<Effect> {
         let after = self.reads.make();
-        self.sending
-            .insert((bead.to_string(), ask), Sending::Unsure { after });
-        vec![Effect::Asks]
+        let at = (bead.to_string(), ask);
+        let seen = match self.sending.get(&at) {
+            Some(held) => held.seen,
+            None => self.notes_seen(bead),
+        };
+        // A note leaves the ask open, so only the bead says whether it
+        // was taken: its notes are read, the queue is for the rest.
+        let read = match write {
+            Write::Note { .. } => Effect::Bead {
+                bead: bead.to_string(),
+            },
+            _ => Effect::Asks,
+        };
+        self.sending.insert(
+            at,
+            Held {
+                write,
+                sending: Sending::Unsure { after },
+                words,
+                seen,
+            },
+        );
+        vec![read]
     }
 
-    /// The yard said what came of the approval, or it never went: the card
+    /// The yard said what came of the write, or it never went: the card
     /// has nothing more to wait for.
-    pub fn approval_ended(&mut self, bead: &str, ask: u64) {
+    pub fn write_ended(&mut self, bead: &str, ask: u64) {
         self.sending.remove(&(bead.to_string(), ask));
     }
 
-    /// Where the ask's approval stands with the yard, while it is with it.
+    /// Where the ask's write stands with the yard, while it is with it.
     pub fn sending(&self, bead: &str, ask: u64) -> Option<Sending> {
-        self.sending.get(&(bead.to_string(), ask)).copied()
+        self.sending
+            .get(&(bead.to_string(), ask))
+            .map(|held| held.sending)
+    }
+
+    /// What the card is with the yard for, and where it stands.
+    pub fn writing(&self, bead: &str, ask: u64) -> Option<(&Write, Sending)> {
+        self.sending
+            .get(&(bead.to_string(), ask))
+            .map(|held| (&held.write, held.sending))
+    }
+
+    /// Whether a note of the bead got no answer and waits for the bead to
+    /// be read: nothing else settles it.
+    pub fn note_unsure(&self, bead: &str) -> bool {
+        self.sending.iter().any(|((of, _), held)| {
+            of == bead
+                && matches!(held.write, Write::Note { .. })
+                && matches!(held.sending, Sending::Unsure { .. })
+        })
+    }
+
+    /// The newest seq among the bead's notes as the model holds them, 0
+    /// where it holds none.
+    fn notes_seen(&self, bead: &str) -> u64 {
+        self.beads
+            .get(bead)
+            .and_then(|b| b.notes.iter().map(|n| n.seq).max())
+            .unwrap_or(0)
+    }
+
+    /// Whether the queue lists the ask as it stood when the card wrote:
+    /// open, or put aside, which can be answered, approved and given
+    /// still. A warning that the yard has not recorded a write stands only
+    /// while it does.
+    pub fn listed_open(&self, bead: &str, ask: u64) -> bool {
+        self.open.iter().any(|a| a.bead == bead && a.ask == ask)
+            || self
+                .decided
+                .iter()
+                .any(|a| a.bead == bead && a.ask == ask && a.state == "put aside")
+    }
+
+    /// The writes a read said the yard took, since last asked: the window
+    /// takes back out what it kept of each.
+    pub fn take_taken(&mut self) -> Vec<Taken> {
+        std::mem::take(&mut self.taken)
     }
 
     /// The queue was read, the read stamped `stamp`: what it says settles
-    /// each approval whose call ended with no answer.
+    /// each write whose call ended with no answer, but a note, which the
+    /// bead's notes settle ([`Model::settle_notes`]). What the queue says
+    /// is the ask's own state:
     ///
-    /// - An ask the yard has among the decided as answered was approved:
-    ///   the card says what ran, which is what an answered call would
-    ///   have said ([`Model::notice`]).
+    /// - An ask the yard has where the write put it was taken, and what
+    ///   the card kept of it is taken out ([`Model::take_taken`]): decided
+    ///   `answered` for an approval, and a pick of the option sent (or a
+    ///   words answer) too; `declined` for a decline; `put aside` for Later;
+    ///   `answered` with the names sent for a give, which are all that the
+    ///   queue holds of a value. An approval's card says what ran, which is
+    ///   what an answered call would have said ([`Model::notice`]).
     /// - One it has declined or taken back, or no longer has, was not
-    ///   approved from here, and its card says what became of it.
-    /// - One still open (or put aside, which is approvable still) was not
-    ///   taken, where the read is newer than the call's end: the cards
-    ///   returned are those, for the window to say why on them. An older
-    ///   read says nothing of that, and the card waits for one that does.
+    ///   written to from here, and its card says what became of it.
+    /// - One where it was, open or put aside (or answered otherwise, for a
+    ///   pick or a give), was not recorded, where the read is newer than
+    ///   the call's end: the writes returned are those, for the window to
+    ///   say why on their cards. An older read says nothing of that, and the
+    ///   card waits for one that does. That is what a yard that wrote a
+    ///   value to its file but not the note that records it (yardr's
+    ///   `KeyNotRecorded`) shows: the ask is open, and giving again writes
+    ///   the same bytes and records it.
     ///
     /// Stamp 0 is older than any call's end, so it settles only what the
     /// queue says was taken: what a yard read again can say.
-    pub fn settle_approvals(&mut self, stamp: u64) -> Vec<(String, u64)> {
-        let unsure: Vec<((String, u64), u64)> = self
+    pub fn settle_writes(&mut self, stamp: u64) -> Vec<(String, u64, Write)> {
+        let unsure: Vec<((String, u64), Write, u64)> = self
             .sending
             .iter()
-            .filter_map(|(at, sending)| match sending {
-                Sending::Unsure { after } => Some((at.clone(), *after)),
-                Sending::Out => None,
+            .filter_map(|(at, held)| match (&held.write, held.sending) {
+                (Write::Note { .. }, _) | (_, Sending::Out) => None,
+                (write, Sending::Unsure { after }) => Some((at.clone(), write.clone(), after)),
             })
             .collect();
-        let mut not_taken = Vec::new();
-        for (at, after) in unsure {
+        let mut not_recorded = Vec::new();
+        for (at, write, after) in unsure {
             let dealt = self
                 .decided
                 .iter()
                 .find(|a| a.bead == at.0 && a.ask == at.1);
-            let open = dealt.is_some_and(|a| a.state == "put aside")
-                || self.open.iter().any(|a| a.bead == at.0 && a.ask == at.1);
-            match dealt {
-                Some(dealt) if dealt.state == "answered" => {
-                    if dealt.ran.is_some() {
+            let open = self.open.iter().any(|a| a.bead == at.0 && a.ask == at.1);
+            match verdict(&write, open, dealt) {
+                Verdict::Taken => {
+                    if write == Write::Approval
+                        && let Some(dealt) = dealt
+                        && dealt.ran.is_some()
+                    {
                         self.notice = decided_state(dealt, &chrono::Local);
                     }
+                    self.took(&at, write);
                 }
-                _ if open && stamp <= after => continue,
-                _ if open => not_taken.push(at.clone()),
-                _ => {}
+                Verdict::NotRecorded if stamp <= after => continue,
+                Verdict::NotRecorded => {
+                    self.sending.remove(&at);
+                    not_recorded.push((at.0, at.1, write));
+                }
+                Verdict::Elsewhere => {
+                    self.sending.remove(&at);
+                }
             }
-            self.sending.remove(&at);
         }
-        not_taken
+        not_recorded
+    }
+
+    /// The bead of `bead` was read, the read stamped `stamp`: what its
+    /// notes say settles each note whose call ended with no answer. The
+    /// queue cannot, since a note leaves the ask open.
+    ///
+    /// - A note newer than the newest the bead had when it went, by this
+    ///   user, with the words sent (and as many files), was taken.
+    /// - Where none stands, and the read is newer than the call's end, it
+    ///   was not recorded: the notes returned are those. An older read
+    ///   says nothing of that, and the card waits for one that does.
+    pub fn settle_notes(&mut self, bead: &str, stamp: u64) -> Vec<(String, u64, Write)> {
+        let unsure: Vec<((String, u64), Held)> = self
+            .sending
+            .iter()
+            .filter(|((of, _), held)| {
+                of == bead
+                    && matches!(held.write, Write::Note { .. })
+                    && matches!(held.sending, Sending::Unsure { .. })
+            })
+            .map(|(at, held)| (at.clone(), held.clone()))
+            .collect();
+        let mut not_recorded = Vec::new();
+        for (at, held) in unsure {
+            let (Write::Note { files }, Sending::Unsure { after }) = (&held.write, held.sending)
+            else {
+                continue;
+            };
+            let sent = self.beads.get(bead).is_some_and(|b| {
+                b.notes.iter().any(|n| {
+                    n.seq > held.seen
+                        && n.author == self.me
+                        && n.text.trim() == held.words.trim()
+                        && n.files.len() == files.len()
+                })
+            });
+            if sent {
+                self.took(&at, held.write);
+            } else if stamp > after {
+                self.sending.remove(&at);
+                not_recorded.push((at.0, at.1, held.write));
+            }
+        }
+        not_recorded
+    }
+
+    /// The yard took the write of `at`: the wait is over, and the window is
+    /// to take back out what it kept of it.
+    fn took(&mut self, at: &(String, u64), write: Write) {
+        let words = self
+            .sending
+            .remove(at)
+            .map(|held| held.words)
+            .unwrap_or_default();
+        self.taken.push(Taken {
+            bead: at.0.clone(),
+            ask: at.1,
+            write,
+            words,
+        });
     }
 
     /// The yard approved a run ask and ran its command: the ask moves to
@@ -4668,7 +4946,7 @@ impl Model {
     /// out after the call answers with `CARRY_PENDING`, and reads as being
     /// carried out until the queue is read again.
     pub fn approved(&mut self, bead: &str, ask: u64, ran: &api::Approved) -> Vec<Effect> {
-        self.approval_ended(bead, ask);
+        self.write_ended(bead, ask);
         let ran = Some(Ran {
             argv: ran.argv.clone(),
             result: ran.result.clone(),
@@ -4774,7 +5052,7 @@ impl Model {
         option: u64,
         approved: &api::SetupApproved,
     ) -> Vec<Effect> {
-        self.approval_ended(bead, ask);
+        self.write_ended(bead, ask);
         // `You decide` is an option on the card, but the yard records the
         // recommended preset it resolved to. Keep the dealt card on that
         // preset when the approval arrives, before the queue is read again.
@@ -4888,6 +5166,7 @@ impl Model {
     /// The ask is put aside: it leaves the list and returns as the yard
     /// says.
     pub fn deferred(&mut self, bead: &str, ask: u64) -> Vec<Effect> {
+        self.write_ended(bead, ask);
         let Some(at) = self
             .open
             .iter()
@@ -4935,6 +5214,7 @@ impl Model {
     /// The ask is declined with words: not a pick and not "you decide". A
     /// secret ask is declined with none: the yard takes no words on it.
     pub fn declined(&mut self, bead: &str, ask: u64, words: &str) -> Vec<Effect> {
+        self.write_ended(bead, ask);
         let words = words.trim().to_string();
         if words.is_empty() && self.secret(bead, ask).is_none() {
             return Vec::new();
@@ -7503,26 +7783,20 @@ pub fn given_line(given: &api::Given) -> String {
     line
 }
 
-/// Why a secret was not given, for the card. A call that ended without an
-/// answer may have written the value all the same, so it is never said to
-/// be sent or not sent, unless the connect gave up, which sent nothing; a
-/// yard that does not have the call sends its person to a terminal. The
-/// words hold what the yard said and never a value.
+/// Why a secret was not given, for the card: that the connect gave up,
+/// which sent nothing; that the yard does not have the call, which sends
+/// its person to a terminal; or the yard's words, whole. A call that ended
+/// without an answer is none of these ([`answer_lost`]): the yard may have
+/// written the value all the same, so it is never said to be sent or not
+/// sent: the card waits while the queue is read for what the yard did
+/// ([`Model::write_unanswered`]). The words hold what the yard said and
+/// never a value.
 pub fn not_given(err: &api::Error, bead: &str, ask: u64) -> String {
     match err {
         api::Error::Slow {
             idempotent: false,
             sent: false,
         } => "the yard did not answer. The value was not written. Give it again.".to_string(),
-        api::Error::Down(_)
-        | api::Error::Protocol(_)
-        | api::Error::Slow {
-            idempotent: false,
-            sent: true,
-        } => "the yard did not answer. The value may be written. Give it again.".to_string(),
-        err if err.may_have_run() => {
-            "the yard did not answer. The value may be written. Give it again.".to_string()
-        }
         // The yard's one answer with no code of its own: its words are
         // read here, and when they change this is shown as any refusal.
         api::Error::Refused { message, .. } if message.starts_with("no such method") => format!(
@@ -9025,9 +9299,10 @@ pub fn not_approved(err: &api::Error) -> String {
 /// Whether a call ended without an answer that says what came of it: the
 /// connection went, what answered could not be read, the wait ran out after
 /// the request went, or the edge heard nothing back in time. The yard may
-/// have run it all the same, so the card waits and the queue is read for
-/// what the yard says ([`Model::approval_unanswered`]) where a refusal or a
-/// connect that gave up, which sent nothing, would have the card say so.
+/// have taken it all the same (a command run, an answer written, a value
+/// stored), so the card waits and the queue is read for what the yard says
+/// ([`Model::write_unanswered`]) where a refusal or a connect that gave
+/// up, which sent nothing, would have the card say so.
 pub fn answer_lost(err: &api::Error) -> bool {
     matches!(
         err,
@@ -9041,10 +9316,107 @@ pub fn answer_lost(err: &api::Error) -> bool {
 }
 
 /// What the card says of an approval whose call ended without an answer,
-/// when the queue, read since, still lists the ask open: not that the yard
-/// refused it, which it did not say, but that it has not recorded it, and
-/// what a second approval does.
-pub const APPROVAL_NOT_TAKEN: &str = "the yard did not answer, and its queue still lists this card as open. Approve it again: the yard runs a command once for one ask.";
+/// when the queue, read since, does not show the approval: not that the
+/// yard refused it, which it did not say, but that it has not recorded it,
+/// and what a second approval does.
+pub const APPROVAL_NOT_TAKEN: &str = "the yard did not answer, and its queue does not show this approval. Approve it again: the yard runs a command once for one ask.";
+
+/// What the card says of a pick or an answer in words whose call ended
+/// without an answer, when the queue, read since, does not show it: the
+/// words are in the line still.
+pub const ANSWER_NOT_TAKEN: &str =
+    "the yard did not answer, and its queue does not show your answer. Send it again.";
+
+/// What the card says of a note whose call ended without an answer, when
+/// the bead, read since, does not show it: the words and files are as they
+/// were.
+pub const NOTE_NOT_TAKEN: &str =
+    "the yard did not answer, and the bead does not show your note. Send it again.";
+
+/// What the card says of an ask put aside whose call ended without an
+/// answer, when the queue, read since, still lists it open.
+pub const LATER_NOT_TAKEN: &str =
+    "the yard did not answer, and its queue still lists this card as open. Put it aside again.";
+
+/// What the card says of a decline whose call ended without an answer,
+/// when the queue, read since, does not show the decline: the words are in
+/// the line still.
+pub const DECLINE_NOT_TAKEN: &str =
+    "the yard did not answer, and its queue does not show this decline. Decline it again.";
+
+/// What the card says of a give whose call ended without an answer, when
+/// the queue, read since, does not show this give: the yard may have
+/// written the value to its file without recording the ask (yardr's
+/// `KeyNotRecorded`), and giving again writes the same bytes.
+pub const GIVE_NOT_TAKEN: &str = "the yard did not answer, and its queue does not show this give. It may have written the value; give it again.";
+
+/// Whether `why` is what the card says of a write the yard has not
+/// recorded ([`Write::not_taken`]).
+pub fn is_not_taken(why: &str) -> bool {
+    [
+        APPROVAL_NOT_TAKEN,
+        ANSWER_NOT_TAKEN,
+        NOTE_NOT_TAKEN,
+        LATER_NOT_TAKEN,
+        DECLINE_NOT_TAKEN,
+        GIVE_NOT_TAKEN,
+    ]
+    .contains(&why)
+}
+
+/// What the queue's word on an ask says of a write whose call got no
+/// answer ([`Model::settle_writes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// The yard has the ask where the write put it.
+    Taken,
+    /// The yard has it where it was before the write.
+    NotRecorded,
+    /// It is neither: it was dealt with another way, or is gone.
+    Elsewhere,
+}
+
+/// What the queue says of `write` for the ask, which it lists `open` or
+/// has among the `dealt` with: where the write was to put it is taken, where
+/// it was is not recorded, and the rest is not the write's to say.
+fn verdict(write: &Write, open: bool, dealt: Option<&DecidedAsk>) -> Verdict {
+    let state = dealt.map(|a| a.state.as_str());
+    // Where the ask was: open, or put aside, which is answered, approved,
+    // declined and given for still.
+    let was = open || state == Some("put aside");
+    let answered = state == Some("answered");
+    match write {
+        Write::Approval if answered => Verdict::Taken,
+        // A pick took the option it sent, or any words that are the answer.
+        Write::Answer { option } if answered => match dealt {
+            Some(a) if *option == 0 || a.option == *option => Verdict::Taken,
+            _ => Verdict::NotRecorded,
+        },
+        Write::Decline if state == Some("declined") => Verdict::Taken,
+        Write::Later if state == Some("put aside") => Verdict::Taken,
+        // Names are all the queue holds of a value, and the yard allows a
+        // value given again, so a card that gave an answered ask again is
+        // taken as it stands.
+        Write::Give { names } if answered => match dealt {
+            Some(a) if same_names(&a.given, names) => Verdict::Taken,
+            _ => Verdict::NotRecorded,
+        },
+        // A later has no word to say but that it is open.
+        Write::Later if open => Verdict::NotRecorded,
+        Write::Later | Write::Note { .. } => Verdict::Elsewhere,
+        _ if was => Verdict::NotRecorded,
+        _ => Verdict::Elsewhere,
+    }
+}
+
+/// Whether two lists name the same values, in any order.
+fn same_names(given: &[String], names: &[String]) -> bool {
+    let mut given: Vec<&String> = given.iter().collect();
+    let mut names: Vec<&String> = names.iter().collect();
+    given.sort_unstable();
+    names.sort_unstable();
+    given == names
+}
 
 /// Why a move was not made, for the parked bead's card. A call that ended
 /// without an answer may have moved the bead all the same, so it is never
@@ -19741,52 +20113,61 @@ mod tests {
         let bead = || "yd-link".to_string();
         let mut m = with_a_run_ask(&[]);
         // The call is out: the card says so.
-        m.approval_out("yd-link", 2710);
+        m.write_out("yd-link", 2710, Write::Approval);
         assert_eq!(m.sending("yd-link", 2710), Some(Sending::Out));
         assert_eq!(m.sending("yd-link", 2711), None);
         // A queue read has nothing to settle of a call that is out.
-        assert!(m.settle_approvals(u64::MAX).is_empty());
+        assert!(m.settle_writes(u64::MAX).is_empty());
         assert_eq!(m.sending("yd-link", 2710), Some(Sending::Out));
 
         // It ended with no answer: the queue is read, and the card waits.
-        assert_eq!(m.approval_unanswered("yd-link", 2710), [Effect::Asks]);
+        assert_eq!(
+            m.write_unanswered("yd-link", 2710, Write::Approval, String::new()),
+            [Effect::Asks]
+        );
         let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
             panic!("the approval is not unsure");
         };
         assert_ne!(
-            Sending::Out.words(),
-            m.sending("yd-link", 2710).unwrap().words()
+            Write::Approval.words(Sending::Out),
+            Write::Approval.words(m.sending("yd-link", 2710).unwrap())
         );
         // The ask is listed open still. A read made before the call ended
         // (or at it), and a state read again, cannot say the yard did not
         // take it: the card waits.
-        assert!(m.settle_approvals(after).is_empty());
-        assert!(m.settle_approvals(0).is_empty());
+        assert!(m.settle_writes(after).is_empty());
+        assert!(m.settle_writes(0).is_empty());
         assert!(matches!(
             m.sending("yd-link", 2710),
             Some(Sending::Unsure { .. })
         ));
         // A read made after says the yard has not recorded it: the card is
         // given back for the window to say so, and waits for nothing.
-        assert_eq!(m.settle_approvals(after + 1), [(bead(), 2710)]);
+        assert_eq!(
+            m.settle_writes(after + 1),
+            [(bead(), 2710, Write::Approval)]
+        );
         assert_eq!(m.sending("yd-link", 2710), None);
         assert_eq!(m.notice, "");
 
         // Put aside is approvable still: the same.
         m.deferred("yd-link", 2710);
-        m.approval_unanswered("yd-link", 2710);
+        m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
         let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
             panic!("the approval is not unsure");
         };
-        assert!(m.settle_approvals(after).is_empty());
-        assert_eq!(m.settle_approvals(after + 1), [(bead(), 2710)]);
+        assert!(m.settle_writes(after).is_empty());
+        assert_eq!(
+            m.settle_writes(after + 1),
+            [(bead(), 2710, Write::Approval)]
+        );
 
         // The yard says the ask was answered: approved, with what ran, as
         // an answered call would have said it, and the state read again
         // says as much.
         m.approved("yd-link", 2710, &approved());
-        m.approval_unanswered("yd-link", 2710);
-        assert!(m.settle_approvals(0).is_empty());
+        m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
+        assert!(m.settle_writes(0).is_empty());
         assert_eq!(m.sending("yd-link", 2710), None);
         assert_eq!(
             m.notice,
@@ -19797,13 +20178,13 @@ mod tests {
         // the card says what became of the ask. Nothing is said of it.
         m.notice.clear();
         m.decided[0].state = "declined".into();
-        m.approval_unanswered("yd-link", 2710);
-        assert!(m.settle_approvals(u64::MAX).is_empty());
+        m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
+        assert!(m.settle_writes(u64::MAX).is_empty());
         assert_eq!((m.sending("yd-link", 2710), m.notice.as_str()), (None, ""));
         // Gone from the queue: nothing to say either.
         m.decided.clear();
-        m.approval_unanswered("yd-link", 2710);
-        assert!(m.settle_approvals(u64::MAX).is_empty());
+        m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
+        assert!(m.settle_writes(u64::MAX).is_empty());
         assert_eq!((m.sending("yd-link", 2710), m.notice.as_str()), (None, ""));
     }
 
@@ -19813,8 +20194,8 @@ mod tests {
     #[test]
     fn an_approval_lost_with_the_yard_is_settled_by_the_state_read_when_it_is_back() {
         let mut m = with_a_run_ask(&[]);
-        m.approval_unanswered("yd-link", 2710);
-        m.approval_out("yd-other", 9);
+        m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
+        m.write_out("yd-other", 9, Write::Approval);
         // The state read again lists the ask open: it cannot say the yard
         // did not take it, so the queue is read once more, and both wait.
         let mut state = yard(&[]);
@@ -19830,15 +20211,15 @@ mod tests {
         // end, and settles it.
         let after = back.reads().make();
         assert_eq!(
-            back.settle_approvals(after),
-            [("yd-link".to_string(), 2710)]
+            back.settle_writes(after),
+            [("yd-link".to_string(), 2710, Write::Approval)]
         );
 
         // The state read again lists the ask answered: it is approved, and
         // nothing is read once more.
         let mut m = with_a_run_ask(&[]);
         m.approved("yd-link", 2710, &approved());
-        m.approval_unanswered("yd-link", 2710);
+        m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
         let mut state = yard(&[]);
         state.asks.decided = m.decided.clone();
         let (back, effects) = m.resumed(state, Mode::Chat);
@@ -19848,6 +20229,288 @@ mod tests {
             back.notice,
             "approved, ran: yardr peer allow airy --mail-limit 300"
         );
+
+        // The same of the other writes: a pick that the state read again
+        // lists answered was taken, and gives back the words it kept; a
+        // note, which no state holds, has the bead read once more.
+        let mut m = with_a_run_ask(&[]);
+        m.picked("yd-link", 2710, 2, "because");
+        m.write_unanswered(
+            "yd-link",
+            2710,
+            Write::Answer { option: 2 },
+            "because".into(),
+        );
+        m.write_unanswered(
+            "yd-link",
+            2711,
+            Write::Note { files: Vec::new() },
+            "also".into(),
+        );
+        let mut state = yard(&[]);
+        state.asks.decided = m.decided.clone();
+        let (mut back, effects) = m.resumed(state, Mode::Chat);
+        assert!(!effects.contains(&Effect::Asks));
+        assert!(effects.contains(&Effect::Bead {
+            bead: "yd-link".into()
+        }));
+        assert_eq!(
+            back.take_taken(),
+            [Taken {
+                bead: "yd-link".into(),
+                ask: 2710,
+                write: Write::Answer { option: 2 },
+                words: "because".into(),
+            }]
+        );
+        assert_eq!(back.sending("yd-link", 2710), None);
+        assert!(matches!(
+            back.sending("yd-link", 2711),
+            Some(Sending::Unsure { .. })
+        ));
+    }
+
+    /// A write whose call ended with no answer is settled by what the queue
+    /// says of the ask, as its kind says: the ask where the write was to put
+    /// it was taken, where it was is not recorded (once a read made after
+    /// the call's end says so; an older one waits), and any other state of it
+    /// is not the write's to say. A write the yard took gives back the words
+    /// the card kept of it, and nothing of a value is ever held: a give is
+    /// held by its names.
+    #[test]
+    fn a_write_with_no_answer_is_settled_by_what_the_queue_says_of_the_ask_as_its_kind_says() {
+        #[derive(Debug, Clone, Copy)]
+        enum Queue {
+            Open,
+            Aside,
+            Answered(u64, &'static [&'static str]),
+            Declined,
+            TakenBack,
+            Gone,
+        }
+        // What the settle comes to for `write` with the queue as `queue`
+        // lists the ask.
+        let settled = |write: &Write, queue: Queue| -> &'static str {
+            let mut m = with_a_run_ask(&[]);
+            let open = m.open.remove(0);
+            let base = DecidedAsk {
+                bead: open.bead.clone(),
+                ask: open.ask,
+                ..DecidedAsk::default()
+            };
+            let dealt = |state: &str| DecidedAsk {
+                state: state.into(),
+                ..base.clone()
+            };
+            match queue {
+                Queue::Open => m.open.push(open),
+                Queue::Aside => m.decided.push(dealt("put aside")),
+                Queue::Answered(option, given) => m.decided.push(DecidedAsk {
+                    option,
+                    given: given.iter().map(|name| name.to_string()).collect(),
+                    ..dealt("answered")
+                }),
+                Queue::Declined => m.decided.push(dealt("declined")),
+                Queue::TakenBack => m.decided.push(dealt("taken back")),
+                Queue::Gone => {}
+            }
+            // A give keeps no words: its value is never in the model.
+            let kept = match write {
+                Write::Give { .. } => "",
+                _ => "because",
+            };
+            m.write_out("yd-link", 2710, write.clone());
+            assert_eq!(m.sending("yd-link", 2710), Some(Sending::Out));
+            let read = m.write_unanswered("yd-link", 2710, write.clone(), kept.into());
+            assert_eq!(read, [Effect::Asks]);
+            let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
+                panic!("{write:?} is not unsure");
+            };
+            // A read made before the call's end can say it was taken, but
+            // not that it was not.
+            assert!(m.settle_writes(after).is_empty());
+            let taken = m.take_taken();
+            if !taken.is_empty() {
+                let words = kept.to_string();
+                let bead = "yd-link".to_string();
+                let write = write.clone();
+                assert_eq!(
+                    taken,
+                    [Taken {
+                        bead,
+                        ask: 2710,
+                        write,
+                        words
+                    }]
+                );
+                assert_eq!(m.sending("yd-link", 2710), None);
+                return "taken";
+            }
+            let waiting = m.sending("yd-link", 2710).is_some();
+            let not_recorded = m.settle_writes(after + 1);
+            assert!(m.take_taken().is_empty());
+            assert_eq!(m.sending("yd-link", 2710), None);
+            match (waiting, not_recorded.is_empty()) {
+                (true, false) => {
+                    assert_eq!(not_recorded, [("yd-link".to_string(), 2710, write.clone())]);
+                    "not recorded"
+                }
+                (false, true) => "elsewhere",
+                _ => panic!("{write:?}: {queue:?}"),
+            }
+        };
+        let option = |option| Write::Answer { option };
+        let give = Write::Give {
+            names: vec!["BOOKS_TOKEN".into(), "BOOKS_URL".into()],
+        };
+        let names: &[&str] = &["BOOKS_URL", "BOOKS_TOKEN"];
+        for (write, queue, said) in [
+            // A pick: taken where the ask is answered with the option sent,
+            // or any words answered; not recorded where it is open, put
+            // aside, or answered with another.
+            (option(2), Queue::Answered(2, &[]), "taken"),
+            (option(0), Queue::Answered(0, &[]), "taken"),
+            (option(2), Queue::Open, "not recorded"),
+            (option(2), Queue::Aside, "not recorded"),
+            (option(2), Queue::Answered(1, &[]), "not recorded"),
+            (option(2), Queue::Declined, "elsewhere"),
+            (option(2), Queue::TakenBack, "elsewhere"),
+            (option(2), Queue::Gone, "elsewhere"),
+            // A decline: taken where it is declined.
+            (Write::Decline, Queue::Declined, "taken"),
+            (Write::Decline, Queue::Open, "not recorded"),
+            (Write::Decline, Queue::Aside, "not recorded"),
+            (Write::Decline, Queue::Answered(1, &[]), "elsewhere"),
+            (Write::Decline, Queue::Gone, "elsewhere"),
+            // Later: taken where it is put aside, not recorded where it is
+            // open still, and not Later's to say of any other state.
+            (Write::Later, Queue::Aside, "taken"),
+            (Write::Later, Queue::Open, "not recorded"),
+            (Write::Later, Queue::Answered(1, &[]), "elsewhere"),
+            (Write::Later, Queue::Declined, "elsewhere"),
+            // A give: taken where the ask is answered with the names sent, in
+            // any order; not recorded where it is open (which is also what a
+            // yard shows that wrote the value to its file but not the note
+            // that records it) or answered with other names.
+            (give.clone(), Queue::Answered(0, names), "taken"),
+            (
+                give.clone(),
+                Queue::Answered(0, &["BOOKS_TOKEN"]),
+                "not recorded",
+            ),
+            (give.clone(), Queue::Open, "not recorded"),
+            (give.clone(), Queue::Aside, "not recorded"),
+            (give.clone(), Queue::Declined, "elsewhere"),
+        ] {
+            assert_eq!(settled(&write, queue), said, "{write:?} with {queue:?}");
+        }
+        // Not-recorded reads can show a put-aside ask, or an answer with
+        // another option or set of names. The card's words do not claim
+        // those asks are still open or that a secret file was not written.
+        assert!(APPROVAL_NOT_TAKEN.contains("does not show this approval"));
+        assert!(DECLINE_NOT_TAKEN.contains("does not show this decline"));
+        assert!(GIVE_NOT_TAKEN.contains("does not show this give"));
+        assert!(GIVE_NOT_TAKEN.contains("may have written the value"));
+    }
+
+    /// A note whose call ended with no answer is settled by the notes of its
+    /// bead, not the queue, which a note leaves as it was: the bead is the
+    /// read. A note newer than the newest the bead had when it went, by this
+    /// user, with the words sent and as many files, was taken, and gives back
+    /// its words; where none stands in a read made after the call's end it
+    /// was not recorded, and an older read waits.
+    #[test]
+    fn a_note_with_no_answer_is_settled_by_the_notes_of_its_bead() {
+        let note = |seq: u64, author: &str, text: &str, files: usize| BeadNote {
+            seq,
+            kind: "note".into(),
+            author: author.into(),
+            text: text.into(),
+            files: vec![api::BlobRef::default(); files],
+            ..BeadNote::default()
+        };
+        let bead = |notes: Vec<BeadNote>| Bead {
+            id: "yd-link".into(),
+            notes,
+            ..Bead::default()
+        };
+        let sent = Write::Note { files: vec![7] };
+        // A note that went when the bead had notes to seq 3.
+        let mut m = with_a_run_ask(&[]);
+        m.bead_loaded(bead(vec![note(3, "yardmaster", "tested", 0)]));
+        m.write_out("yd-link", 2710, sent.clone());
+        let read = m.write_unanswered("yd-link", 2710, sent.clone(), "the mockup".into());
+        // The bead is read, where the queue would say nothing.
+        assert_eq!(
+            read,
+            [Effect::Bead {
+                bead: "yd-link".into()
+            }]
+        );
+        assert!(m.settle_writes(u64::MAX).is_empty());
+        let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
+            panic!("the note is not unsure");
+        };
+
+        // Notes that are not it: an older one with its words, another's,
+        // other words, another number of files.
+        m.bead_loaded(bead(vec![
+            note(3, "jo", "the mockup", 1),
+            note(4, "yardmaster", "the mockup", 1),
+            note(5, "jo", "the mockups", 1),
+            note(6, "jo", "the mockup", 0),
+        ]));
+        assert!(m.settle_notes("yd-link", 0).is_empty());
+        assert!(m.take_taken().is_empty());
+        // A read made before the call's end cannot say it was not
+        // recorded; another bead's read says nothing of this one.
+        assert!(m.settle_notes("yd-link", after).is_empty());
+        assert!(m.settle_notes("yd-other", u64::MAX).is_empty());
+        assert!(matches!(
+            m.sending("yd-link", 2710),
+            Some(Sending::Unsure { .. })
+        ));
+        // A read made after says the bead does not hold it.
+        assert_eq!(
+            m.settle_notes("yd-link", after + 1),
+            [("yd-link".to_string(), 2710, sent.clone())]
+        );
+        assert_eq!(m.sending("yd-link", 2710), None);
+
+        // The bead holds it: taken, whatever the read's age, with its words.
+        m.write_out("yd-link", 2710, sent.clone());
+        m.write_unanswered("yd-link", 2710, sent.clone(), "the mockup".into());
+        m.bead_loaded(bead(vec![
+            note(3, "yardmaster", "tested", 0),
+            note(8, "jo", " the mockup ", 1),
+        ]));
+        assert!(m.settle_notes("yd-link", 0).is_empty());
+        assert_eq!(
+            m.take_taken(),
+            [Taken {
+                bead: "yd-link".into(),
+                ask: 2710,
+                write: sent,
+                words: "the mockup".into(),
+            }]
+        );
+        assert_eq!(m.sending("yd-link", 2710), None);
+    }
+
+    /// Where a card's write got no answer the card says whether the queue
+    /// lists the ask as it was, for the warning that the yard has not
+    /// recorded it: open or put aside, and no other state of it.
+    #[test]
+    fn the_queue_lists_an_ask_as_it_was_while_it_is_open_or_put_aside() {
+        let mut m = with_a_run_ask(&[]);
+        assert!(m.listed_open("yd-link", 2710));
+        assert!(!m.listed_open("yd-link", 2711));
+        m.deferred("yd-link", 2710);
+        assert!(m.listed_open("yd-link", 2710));
+        m.decided[0].state = "declined".into();
+        assert!(!m.listed_open("yd-link", 2710));
+        m.decided.clear();
+        assert!(!m.listed_open("yd-link", 2710));
     }
 
     /// A run ask's carried texts stand shown behind its sentences, or
@@ -20534,7 +21197,9 @@ mod tests {
             code: "error".into(),
             message: message.into(),
         };
-        // No answer: the value may be written, and it is never "sent".
+        // No answer: the value may be written, so it is never "sent" nor
+        // "not sent": the card waits and the queue is read, which no word
+        // of this says.
         let gone = std::io::Error::from(std::io::ErrorKind::UnexpectedEof);
         for err in [
             api::Error::Down(gone),
@@ -20548,11 +21213,7 @@ mod tests {
                 message: "the yard gave no answer in time".into(),
             },
         ] {
-            let why = not_given(&err, "yd-crm", 18);
-            assert_eq!(
-                why,
-                "the yard did not answer. The value may be written. Give it again."
-            );
+            assert!(answer_lost(&err), "{err}");
         }
         // A connect that gave up sent nothing: the value was not written.
         let unsent = api::Error::Slow {

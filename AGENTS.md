@@ -46,15 +46,24 @@ The window, its state and the yard:
     are `waiting.rs`'s; its head folds them away) and its decided history
     (a page at a time, a row for more),
     each open ask's card with its secret, run and setup blocks, and what the
-    cards do (answer, approve, give, decline, put aside). An approval is
-    the card's wait too: `Model::sending` says it is with the yard (`Out`) or
-    that its call got no answer (`Unsure`, the yard may have run it), so the
-    card says so, in no word of failure, and takes no second approval.
-    `approval_failed_in` starts that wait (or says the yard's refusal), and
-    `Model::settle_approvals` ends it from each queue read (the `Asks` arm
-    of `Footplate::run_in` calls `settled_in`, which says on the card what
-    the read found) and `Model::resumed` from the state of a yard found
-    again.
+    cards do (answer, note, approve, give, decline, put aside). Each of
+    those is the card's wait too, one at a time: `Model::sending` says it is
+    with the yard (`Out`) or that its call got no answer (`Unsure`, the yard
+    may have taken it), by ask and with the `Write` it is, so the card says
+    so, in no word of failure, and takes no second write of any kind (its
+    buttons and keys are off). `write_failed_in` starts that wait (or says
+    the yard's refusal), and `Model::settle_writes` ends it from each queue
+    read (the `Asks` arm of `Footplate::run_in` calls `settled_in`) and
+    `Model::settle_notes` from each bead read, since a note leaves the ask
+    open and only the bead's notes say; `settled` says on the card what the
+    read found, and `taken_in` takes back out what the window kept of a write
+    the yard took (the words that came back to the line, a note's files, a
+    give's value). `Model::resumed` settles from the state of a yard found
+    again. The words of the four that have words come back to the line as
+    for any refusal and stay while the yard is not known to have taken
+    them; a give's value is kept in the secret field and `secret_typed`
+    alone (the call hands it back, `give_kept`), never the line, and leaving
+    the card forgets it.
   - `src/window/bead.rs`: one bead's views: the bead whole (in the reading
     pane it ends with `waiting.rs`'s moves where the bead is parked), the
     conversation thread with its mail, and the pictures and attachments of

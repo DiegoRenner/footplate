@@ -1118,6 +1118,10 @@ impl Footplate {
                 held.down = None;
                 self.unreached.remove(&yard);
                 self.run_in(session, effects, cx);
+                // What the state read again says of a write that got no
+                // answer when the yard was lost: what the window kept of
+                // each it says was taken goes.
+                self.settled(session, Vec::new(), cx);
                 self.schedule_return_in(session, cx);
                 // What arrived while the yard was away.
                 self.tell(&yard, news, false, cx);
@@ -1447,6 +1451,10 @@ impl Footplate {
                     }
                 }
                 self.model = Some(model);
+                // As of a held yard: what the state read again says of a
+                // write that got no answer settles it.
+                let session = self.session;
+                self.settled(session, Vec::new(), cx);
                 // The screen shot opens the session's screen over
                 // the window, as its Screen control does: the yard
                 // holds the shot's bytes, and they show when they
@@ -3374,35 +3382,51 @@ impl Footplate {
                         },
                     )
                 }
-                Effect::Bead { bead } => self.ask_in(
-                    session,
-                    cx,
-                    {
-                        let bead = bead.clone();
-                        move |client, _| client.bead(&bead)
-                    },
-                    move |this, answered, cx| match answered {
-                        Ok(bead) => {
-                            this.change_in(session, cx, |m| {
-                                m.bead_loaded(bead);
-                                Vec::new()
-                            });
-                            // The plain-select shot poses a selection over
-                            // the open card's first context line, as a drag
-                            // over it would: a debug build's alone.
-                            #[cfg(debug_assertions)]
-                            if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("plain-select")
-                                && let Some(model) = this.model.as_ref()
-                            {
-                                pose_shot_selection(&this.selection, model, cx);
+                Effect::Bead { bead } => {
+                    // Stamped as the queue's reads are: the notes of a
+                    // read made before a note's call ended cannot say the
+                    // yard did not take it.
+                    let stamp = self.stamp_in(session);
+                    self.ask_in(
+                        session,
+                        cx,
+                        {
+                            let bead = bead.clone();
+                            move |client, _| client.bead(&bead)
+                        },
+                        move |this, answered, cx| match answered {
+                            Ok(bead) => {
+                                let id = bead.id.clone();
+                                this.change_in(session, cx, |m| {
+                                    m.bead_loaded(bead);
+                                    Vec::new()
+                                });
+                                // What its notes say settles the notes that
+                                // got no answer.
+                                this.settled_notes_in(session, &id, stamp, cx);
+                                // The plain-select shot poses a selection over
+                                // the open card's first context line, as a drag
+                                // over it would: a debug build's alone.
+                                #[cfg(debug_assertions)]
+                                if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("plain-select")
+                                    && let Some(model) = this.model.as_ref()
+                                {
+                                    pose_shot_selection(&this.selection, model, cx);
+                                }
                             }
-                        }
-                        Err(err) => this.change_in(session, cx, |m| {
-                            m.bead_failed(&bead, &err.to_string());
-                            Vec::new()
-                        }),
-                    },
-                ),
+                            Err(err) => {
+                                this.change_in(session, cx, |m| {
+                                    m.bead_failed(&bead, &err.to_string());
+                                    Vec::new()
+                                });
+                                // A note that got no answer waits for this
+                                // read: it is made again after a while, while
+                                // the yard answers.
+                                this.reread_notes_in(session, &bead, cx);
+                            }
+                        },
+                    )
+                }
                 // The ids go one after another on one thread, a connection
                 // at a time: a long mail names many. The first the yard
                 // does not answer ends the batch, since a yard that fails

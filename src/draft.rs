@@ -805,6 +805,19 @@ pub fn rejoin(unsent: String, typed: String) -> String {
     }
 }
 
+/// What was typed after words that went, once the yard is known to have
+/// them: `typed` without its start where that is `sent`, as [`rejoin`] puts
+/// them. None where it does not begin with them (they were edited since) or
+/// there were none: it stays as it is.
+pub fn without_sent(typed: &str, sent: &str) -> Option<String> {
+    if sent.is_empty() {
+        return None;
+    }
+    typed
+        .strip_prefix(sent)
+        .map(|rest| rest.trim_start().to_string())
+}
+
 #[derive(Debug, Default)]
 struct Draft {
     text: String,
@@ -1175,6 +1188,16 @@ mod tests {
         assert_eq!(drafts.take_text("assembly"), "First this. And this.");
         assert_eq!(rejoin("a".into(), String::new()), "a");
         assert_eq!(rejoin(String::new(), "b".into()), "b");
+        // Words the yard turned out to have taken are taken out again, and
+        // what was typed after them stays; words edited since are left.
+        let both = rejoin("First this.".into(), "And this.".into());
+        assert_eq!(without_sent(&both, "First this."), Some("And this.".into()));
+        assert_eq!(
+            without_sent("First this.", "First this."),
+            Some(String::new())
+        );
+        assert_eq!(without_sent("First this, edited.", "First this."), None);
+        assert_eq!(without_sent("And this.", ""), None);
     }
 
     #[test]

@@ -180,6 +180,25 @@ once, and a later pick on it from there replaces the earlier one. The window
 holds the card's keys, `i` types the words in, `esc` holds the keys again.
 What is typed stays with its ask, as a draft stays with its conversation.
 
+While a pick, a note, Later or a decline is with the yard the card says so
+("the answer is with the yard", "the note is with the yard", "putting it
+aside is with the yard", "the decline is with the yard") and takes no second
+write of any kind: its buttons stand faint and its keys do nothing. A call
+that ends with no answer may have been taken all the same, so the card never
+says it was not answered, noted, put aside or declined: the words (and a
+note's files) come back to where they were typed and stay there, sent again
+by nobody, and the card says the yard did not answer and what it is reading
+to see whether it took the write: its queue, or for a note, which leaves the
+ask open, the bead's notes. Where the read says the yard took it, the card
+ends as answered, declined or put aside (a note leaves no mark but its place
+on the bead), and the words are gone from the line. Where the read does not
+show the write—a pick left open or put aside or answered another way, a
+decline left open or put aside, a Later still open, or no matching note on
+the bead—the card says the yard has not recorded it, with the words kept,
+and sending them again is yours. A yard that is away is read when it is
+back. A refusal stays the yard's words, whole, and the words come back with
+it.
+
 A bead parked for your move opens as a card of its own. Its head names the
 yard and the bead's title, and under the title the bead whole in one line:
 id, stage, group, depot and how long it has waited. Where the yard's web view
@@ -279,9 +298,22 @@ is left. Afterwards the card says the yard's words, which hold the names
 and the file and never the value. Where the ask was for a person's own
 address in a source that tells them (`--for-user`), they end with the
 yard's line of what is left to do: the command that tells that person
-through the source. When the call ends with no answer it
-says "the yard did not answer. The value may be written. Give it again.",
-never that it was sent. A yard that does not serve the call to this window
+through the source. While the call is with the yard the card says "the
+value is with the yard" and Give is off. When it ends with no answer the yard
+may have stored the value all the same, so the card never says it was sent or
+not sent: it says the yard did not answer and that its queue is being read,
+and keeps the value in the field (the last of several names, the rest among
+those typed so far, never in the line for words) until the queue says. Where
+the queue shows the ask given the names sent (names alone: it holds no value)
+the card ends as given and the value is forgotten; where the queue does not
+show this give (the ask is still open, put aside, or answered with other
+names), the card says so and Give is on again. The yard may have written the
+value to its file without recording the ask, so Enter gives the value kept
+in the field again, through the same gate: the number typed back again, or
+the unlock again. The yard allows a value given again, and a give sent again
+writes the same bytes.
+Leaving the card forgets what was kept, and it does not come back with the
+card. A yard that does not serve the call to this window
 is said so, with the command that answers in a terminal on the yard's
 machine: `yardr bead answer <bead> <ask> --secret`. Every secret ask is
 weighty: its card shows the yard's lines for what giving does first, in

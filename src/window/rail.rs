@@ -182,12 +182,15 @@ pub(crate) struct Unsent {
 }
 
 /// A note that did not go: the words and the files, to be put back, with
-/// the file that kept it, if it was one, and why.
+/// the file that kept it, if it was one, and why. `lost` where the call
+/// that carried it ended with no answer, so the yard may have taken it all
+/// the same.
 pub(crate) struct UnsentNote {
     pub(crate) words: String,
     pub(crate) files: Vec<Attachment>,
     pub(crate) at: Option<u64>,
     pub(crate) why: String,
+    pub(crate) lost: bool,
 }
 
 /// Sends a draft as one mail from `me`: `PutBlob` for each file in the
@@ -253,15 +256,17 @@ pub(crate) fn post(
 /// and none travels, and more than the note carries is refused whole. A
 /// yard from before notes carried files takes the blobs and refuses the
 /// note: that is said as what it is. Answers the attachment that kept the
-/// note, if it was one, and why.
+/// note, if it was one, why, and whether the call that carried the note
+/// ended with no answer (which only `AddNote` itself can: a blob alone is
+/// no note).
 pub(crate) fn post_note(
     client: &Client,
     me: &str,
     bead: &str,
     words: &str,
     files: &[Attachment],
-) -> Result<(), (Option<u64>, String)> {
-    let said = |err: api::Error| (None, err.to_string());
+) -> Result<(), (Option<u64>, String, bool)> {
+    let said = |err: api::Error| (None, err.to_string(), false);
     let mut carried = Vec::with_capacity(files.len());
     if !files.is_empty() {
         let settings = client.settings().map_err(said)?;
@@ -269,6 +274,7 @@ pub(crate) fn post_note(
             return Err((
                 None,
                 draft::note_over_count(files.len(), settings.files_cap()),
+                false,
             ));
         }
         let cap = settings.blob_cap();
@@ -276,12 +282,12 @@ pub(crate) fn post_note(
             .iter()
             .find_map(|a| Some((a, model::over_cap_for(&a.bytes, a.bytes.len(), cap)?)))
         {
-            return Err((Some(file.id), why));
+            return Err((Some(file.id), why, false));
         }
         for file in files {
             let blob = client
                 .put_blob(&file.bytes)
-                .map_err(|err| (Some(file.id), err.to_string()))?;
+                .map_err(|err| (Some(file.id), err.to_string(), false))?;
             carried.push(BlobFile {
                 hash: blob.hash,
                 name: file.name.clone(),
@@ -293,9 +299,10 @@ pub(crate) fn post_note(
             (
                 None,
                 "this yard's yardr is too old for a note with a file".to_string(),
+                false,
             )
         } else {
-            said(err)
+            (None, err.to_string(), model::answer_lost(&err))
         }
     })?;
     Ok(())

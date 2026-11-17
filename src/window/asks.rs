@@ -2,6 +2,7 @@
 //! each open ask's card with its secret, run and setup blocks, and what
 //! the cards do: answer, approve, give, decline, put aside.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use gpui::{
@@ -34,7 +35,7 @@ use crate::draft::{self, Attachment};
 use crate::input::Line;
 use crate::model::{
     self, AnswerAction, DecidedEntry, DecidedFold, DecidedRow, DecisionAsk, DecisionDetail,
-    DecisionRow, Effect, Mode, Model, Selected, Sending, Target,
+    DecisionRow, Effect, Mode, Model, Selected, Sending, Taken, Target, Write,
 };
 use crate::select::{self};
 use crate::theme::{Palette, yard_color};
@@ -93,6 +94,7 @@ impl Footplate {
         if ask != self.secret_for {
             self.forget_secret(cx);
             self.secret_for = ask.clone();
+            self.secret_left += 1;
             let shown = ask.as_ref().is_some_and(|(bead, ask)| {
                 self.model
                     .as_ref()
@@ -549,25 +551,26 @@ impl Footplate {
         approval(weighty, self.unlock_available(), elsewhere)
     }
 
-    /// Where the ask's approval stands with the yard, while it is with it:
-    /// the control offers no second approval until the yard says what came
-    /// of it.
-    pub(crate) fn approval_sending(&self, bead: &str, ask: u64) -> Option<Sending> {
+    /// Where the ask's card stands with the yard for a write, while it is
+    /// with it: the card offers no second write of any kind (an answer, a
+    /// note, Later, a decline, a give, an approval) until the yard says what
+    /// came of it.
+    pub(crate) fn write_sending(&self, bead: &str, ask: u64) -> Option<Sending> {
         self.model.as_ref()?.sending(bead, ask)
     }
 
-    /// What the card says while its approval is with the yard, faint:
+    /// What the card says while a write of it is with the yard, faint:
     /// nothing in it is a failure, which stands in warn where the yard
-    /// refused, or has not recorded what it was sent. None where the
-    /// approval is not with it.
-    pub(crate) fn approval_words(&self, bead: &str, ask: u64, palette: Palette) -> Option<Div> {
-        let sending = self.approval_sending(bead, ask)?;
+    /// refused, or has not recorded what it was sent. None where no write
+    /// is with it.
+    pub(crate) fn sending_words(&self, bead: &str, ask: u64, palette: Palette) -> Option<Div> {
+        let (write, sending) = self.model.as_ref()?.writing(bead, ask)?;
         Some(
             div()
-                .debug_selector(|| format!("approval {} {bead} {ask}", sending.name()))
+                .debug_selector(|| format!("{} {} {bead} {ask}", write.name(), sending.name()))
                 .text_xs()
                 .text_color(palette.faint)
-                .child(sending.words()),
+                .child(write.words(sending)),
         )
     }
 
@@ -648,6 +651,12 @@ impl Footplate {
         // for the approval, which sends them with the preset pick.
         let secret = self.giving();
         let setup = self.setup_account();
+        // A value on its way to the yard, or not known to have reached it,
+        // is given again only when the card says the yard has not recorded
+        // it: what is typed stays where it is, in the field.
+        if secret.is_some() && self.write_sending(&bead, ask).is_some() {
+            return;
+        }
         let names = match (&secret, &setup) {
             (Some(secret), _) => secret.env.clone(),
             (None, Some((names, _))) => names.clone(),
@@ -744,7 +753,17 @@ impl Footplate {
     /// else. What the window says afterwards is the yard's words or
     /// footplate's, on the card, never the value. `weighed` goes where
     /// the person passed the system unlock for a weighty card, or typed
-    /// its number back where no unlock is offered.
+    /// its number back where no unlock is offered; it is this give's alone,
+    /// and a give sent again passes the gate again. While the call is out
+    /// the card says the value is with the yard, and offers no second give.
+    /// A call that ended with no answer may have stored the value, so the
+    /// card waits while the queue is read, and the values come back to the
+    /// field they were typed in ([`Footplate::give_kept`]), never to the
+    /// mail line and never sent again of themselves: the card ends as given
+    /// where the queue says so, and says the yard has not recorded it where
+    /// it still lists the ask open, which a yard that wrote the value to its
+    /// file but not the note that records it also shows (a give sent again
+    /// writes the same bytes).
     pub(crate) fn send_give_in(
         &mut self,
         session: u64,
@@ -755,6 +774,17 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) {
         let call_bead = bead.clone();
+        let at = (bead.clone(), ask);
+        let left = self.secret_left;
+        let names: Vec<String> = values.iter().map(|(name, _)| name.clone()).collect();
+        self.write_out_in(
+            session,
+            &at,
+            Write::Give {
+                names: names.clone(),
+            },
+            cx,
+        );
         // What the yard answers is of the yard it was given in, and is
         // said there, wherever the window is by then.
         self.ask_in(
@@ -764,14 +794,20 @@ impl Footplate {
                 client
                     .give_secret(&call_bead, ask, &values, me, weighed)
                     .map_err(|err| {
+                        let lost = model::answer_lost(&err);
                         let why = model::not_given(&err, &call_bead, ask);
                         // The yard repeats no value in a refusal. Should
                         // anything on the way do so, it is not shown.
-                        if values.iter().any(|(_, value)| why.contains(value.as_str())) {
+                        let why = if values.iter().any(|(_, value)| why.contains(value.as_str())) {
                             "not given: the yard refused it".to_string()
                         } else {
                             why
-                        }
+                        };
+                        // The values are handed back only where the yard
+                        // may have taken them: a refusal leaves the field
+                        // empty, as it always did.
+                        let values = if lost { values } else { Vec::new() };
+                        GiveStopped { why, lost, values }
                     })
             },
             move |this, given, cx| match given {
@@ -780,9 +816,51 @@ impl Footplate {
                     this.schedule_return_in(session, cx);
                     this.notice_in(session, model::given_line(&given), cx);
                 }
-                Err(why) => this.refused_in(session, (bead.clone(), ask), why, cx),
+                Err(stopped) => {
+                    if stopped.lost {
+                        this.give_kept(session, &at, left, stopped.values, cx);
+                    }
+                    let write = Write::Give { names };
+                    let (lost, why) = (stopped.lost, stopped.why);
+                    this.write_failed_in(session, at, write, lost, String::new(), why, cx);
+                }
             },
         );
+    }
+
+    /// The values of a give whose call got no answer come back to the field
+    /// of the card they were typed on, as the system unlock's cancel puts
+    /// them: the last in the field, the rest typed, so that Enter gives
+    /// them again once the card says the yard has not recorded them. Only
+    /// there, and only where the card is still the open one of the yard the
+    /// value was given in, `left` being how many times a card was left when
+    /// it went: leaving the card forgets a secret, and none is kept for a
+    /// return, not even to a card opened again before the call ended. A
+    /// field typed in since has the person's own words, which are not
+    /// overwritten: the values are dropped instead.
+    fn give_kept(
+        &mut self,
+        session: u64,
+        at: &(String, u64),
+        left: u64,
+        values: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        if session != self.session
+            || self.secret_left != left
+            || self.secret_for.as_ref() != Some(at)
+            || !self.secret_typed.is_empty()
+            || !self.secret.read(cx).text().is_empty()
+        {
+            return;
+        }
+        let mut back: Vec<String> = values.into_iter().map(|(_, value)| value).collect();
+        if let Some(last) = back.pop() {
+            self.secret
+                .update(cx, |field, cx| field.set_text(&last, cx));
+        }
+        self.secret_typed = back;
+        self.shown(cx);
     }
 
     /// Approves the open card's run or setup ask: its key and its button.
@@ -799,7 +877,7 @@ impl Footplate {
         let at = (bead.clone(), ask);
         if self.approve_elsewhere.contains(&at)
             || self.approving.is_some()
-            || self.approval_sending(&bead, ask).is_some()
+            || self.write_sending(&bead, ask).is_some()
             || self.client.is_none()
             || self.reconnecting()
             || matches!(self.card_approval(&bead, ask), Approval::Nowhere)
@@ -852,7 +930,7 @@ impl Footplate {
     /// is with the yard. A call that ended without an answer is never said
     /// to be approved or refused: the card waits while the queue is read
     /// for what the yard did, and ends as approved, or says the yard has
-    /// not recorded it ([`Footplate::approval_failed_in`]). A yard without
+    /// not recorded it ([`Footplate::write_failed_in`]). A yard without
     /// the call for this window has its card say where to approve.
     pub(crate) fn send_approve(&mut self, bead: String, ask: u64, cx: &mut Context<Self>) {
         self.send_approve_in(self.session, bead, ask, false, cx);
@@ -886,10 +964,7 @@ impl Footplate {
         }
         // The card says the approval is with the yard, and takes no second
         // one, until the yard says what came of it.
-        self.change_in(session, cx, |m| {
-            m.approval_out(&at.0, at.1);
-            Vec::new()
-        });
+        self.write_out_in(session, &at, Write::Approval, cx);
         // The approval is the yard's it was pressed in: what came of it is
         // that yard's, and is said there, wherever the window is by then.
         self.ask_in(
@@ -929,71 +1004,188 @@ impl Footplate {
                     Err(err) if model::approves_elsewhere(&err) => {
                         elsewhere.insert(at);
                         this.change_in(session, cx, |m| {
-                            m.approval_ended(&bead, ask);
+                            m.write_ended(&bead, ask);
                             Vec::new()
                         });
                         this.notice_in(session, String::new(), cx);
                     }
                     Err(err) => {
                         let why = model::not_approved(&err);
-                        this.approval_failed_in(session, (bead.clone(), ask), &err, why, cx)
+                        let lost = model::answer_lost(&err);
+                        let at = (bead.clone(), ask);
+                        this.write_failed_in(
+                            session,
+                            at,
+                            Write::Approval,
+                            lost,
+                            String::new(),
+                            why,
+                            cx,
+                        )
                     }
                 }
             },
         );
     }
 
-    /// An approval of the following `session`'s yard ended in `err`,
-    /// which is a refusal, a connect that gave up, or a call with no
-    /// answer. The first two the card says as `refusal`: the yard's words,
-    /// whole, or that nothing was sent. A call with no answer may have run
-    /// all the same, so the card says nothing of the sort: it waits, and
-    /// the queue is read for what the yard did, at once where the yard
-    /// answers and else when it is back ([`Model::resumed`] settles it
-    /// from the state it reads). Never a failure for an approval the yard
-    /// ran: the read says it was taken, or that the yard has not recorded
-    /// it ([`Footplate::settled_in`]), and the control stays off meanwhile,
-    /// so that no second approval goes on a guess; the yard refuses one
-    /// of an ask it ran in any case.
-    fn approval_failed_in(
+    /// The write of the ask's card goes out to the yard of the following
+    /// `session`: the card says so, and takes no second write of any kind,
+    /// until the yard says what came of it.
+    fn write_out_in(
+        &mut self,
+        session: u64,
+        at: &(String, u64),
+        write: Write,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_in(session, cx, |m| {
+            m.write_out(&at.0, at.1, write);
+            Vec::new()
+        });
+    }
+
+    /// A write of the following `session`'s yard ended with no answer to
+    /// say what came of it ([`model::answer_lost`]). It may have been taken
+    /// all the same (a command run, an answer written, a value stored), so
+    /// the card says nothing of the sort: it waits, and the queue is read
+    /// for what the yard did (the bead's notes, for a note), at once where
+    /// the yard answers and else when it is back ([`Model::resumed`] settles
+    /// it from the state it reads). Never a failure for a write the yard
+    /// took: the read says it was, or that the yard has not recorded it
+    /// ([`Footplate::settled_in`]), and the card offers no second write
+    /// meanwhile, so that none goes on a guess; never the same one sent
+    /// again of itself, since the yard may hold it already. `words` went
+    /// with it, and are back where they were typed
+    /// ([`Footplate::words_back`]): a read that says the yard took them
+    /// takes them out again.
+    fn write_lost_in(
         &mut self,
         session: u64,
         at: (String, u64),
-        err: &api::Error,
+        write: Write,
+        words: String,
+        cx: &mut Context<Self>,
+    ) {
+        // A yard known to be away is read when it is back, which settles
+        // the card from the state read.
+        let up = self.up_in(session);
+        self.change_in(session, cx, |m| {
+            let read = m.write_unanswered(&at.0, at.1, write, words);
+            match up {
+                true => read,
+                false => Vec::new(),
+            }
+        });
+    }
+
+    /// The yard of the following `session` said what came of the write of
+    /// the ask's card, or it never went: the card has nothing more to wait
+    /// for, and offers its writes again.
+    fn write_over_in(&mut self, session: u64, at: &(String, u64), cx: &mut Context<Self>) {
+        self.change_in(session, cx, |m| {
+            m.write_ended(&at.0, at.1);
+            Vec::new()
+        });
+    }
+
+    /// A write of the following `session`'s yard ended in a refusal, a
+    /// connect that gave up, or with no answer (`lost`). The first two the
+    /// card says as `refusal`: the yard's words, whole, or that nothing was
+    /// sent. A call with no answer is waited for ([`Footplate::write_lost_in`]).
+    #[allow(clippy::too_many_arguments)]
+    fn write_failed_in(
+        &mut self,
+        session: u64,
+        at: (String, u64),
+        write: Write,
+        lost: bool,
+        words: String,
         refusal: String,
         cx: &mut Context<Self>,
     ) {
-        if model::answer_lost(err) {
-            // A yard known to be away is read when it is back, which
-            // settles the card from the state read.
-            let up = self.up_in(session);
-            self.change_in(session, cx, |m| {
-                let read = m.approval_unanswered(&at.0, at.1);
-                match up {
-                    true => read,
-                    false => Vec::new(),
-                }
-            });
-            return;
+        if lost {
+            return self.write_lost_in(session, at, write, words, cx);
         }
-        self.change_in(session, cx, |m| {
-            m.approval_ended(&at.0, at.1);
-            Vec::new()
-        });
+        self.write_over_in(session, &at, cx);
         self.refused_in(session, at, refusal, cx);
     }
 
     /// The queue of the following `session`'s yard was read, stamped
-    /// `stamp`: the approvals whose call ended without an answer are
-    /// settled by it ([`Model::settle_approvals`]), and each the yard
-    /// still lists open says so on its card.
+    /// `stamp`: the writes whose call ended without an answer are settled
+    /// by it ([`Model::settle_writes`]), and each the yard still lists as
+    /// it was says so on its card.
     pub(crate) fn settled_in(&mut self, session: u64, stamp: u64, cx: &mut Context<Self>) {
-        let mut not_taken = Vec::new();
-        if let Some(model) = self.model_in(session) {
-            not_taken = model.settle_approvals(stamp);
+        let not_recorded = match self.model_in(session) {
+            Some(model) => model.settle_writes(stamp),
+            None => Vec::new(),
+        };
+        self.settled(session, not_recorded, cx);
+    }
+
+    /// The bead of the following `session`'s yard was read, stamped
+    /// `stamp`: the notes whose call ended without an answer are settled
+    /// by what its notes say ([`Model::settle_notes`]).
+    pub(crate) fn settled_notes_in(
+        &mut self,
+        session: u64,
+        bead: &str,
+        stamp: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let not_recorded = match self.model_in(session) {
+            Some(model) => model.settle_notes(bead, stamp),
+            None => Vec::new(),
+        };
+        self.settled(session, not_recorded, cx);
+    }
+
+    /// The bead of the following `session` could not be read, and a note
+    /// whose call got no answer waits for that read, which only the bead's
+    /// notes can answer: it is read again after the window's retry, while
+    /// the note waits and the yard answers. A yard that is away is read
+    /// when it is back ([`Model::resumed`]).
+    pub(crate) fn reread_notes_in(&mut self, session: u64, bead: &str, cx: &mut Context<Self>) {
+        if !self
+            .model_in(session)
+            .is_some_and(|model| model.note_unsure(bead))
+        {
+            return;
         }
-        for at in not_taken {
-            self.refused_in(session, at, model::APPROVAL_NOT_TAKEN.to_string(), cx);
+        let (bead, again_in) = (bead.to_string(), self.retry);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(again_in).await;
+            this.update(cx, |this, cx| {
+                let waiting = this
+                    .model_in(session)
+                    .is_some_and(|model| model.note_unsure(&bead));
+                if waiting && this.up_in(session) {
+                    this.run_in(session, vec![Effect::Bead { bead }], cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// What a read of the yard of the following `session` said of the
+    /// writes that got no answer: those it took have what the window kept
+    /// of them taken out ([`Footplate::taken_in`]), and each that it did
+    /// not record says so on its card.
+    pub(crate) fn settled(
+        &mut self,
+        session: u64,
+        not_recorded: Vec<(String, u64, Write)>,
+        cx: &mut Context<Self>,
+    ) {
+        let taken = match self.model_in(session) {
+            Some(model) => model.take_taken(),
+            None => Vec::new(),
+        };
+        for taken in taken {
+            self.taken_in(session, taken, cx);
+        }
+        for (bead, ask, write) in not_recorded {
+            self.refused_in(session, (bead, ask), write.not_taken().to_string(), cx);
         }
         // A later queue read may close an ask another way after this card
         // said it was still open. That warning describes only the queue
@@ -1001,7 +1193,7 @@ impl Footplate {
         let warnings: Vec<(String, u64)> = if session == self.session {
             self.refused
                 .iter()
-                .filter(|(_, why)| why.as_str() == model::APPROVAL_NOT_TAKEN)
+                .filter(|(_, why)| model::is_not_taken(why))
                 .map(|(at, _)| at.clone())
                 .collect()
         } else {
@@ -1011,18 +1203,17 @@ impl Footplate {
                 .map(|held| {
                     held.refused
                         .iter()
-                        .filter(|(_, why)| why.as_str() == model::APPROVAL_NOT_TAKEN)
+                        .filter(|(_, why)| model::is_not_taken(why))
                         .map(|(at, _)| at.clone())
                         .collect()
                 })
                 .unwrap_or_default()
         };
         for at in warnings {
-            let still_approvable = self.model_in(session).is_some_and(|model| {
-                model.approving(&at.0, at.1).is_some()
-                    || model.setup_approving(&at.0, at.1).is_some()
-            });
-            if !still_approvable {
+            let still_open = self
+                .model_in(session)
+                .is_some_and(|model| model.listed_open(&at.0, at.1));
+            if !still_open {
                 if session == self.session {
                     self.refused.remove(&at);
                 } else if let Some(held) = self.held.values_mut().find(|h| h.session == session) {
@@ -1031,6 +1222,90 @@ impl Footplate {
             }
         }
         cx.notify();
+    }
+
+    /// The yard of the following `session` took a write whose call got no
+    /// answer: nothing is left to say of it, and what the window kept of
+    /// it goes. The words that came back to the line (or to the ask's own
+    /// words) are taken out again, as what was typed since stays; a note's
+    /// files with them; and the value of a give, which only the card it was
+    /// typed on ever held, is forgotten, never shown again.
+    pub(crate) fn taken_in(&mut self, session: u64, taken: Taken, cx: &mut Context<Self>) {
+        let at = (taken.bead.clone(), taken.ask);
+        if session == self.session {
+            self.refused.remove(&at);
+        } else if let Some(held) = self.held.values_mut().find(|h| h.session == session) {
+            held.refused.remove(&at);
+        }
+        if !taken.words.is_empty() {
+            self.words_gone(session, &at, &taken.words, cx);
+        }
+        match taken.write {
+            Write::Note { files } => self.files_gone(session, &at, &files),
+            Write::Give { .. }
+                if session == self.session && self.secret_for.as_ref() == Some(&at) =>
+            {
+                self.forget_secret(cx)
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// The words for the ask `at` of the following `session`, which came
+    /// back to where they were typed when the call that carried them got
+    /// no answer, are gone: the yard took them. They went back as any
+    /// failure's do ([`Footplate::words_back`]): into the line of the yard
+    /// that is open, whatever card it is on by now (the queue that says the
+    /// yard took them also moves the ask on), or with the ask's own words
+    /// of the open yard or of the held one. What follows them there, typed
+    /// since, stays; words that were edited since stay as they are.
+    fn words_gone(
+        &mut self,
+        session: u64,
+        at: &(String, u64),
+        words: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if session != self.session {
+            let yard = self
+                .held
+                .iter()
+                .find(|(_, held)| held.session == session)
+                .map(|(yard, _)| yard.clone());
+            if let Some(kept) = yard.and_then(|yard| self.kept_words.get_mut(&yard)) {
+                gone_from(kept, at, words);
+            }
+            return;
+        }
+        gone_from(&mut self.ask_words, at, words);
+        let typed = self.line.read(cx).text().to_string();
+        if let Some(rest) = draft::without_sent(&typed, words) {
+            self.line.update(cx, |line, cx| line.set_text(&rest, cx));
+        }
+    }
+
+    /// The files that went with a note the yard took, by id, are gone from
+    /// where they were put back.
+    fn files_gone(&mut self, session: u64, at: &(String, u64), files: &[u64]) {
+        let kept = if session == self.session {
+            Some(&mut self.note_files)
+        } else {
+            let yard = self
+                .held
+                .iter()
+                .find(|(_, held)| held.session == session)
+                .map(|(yard, _)| yard.clone());
+            yard.and_then(|yard| self.kept_note_files.get_mut(&yard))
+        };
+        if let Some(kept) = kept
+            && let Some(attached) = kept.get_mut(at)
+        {
+            attached.retain(|file| !files.contains(&file.id));
+            if attached.is_empty() {
+                kept.remove(at);
+            }
+        }
     }
 
     /// A pairing approval's transient goes on its decided card: the QR
@@ -1552,10 +1827,7 @@ impl Footplate {
             held.refused.remove(&at);
             self.notice_in(session, String::new(), cx);
         }
-        self.change_in(session, cx, |m| {
-            m.approval_out(&at.0, at.1);
-            Vec::new()
-        });
+        self.write_out_in(session, &at, Write::Approval, cx);
         // The approval is the yard's it was pressed in: what came of it is
         // that yard's, and is said there, wherever the window is by then.
         self.ask_in(
@@ -1607,7 +1879,7 @@ impl Footplate {
                     Err(err) if model::approves_elsewhere(&err) => {
                         elsewhere.insert(at);
                         this.change_in(session, cx, |m| {
-                            m.approval_ended(&bead, ask);
+                            m.write_ended(&bead, ask);
                             Vec::new()
                         });
                         this.notice_in(session, String::new(), cx);
@@ -1623,7 +1895,17 @@ impl Footplate {
                             true => "not approved: the yard refused it".to_string(),
                             false => why,
                         };
-                        this.approval_failed_in(session, (bead.clone(), ask), &err, why, cx);
+                        let lost = model::answer_lost(&err);
+                        let at = (bead.clone(), ask);
+                        this.write_failed_in(
+                            session,
+                            at,
+                            Write::Approval,
+                            lost,
+                            String::new(),
+                            why,
+                            cx,
+                        );
                     }
                 }
             },
@@ -1670,6 +1952,12 @@ impl Footplate {
         let Some((bead, ask)) = self.card() else {
             return;
         };
+        // A card with a write out, or not known to have reached the yard,
+        // offers no second one: the words stay in the line, and the card
+        // says what it waits for.
+        if self.write_sending(&bead, ask).is_some() {
+            return;
+        }
         // A secret ask has its own field and its own call, and no words.
         if self.giving().is_some() {
             return self.give(cx);
@@ -1833,6 +2121,9 @@ impl Footplate {
         }
         let (call_bead, call_words) = (bead.clone(), words.clone());
         let identity = self.yard_identity(&yard);
+        // The card says the answer is with the yard, and takes no second
+        // write, until the yard says what came of it.
+        self.write_out_in(session, &(bead.clone(), ask), Write::Answer { option }, cx);
         self.ask_in(
             session,
             cx,
@@ -1853,8 +2144,16 @@ impl Footplate {
                             cx,
                         );
                     }
-                    this.words_back((&yard, opening), (bead.clone(), ask), words, cx);
-                    this.refused_in(session, (bead, ask), format!("not answered: {err}"), cx);
+                    // The words are back in the line as they are for any
+                    // failure; where the call got no answer they stay while
+                    // the queue is read, and go again if it says the yard
+                    // took them.
+                    let at = (bead, ask);
+                    let lost = model::answer_lost(&err);
+                    this.words_back((&yard, opening), at.clone(), words.clone(), cx);
+                    let write = Write::Answer { option };
+                    let why = format!("not answered: {err}");
+                    this.write_failed_in(session, at, write, lost, words, why, cx);
                 }
             },
         );
@@ -1862,7 +2161,12 @@ impl Footplate {
 
     /// Words with no option chosen go as a plain note, with the card's
     /// files; the ask stays open. What the yard refuses is back in the
-    /// line with its files, and the file that kept it is marked.
+    /// line with its files, and the file that kept it is marked. While the
+    /// call is out the card says the note is with the yard; one that ended
+    /// with no answer waits while the bead is read for the note, which only
+    /// its notes say ([`Model::settle_notes`]): the words and files come
+    /// back as for a refusal and stay, never sent again of themselves, and
+    /// go again where the bead has the note.
     pub(crate) fn send_note(
         &mut self,
         bead: String,
@@ -1870,31 +2174,41 @@ impl Footplate {
         words: String,
         cx: &mut Context<Self>,
     ) {
-        let files = self
-            .note_files
-            .remove(&(bead.clone(), ask))
-            .unwrap_or_default();
+        let at = (bead.clone(), ask);
+        let files = self.note_files.remove(&at).unwrap_or_default();
         self.line.update(cx, |line, cx| line.set_text("", cx));
-        self.ask_words.remove(&(bead.clone(), ask));
+        self.ask_words.remove(&at);
+        self.refused.remove(&at);
         self.notice(String::new(), cx);
         let (call_bead, call_words) = (bead.clone(), words.clone());
-        let (yard, opening) = (self.yard.clone(), self.opening);
+        let (yard, opening, session) = (self.yard.clone(), self.opening, self.session);
         let identity = self.yard_identity(&yard);
+        let attached: Vec<u64> = files.iter().map(|file| file.id).collect();
+        self.write_out_in(
+            session,
+            &at,
+            Write::Note {
+                files: attached.clone(),
+            },
+            cx,
+        );
         self.ask_through(
             cx,
             move |client, me| match post_note(client, me, &call_bead, &call_words, &files) {
                 Ok(()) => Ok(()),
-                Err((at, why)) => Err(UnsentNote {
+                Err((at, why, lost)) => Err(UnsentNote {
                     words: call_words,
                     files,
                     at,
                     why,
+                    lost,
                 }),
             },
             move |this, noted, cx| match noted {
                 Ok(()) => {
                     // The note arrives as a `noted` event, which reads the
                     // queue and the bead again.
+                    this.write_over_in(session, &(bead, ask), cx);
                 }
                 Err(_) if this.yard_identity(&yard) != identity => this.notice(
                     format!(
@@ -1902,7 +2216,10 @@ impl Footplate {
                     ),
                     cx,
                 ),
-                Err(unsent) => this.note_back(&yard, opening, (bead, ask), unsent, cx),
+                Err(unsent) => {
+                    let write = Write::Note { files: attached };
+                    this.note_back(session, &yard, opening, (bead, ask), write, unsent, cx)
+                }
             },
         );
     }
@@ -1918,12 +2235,18 @@ impl Footplate {
     /// back with what was typed since, and their files before what was
     /// attached since, the file that kept them marked: in the line while
     /// that yard is still the open one, as it was opened then, and else
-    /// with the ask they were written for, in its own yard.
+    /// with the ask they were written for, in its own yard. A note whose
+    /// call got no answer has them back the same, and the card waits for
+    /// what the bead says of it ([`Footplate::write_lost_in`]) where a
+    /// refusal says why, as `notice`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn note_back(
         &mut self,
+        session: u64,
         yard: &str,
         opening: u64,
         at: (String, u64),
+        write: Write,
         unsent: UnsentNote,
         cx: &mut Context<Self>,
     ) {
@@ -1940,7 +2263,12 @@ impl Footplate {
                 file.refused = Some(unsent.why.clone());
             }
         }
-        let in_line = self.words_back((yard, opening), at, unsent.words, cx);
+        let words = unsent.words.clone();
+        let in_line = self.words_back((yard, opening), at.clone(), unsent.words, cx);
+        if unsent.lost {
+            return self.write_lost_in(session, at, write, words, cx);
+        }
+        self.write_over_in(session, &at, cx);
         match in_line {
             true => self.notice(format!("not noted: {}", unsent.why), cx),
             false => self.notice(format!("not noted in {yard}: {}", unsent.why), cx),
@@ -1948,18 +2276,28 @@ impl Footplate {
     }
 
     /// Puts the ask aside with `x`: it leaves the list and returns as the
-    /// yard says.
+    /// yard says. While the call is out the card says so; one that ended
+    /// with no answer waits while the queue is read, and the card ends as
+    /// put aside or says the yard still lists it open
+    /// ([`Footplate::write_lost_in`]). The words typed on the card, which
+    /// Later takes none of, come back as any failure's do, and go again
+    /// where the yard took it.
     pub(crate) fn send_later(&mut self, bead: String, ask: u64, cx: &mut Context<Self>) {
         // Held with the card's answers: the words stay where they are.
         if self.reconnecting() {
             return;
         }
+        let at = (bead.clone(), ask);
+        let words = self.line.read(cx).text().trim().to_string();
         self.line.update(cx, |line, cx| line.set_text("", cx));
-        self.ask_words.remove(&(bead.clone(), ask));
+        self.ask_words.remove(&at);
+        self.refused.remove(&at);
         self.declining = None;
         self.notice(String::new(), cx);
         let call_bead = bead.clone();
-        let session = self.session;
+        let (yard, opening, session) = (self.yard.clone(), self.opening, self.session);
+        let identity = self.yard_identity(&yard);
+        self.write_out_in(session, &at, Write::Later, cx);
         self.ask_through(
             cx,
             move |client, me| client.defer_ask(&call_bead, ask, me),
@@ -1968,12 +2306,31 @@ impl Footplate {
                     this.change_in(session, cx, |m| m.deferred(&bead, ask));
                     this.schedule_return_in(session, cx);
                 }
-                Err(err) => this.notice_in(session, format!("not put aside: {err}"), cx),
+                Err(err) => {
+                    // Words are put back only into the yard they were
+                    // typed in.
+                    let words = match this.yard_identity(&yard) == identity {
+                        true => words,
+                        false => String::new(),
+                    };
+                    if !words.is_empty() {
+                        this.words_back((&yard, opening), at.clone(), words.clone(), cx);
+                    }
+                    if model::answer_lost(&err) {
+                        return this.write_lost_in(session, at, Write::Later, words, cx);
+                    }
+                    this.write_over_in(session, &at, cx);
+                    this.notice_in(session, format!("not put aside: {err}"), cx);
+                }
             },
         );
     }
 
-    /// Declines the ask with words: not a pick and not "you decide".
+    /// Declines the ask with words: not a pick and not "you decide". While
+    /// the call is out the card says so; one that ended with no answer
+    /// waits while the queue is read, the words back in the line and sent
+    /// again by nobody, and the card ends as declined or says the yard
+    /// still lists it open ([`Footplate::write_lost_in`]).
     pub(crate) fn send_decline(
         &mut self,
         bead: String,
@@ -1985,13 +2342,16 @@ impl Footplate {
         if self.reconnecting() {
             return;
         }
+        let at = (bead.clone(), ask);
         self.line.update(cx, |line, cx| line.set_text("", cx));
-        self.ask_words.remove(&(bead.clone(), ask));
+        self.ask_words.remove(&at);
+        self.refused.remove(&at);
         self.declining = None;
         self.notice(String::new(), cx);
         let (call_bead, call_words) = (bead.clone(), words.clone());
         let (yard, opening, session) = (self.yard.clone(), self.opening, self.session);
         let identity = self.yard_identity(&yard);
+        self.write_out_in(session, &at, Write::Decline, cx);
         self.ask_through(
             cx,
             move |client, me| client.decline_ask(&call_bead, ask, &call_words, me),
@@ -2009,8 +2369,11 @@ impl Footplate {
                             cx,
                         );
                     }
-                    let in_line =
-                        this.words_back((&yard, opening), (bead, ask), words, cx);
+                    let in_line = this.words_back((&yard, opening), at.clone(), words.clone(), cx);
+                    if model::answer_lost(&err) {
+                        return this.write_lost_in(session, at, Write::Decline, words, cx);
+                    }
+                    this.write_over_in(session, &at, cx);
                     match in_line {
                         true => this.notice(format!("not declined: {err}"), cx),
                         false => this.notice(format!("not declined in {yard}: {err}"), cx),
@@ -2024,7 +2387,9 @@ impl Footplate {
     /// button. Later takes no words: only an open ask, never one dealt with.
     pub(crate) fn later_now(&mut self, cx: &mut Context<Self>) {
         let current = self.model.as_ref().and_then(|m| m.current_ask());
-        if let Some((bead, ask)) = current {
+        if let Some((bead, ask)) = current
+            && self.write_sending(&bead, ask).is_none()
+        {
             self.send_later(bead, ask, cx);
         }
     }
@@ -2090,6 +2455,10 @@ impl Footplate {
         let Some((bead, ask)) = current else {
             return;
         };
+        // As Enter: no second write while one is with the yard.
+        if self.write_sending(&bead, ask).is_some() {
+            return;
+        }
         // A secret ask is declined with no words: the yard takes none on
         // it, since words there could be the value.
         if self.giving().is_some() {
@@ -3756,6 +4125,11 @@ impl Footplate {
             // disabled, with the reason beside them, and the keys hold
             // the words where they are.
             let held = self.reconnecting();
+            // A card with a write out, or not known to have reached the
+            // yard, offers no second one: the controls stand disabled (the
+            // keys do nothing), and the words under them say what the card
+            // waits for.
+            let waiting = self.write_sending(&bead_id, ask_seq).is_some();
             card = card.child(
                 div()
                     .flex()
@@ -3763,7 +4137,13 @@ impl Footplate {
                     .items_center()
                     .gap_2()
                     .when_some(send, |el, (id, text, enabled)| {
-                        el.child(send_button(id, text, enabled && !held, palette, cx))
+                        el.child(send_button(
+                            id,
+                            text,
+                            enabled && !held && !waiting,
+                            palette,
+                            cx,
+                        ))
                     })
                     .when((ask.run.is_some() || ask.setup.is_some()) && sends, |el| {
                         el.child(approve_button(
@@ -3772,16 +4152,16 @@ impl Footplate {
                             matches!(approval, Approval::Unlock),
                             self.approving.is_none()
                                 && !held
-                                && self.approval_sending(&bead_id, ask_seq).is_none(),
+                                && self.write_sending(&bead_id, ask_seq).is_none(),
                             palette,
                             cx,
                         ))
                     })
                     .when(held, |el| el.child(send_held(palette)))
                     // Under the control, as the held words are: where the
-                    // approval stands with the yard, until it says.
+                    // write stands with the yard, until it says.
                     .when_some(
-                        self.approval_words(&bead_id, ask_seq, palette),
+                        self.sending_words(&bead_id, ask_seq, palette),
                         |el, words| el.child(words),
                     )
                     .child(ask_about)
@@ -3789,12 +4169,14 @@ impl Footplate {
                         small_button("Later (x)".to_string(), palette)
                             .id(SharedString::from(format!("later {bead_id} {ask_seq}")))
                             .debug_selector(|| format!("later {bead_id} {ask_seq}"))
+                            .when(waiting, |el| el.opacity(0.5))
                             .on_click(cx.listener(|this, _, _, cx| this.later_now(cx))),
                     )
                     .child(
                         small_button("Decline (d)".to_string(), palette)
                             .id(SharedString::from(format!("decline {bead_id} {ask_seq}")))
                             .debug_selector(|| format!("decline {bead_id} {ask_seq}"))
+                            .when(waiting, |el| el.opacity(0.5))
                             // Declining is not a pick, and a run ask has no
                             // pick to take it for: only another ask's button
                             // says so.
@@ -4690,7 +5072,7 @@ impl Footplate {
                         matches!(approval, Approval::Unlock),
                         self.approving.is_none()
                             && !self.reconnecting()
-                            && self.approval_sending(bead, ask).is_none(),
+                            && self.write_sending(bead, ask).is_none(),
                         palette,
                         cx,
                     )));
@@ -4729,16 +5111,17 @@ impl Footplate {
                             matches!(approval, Approval::Unlock),
                             self.approving.is_none()
                                 && !self.reconnecting()
-                                && self.approval_sending(bead, ask).is_none(),
+                                && self.write_sending(bead, ask).is_none(),
                             palette,
                             cx,
                         )));
                     }
                 }
             }
-            // Where an approval put aside and approved from here stands
-            // with the yard, under its control.
-            body = body.when_some(self.approval_words(bead, ask, palette), |body, words| {
+            // Where a write of the card among the decided stands with the
+            // yard (an approval put aside and approved from here, a pick
+            // changed, a value given again), under its control.
+            body = body.when_some(self.sending_words(bead, ask, palette), |body, words| {
                 body.child(words)
             });
             // A line for words with the later pick, the field of a secret
@@ -4847,11 +5230,20 @@ impl Footplate {
             // As an open card's: held while the yard is reconnecting,
             // with the reason beside the button that would send.
             let held = self.reconnecting();
+            // As an open card's: no second write while one is with the
+            // yard.
+            let waiting = self.write_sending(bead, ask).is_some();
             let sendable = send.is_some()
                 || (detail.run.is_some() && approving && sends)
                 || (detail.setup.is_some() && setup_approving && sends);
             body = body.when_some(send, |body, (id, text, enabled)| {
-                body.child(send_button(id, text, enabled && !held, palette, cx))
+                body.child(send_button(
+                    id,
+                    text,
+                    enabled && !held && !waiting,
+                    palette,
+                    cx,
+                ))
             });
             body = body.when(held && sendable, |body| body.child(send_held(palette)));
             let run_approval = match approving {
@@ -5780,6 +6172,33 @@ impl Footplate {
         }
         form
     }
+}
+
+/// A give that ended in no yard's answer: why, as the card says it, and
+/// whether the call got no answer at all, so that the yard may have stored
+/// the values all the same. They are handed back from the call then, never
+/// to be shown, and nothing else holds a second copy meanwhile.
+struct GiveStopped {
+    why: String,
+    lost: bool,
+    values: Vec<(String, String)>,
+}
+
+/// Takes the words that went from the start of what is kept for the ask
+/// `at`, where a read of the yard says it took them: what follows them,
+/// typed since, stays, and nothing is kept for an ask whose words are all
+/// gone.
+fn gone_from(kept: &mut HashMap<(String, u64), String>, at: &(String, u64), words: &str) {
+    let Some(rest) = kept
+        .get(at)
+        .and_then(|typed| draft::without_sent(typed, words))
+    else {
+        return;
+    };
+    match rest.is_empty() {
+        true => kept.remove(at),
+        false => kept.insert(at.clone(), rest),
+    };
 }
 
 /// A field of a yard that is asked for, with its name beside it: the
