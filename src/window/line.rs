@@ -7,7 +7,11 @@
 //! whose Send mails the yardmaster the proposed text: the card it
 //! becomes stands in Decide, and this window approves nothing. A
 //! prompt the read says no card can carry has the reason in Edit's
-//! place, and a stage file has no Edit. Nothing else here writes.
+//! place, and a stage file has no Edit. What serves a stage and
+//! its stages are filed the same way: a Served-by picker under
+//! every Rule line and the Stages row mail the yardmaster the card
+//! or the depot bead each change stands on, and approve nothing
+//! here.
 
 use gpui::{
     AnyElement, Context, Div, Entity, Focusable, FontWeight, SharedString, Window, div, prelude::*,
@@ -79,6 +83,32 @@ pub(crate) struct LineSent {
     pub(crate) after: u64,
     pub(crate) answer: Option<String>,
 }
+
+/// The last stage or server filing the Line window mailed: what it
+/// asked for, in the window's words, and the yardmaster's answer once
+/// one has come. It stays until another is mailed or it is cleared:
+/// the card it becomes stands in Decide, and this window approves
+/// nothing.
+pub(crate) struct LineFiled {
+    pub(crate) depot: String,
+    pub(crate) stage: String,
+    pub(crate) words: String,
+    /// The newest event of the yard when the mail went: only mail after
+    /// it can be the answer.
+    pub(crate) after: u64,
+    pub(crate) answer: Option<String>,
+}
+
+/// The New group form, while it stands open: the name typed for the
+/// group and the runner chosen first for its card.
+pub(crate) struct LineNewGroup {
+    pub(crate) name: Entity<input::Line>,
+    pub(crate) runner: String,
+}
+
+/// The runners a new group's card offers, as the card names them:
+/// the runner is the choice, chosen before the card is filed.
+const GROUP_RUNNERS: [&str; 3] = ["herdr", "exec", "manual"];
 
 /// Whether the text typed is something to send: not blank, and not the
 /// text that stands.
@@ -259,15 +289,165 @@ impl Footplate {
     /// answer, whether a card stands in Decide or the prompt changed since
     /// it was read. Only the first mail after the send is taken.
     pub(crate) fn line_hears(&mut self, event: &Event) {
-        let (Some(sent), Some(model)) = (self.line_sent.as_mut(), self.model.as_ref()) else {
+        let Some(model) = self.model.as_ref() else {
             return;
         };
-        if sent.answer.is_some() || event.seq <= sent.after {
-            return;
-        }
-        if let Some(text) = model.answer_in(event, model::YARDMASTER) {
+        if let Some(sent) = self.line_sent.as_mut()
+            && sent.answer.is_none()
+            && event.seq > sent.after
+            && let Some(text) = model.answer_in(event, model::YARDMASTER)
+        {
             sent.answer = Some(text.trim().to_string());
         }
+        if let Some(filed) = self.line_filed.as_mut()
+            && filed.answer.is_none()
+            && event.seq > filed.after
+            && let Some(text) = model.answer_in(event, model::YARDMASTER)
+        {
+            filed.answer = Some(text.trim().to_string());
+        }
+    }
+
+    /// Mails the yardmaster one stage or server filing, once: held
+    /// while a filing is on its way and while the yard is
+    /// reconnecting, so a mail sent as the connection broke cannot go
+    /// twice. A mail that went leaves the hand-off under its stage;
+    /// one that did not is said in the notice, with nothing filed.
+    pub(crate) fn file_line_mail(
+        &mut self,
+        depot: String,
+        stage: String,
+        mail: String,
+        words: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.reconnecting() || self.line_filing {
+            return;
+        }
+        if let Some(why) = self
+            .model
+            .as_ref()
+            .and_then(|m| m.unwritable(model::YARDMASTER))
+        {
+            return self.notice(format!("not sent: {why}"), cx);
+        }
+        self.line_filing = true;
+        self.line_refused = None;
+        cx.notify();
+        let session = self.session;
+        self.ask_through(
+            cx,
+            move |client, me| client.mail(model::YARDMASTER, &mail, me, &[]),
+            move |this, sent, cx| {
+                if this.session != session {
+                    return;
+                }
+                this.line_filing = false;
+                match sent {
+                    Ok(()) => {
+                        let after = this.model.as_ref().map_or(0, Model::events_seen);
+                        this.line_filed = Some(LineFiled {
+                            depot,
+                            stage,
+                            words,
+                            after,
+                            answer: None,
+                        });
+                        this.line_new_stage = None;
+                        this.line_new_group = None;
+                        this.change_in(session, cx, |m| m.sent(model::YARDMASTER));
+                    }
+                    Err(err) => this.notice(format!("not sent: {err}"), cx),
+                }
+            },
+        );
+    }
+
+    /// Files the serving pick of one rule: a depot's own rule by its
+    /// route card, a yard-wide rule by the set-aside card for this
+    /// depot alone, and a stage with no rule by a new rule. No pick
+    /// names a yard-wide rule itself as the thing changed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn file_served_pick(
+        &mut self,
+        depot: &str,
+        stage: &str,
+        rule: Option<(&str, &str, &crate::api::LineFilters)>,
+        group: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let (mail, words) = match rule {
+            Some((id, scope, filters)) if scope == "this depot's own" => (
+                model::line_route_mail(depot, stage, id, scope, filters, group),
+                format!(
+                    "Mailed the yardmaster to file the route card for rule {id}. The card will stand in Decide; this window approves nothing."
+                ),
+            ),
+            Some((id, scope, filters)) => (
+                model::line_set_aside_mail(depot, stage, id, scope, filters, group),
+                format!(
+                    "Mailed the yardmaster to file the set-aside card for rule {id} in depot {depot}. The card will stand in Decide; this window approves nothing, and rule {id} itself is not changed."
+                ),
+            ),
+            None => (
+                model::line_route_add_mail(depot, stage, group),
+                format!(
+                    "Mailed the yardmaster to file a route card for the stage {stage}, which no rule serves. The card will stand in Decide; this window approves nothing."
+                ),
+            ),
+        };
+        self.file_line_mail(depot.to_string(), stage.to_string(), mail, words, cx);
+    }
+
+    /// Files the stage change `proposed` of `flow`: a store flow by
+    /// its flow card, a git depot's repository flow by a bead in the
+    /// depot. No other flow is filed from here.
+    pub(crate) fn file_flow_change(
+        &mut self,
+        depot: &str,
+        flow: &LineFlow,
+        proposed: &[LineStage],
+        removed: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        if flow.source == "store" {
+            let mail = model::line_flow_mail(depot, &flow.name, &model::line_flow_json(proposed));
+            let words = format!(
+                "Mailed the yardmaster to file the flow card for flow {}. The card will stand in Decide; this window approves nothing.",
+                flow.name
+            );
+            return self.file_line_mail(depot.to_string(), String::new(), mail, words, cx);
+        }
+        let flow_file = format!(".yardr/flows/{}.flow", flow.name);
+        let mut text = model::line_flow_text(proposed);
+        for stage in proposed {
+            let stands = text.lines().any(|line| {
+                line.strip_prefix(&stage.stage)
+                    .is_some_and(|rest| rest.starts_with(" ->") || rest == " terminal")
+            });
+            if !stands {
+                text.push_str(&format!(
+                    "# stage {}: added here, with no moves yet\n",
+                    stage.stage
+                ));
+            }
+        }
+        let beads;
+        let removed = match removed {
+            Some(stage) => {
+                beads = self.model.as_ref().map_or(Vec::new(), |m| {
+                    m.line_stage_beads(depot, &flow.name, &flow.flow_type, stage)
+                });
+                Some((stage, beads.as_slice()))
+            }
+            None => None,
+        };
+        let mail = model::line_flow_bead_mail(depot, &flow.name, &flow_file, &text, removed);
+        let words = format!(
+            "Mailed the yardmaster to file a bead in depot {depot} for flow {}. It travels the depot's own flow and lands through its review; this window approves nothing.",
+            flow.name
+        );
+        self.file_line_mail(depot.to_string(), String::new(), mail, words, cx);
     }
 
     /// The Line window for `depot`: the pickers over the depots
@@ -365,6 +545,8 @@ impl Footplate {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.line_flow.clear();
                         this.line_stage.clear();
+                        this.line_refused = None;
+                        this.line_new_stage = None;
                         this.select(sel.clone(), window, cx);
                     })),
             );
@@ -419,6 +601,8 @@ impl Footplate {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.line_flow = key.clone();
                                 this.line_stage.clear();
+                                this.line_refused = None;
+                                this.line_new_stage = None;
                                 cx.notify();
                             })),
                     );
@@ -508,6 +692,8 @@ impl Footplate {
                 .when(picked, |el| el.bg(palette.open))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.line_stage = name.clone();
+                    this.line_refused = None;
+                    this.line_new_stage = None;
                     cx.notify();
                 }))
                 .child(
@@ -557,6 +743,12 @@ impl Footplate {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let groups = self
+            .model
+            .as_ref()
+            .and_then(|m| m.line_read_for(depot))
+            .map(model::line_groups)
+            .unwrap_or_default();
         let who = model::line_who(stage);
         let served = match stage.route.as_ref().and_then(|route| route.chain.first()) {
             Some(group) => format!("served by {} ({who})", group.name),
@@ -589,6 +781,18 @@ impl Footplate {
                         open => format!("Open · {open} beads"),
                     }),
             );
+        if let Some(words) = self.model.as_ref().and_then(|m| m.line_last_change(stage)) {
+            detail = detail.child(
+                div()
+                    .text_sm()
+                    .text_color(palette.faint)
+                    .debug_selector({
+                        let stage = stage.stage.clone();
+                        move || format!("line last {stage}")
+                    })
+                    .child(words),
+            );
+        }
         if let Some(route) = &stage.route {
             detail = detail.child(
                 div()
@@ -632,6 +836,29 @@ impl Footplate {
                         .child(format!("limit {limit}")),
                 );
             }
+            let current = route.chain.first().map(|g| g.name.as_str()).unwrap_or("");
+            detail = detail.child(self.line_served(
+                depot,
+                &stage.stage,
+                Some((&route.id, &route.scope, &route.filters)),
+                current,
+                &groups,
+                true,
+                palette,
+                cx,
+            ));
+        }
+        if stage.route.is_none() && !stage.terminal {
+            detail = detail.child(self.line_served(
+                depot,
+                &stage.stage,
+                None,
+                "",
+                &groups,
+                true,
+                palette,
+                cx,
+            ));
         }
         if !stage.other_routes.is_empty() {
             detail = detail.child(
@@ -655,6 +882,16 @@ impl Footplate {
                             other.group
                         )),
                 );
+                detail = detail.child(self.line_served(
+                    depot,
+                    &stage.stage,
+                    Some((&other.id, &other.scope, &other.filters)),
+                    &other.group,
+                    &groups,
+                    false,
+                    palette,
+                    cx,
+                ));
             }
         }
         let next = match stage.outcomes.is_empty() {
@@ -764,7 +1001,510 @@ impl Footplate {
                 }
             }
         }
+        detail = detail.child(self.line_stages(depot, flow, stage, palette, cx));
+        if let Some(filed) = self
+            .line_filed
+            .as_ref()
+            .filter(|f| f.depot == depot && (f.stage.is_empty() || f.stage == stage.stage))
+        {
+            detail = detail.child(self.line_filed_row(filed, palette, cx));
+        }
         detail
+    }
+
+    /// One rule's Served-by picker, standing under the Rule line it
+    /// edits: it names the rule's id, scope and filters first, then a
+    /// button for each group the line names, with its runner's words,
+    /// the group that serves now marked. Picking one files that
+    /// scope's card by mail at once. The representative rule's picker
+    /// also carries New group…, whose form stands under it.
+    #[allow(clippy::too_many_arguments)]
+    fn line_served(
+        &self,
+        depot: &str,
+        stage: &str,
+        rule: Option<(&str, &str, &crate::api::LineFilters)>,
+        current: &str,
+        groups: &[(String, String)],
+        new_group: bool,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (token, head) = match rule {
+            Some((id, scope, filters)) => (
+                id.to_string(),
+                format!("Served by · {}", model::line_rule_words(id, scope, filters)),
+            ),
+            None => ("none".to_string(), "Served by · no rule yet".to_string()),
+        };
+        let mut picker = div().flex().flex_col().gap_1();
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(palette.faint)
+                    .debug_selector({
+                        let (stage, token) = (stage.to_string(), token.clone());
+                        move || format!("line served {stage} {token}")
+                    })
+                    .child(head),
+            );
+        for (name, runner) in groups {
+            let label = match runner.is_empty() {
+                true => name.clone(),
+                false => format!("{name} ({runner})"),
+            };
+            let (depot, stage, name) = (depot.to_string(), stage.to_string(), name.clone());
+            let rule = rule
+                .map(|(id, scope, filters)| (id.to_string(), scope.to_string(), filters.clone()));
+            let picked = name == current;
+            row = row.child(
+                small_button(label, palette)
+                    .id(SharedString::from(format!(
+                        "line serve {stage} {token} {name}"
+                    )))
+                    .debug_selector({
+                        let (stage, token, name) = (stage.clone(), token.clone(), name.clone());
+                        move || format!("line serve {stage} {token} {name}")
+                    })
+                    .when(picked, |el| el.bg(palette.open))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let rule = rule
+                            .as_ref()
+                            .map(|(id, scope, f)| (id.as_str(), scope.as_str(), f));
+                        this.file_served_pick(&depot, &stage, rule, &name, cx);
+                    })),
+            );
+        }
+        if new_group {
+            row = row.child(
+                small_button("New group…".to_string(), palette)
+                    .id(SharedString::from("line newgroup open"))
+                    .debug_selector(|| "line newgroup open".to_string())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.line_new_group.is_none() {
+                            let name = cx.new(input::Line::new);
+                            window.focus(&name.focus_handle(cx));
+                            this.line_new_group = Some(LineNewGroup {
+                                name,
+                                runner: GROUP_RUNNERS[0].to_string(),
+                            });
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        picker = picker.child(row);
+        if new_group && let Some(form) = &self.line_new_group {
+            picker = picker.child(self.line_new_group_form(depot, stage, form, palette, cx));
+        }
+        picker
+    }
+
+    /// The New group form under a Served-by picker: its name, the
+    /// runner chosen first (agents, script or people, as the card
+    /// names them herdr, exec or manual), and File, which mails the
+    /// yardmaster to file its card. It does nothing until a route
+    /// sends it work, which the mail says.
+    fn line_new_group_form(
+        &self,
+        depot: &str,
+        stage: &str,
+        form: &LineNewGroup,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut runners = div().flex().flex_row().flex_wrap().gap_2();
+        for runner in GROUP_RUNNERS {
+            let picked = form.runner == runner;
+            runners = runners.child(
+                small_button(
+                    format!("{runner} ({})", model::line_runner_words(runner)),
+                    palette,
+                )
+                .id(SharedString::from(format!("line newgroup runner {runner}")))
+                .debug_selector(move || format!("line newgroup runner {runner}"))
+                .when(picked, |el| el.bg(palette.open))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = this.line_new_group.as_mut() {
+                        form.runner = runner.to_string();
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        let (depot, stage) = (depot.to_string(), stage.to_string());
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette.faint)
+                    .debug_selector(|| "line newgroup".to_string())
+                    .child("New group"),
+            )
+            .child(
+                field(form.name.focus_handle(cx), form.name.clone(), palette)
+                    .debug_selector(|| "line newgroup name".to_string()),
+            )
+            .child(runners)
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        small_button("Cancel".to_string(), palette)
+                            .id(SharedString::from("line newgroup cancel"))
+                            .debug_selector(|| "line newgroup cancel".to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.line_new_group = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        small_button("File change…".to_string(), palette)
+                            .id(SharedString::from("line newgroup file"))
+                            .debug_selector(|| "line newgroup file".to_string())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let Some(form) = this.line_new_group.as_ref() else {
+                                    return;
+                                };
+                                let name = form.name.read(cx).text().trim().to_string();
+                                if name.is_empty() {
+                                    return this.notice(
+                                        "a new group wants a name".to_string(),
+                                        cx,
+                                    );
+                                }
+                                let mail =
+                                    model::line_group_mail(&depot, &name, &form.runner);
+                                let words = format!(
+                                    "Mailed the yardmaster to file the group card for {name}. The card will stand in Decide; this window approves nothing."
+                                );
+                                this.file_line_mail(
+                                    depot.clone(),
+                                    stage.clone(),
+                                    mail,
+                                    words,
+                                    cx,
+                                );
+                            })),
+                    ),
+            )
+    }
+
+    /// One flow's Stages row under its open stage: Add, Move up,
+    /// Move down and Remove for that stage, by the door its source
+    /// names. A store flow files its flow card; a git depot's
+    /// repository flow composes the depot bead's mail; a dir
+    /// depot's directory flow offers no control and names the
+    /// terminal; a pack's flow offers neither and names
+    /// `yardr pack apply`; a type's flow is not edited here. A
+    /// removal with beads standing files nothing and names them.
+    fn line_stages(
+        &self,
+        depot: &str,
+        flow: &LineFlow,
+        stage: &LineStage,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let stage_name = stage.stage.clone();
+        let mut row = div().flex().flex_col().gap_1().child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette.faint)
+                .debug_selector({
+                    let stage = stage_name.clone();
+                    move || format!("line stages {stage}")
+                })
+                .child("Stages"),
+        );
+        if !flow.flow_type.is_empty() {
+            return row.child(
+                div()
+                    .text_sm()
+                    .text_color(palette.faint)
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} typed")
+                    })
+                    .child("A type's flow is not edited here."),
+            );
+        }
+        if let Some(pack) = flow.source.strip_prefix("pack ") {
+            return row.child(
+                div()
+                    .text_sm()
+                    .text_color(palette.faint)
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} pack")
+                    })
+                    .child(format!(
+                        "This flow is the pack {pack}'s: change it where the pack is kept, then yardr pack apply."
+                    )),
+            );
+        }
+        if flow.source == "repo (directory)" {
+            return row.child(
+                div()
+                    .text_sm()
+                    .text_color(palette.faint)
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} terminal")
+                    })
+                    .child(match flow.directory.is_empty() {
+                        true => {
+                            "This flow is the folder's file: change it at a terminal, in the folder."
+                                .to_string()
+                        }
+                        false => format!(
+                            "This flow is the folder's file: change it at a terminal, in {}.",
+                            flow.directory
+                        ),
+                    }),
+            );
+        }
+        let door = match flow.source.as_str() {
+            "store" => "On a store flow the change stands on its card in Decide.",
+            _ => {
+                "This flow is the depot's file: the change travels as a bead and lands through its review."
+            }
+        };
+        let (depot, flow) = (depot.to_string(), flow.clone());
+        let at = flow
+            .stages
+            .iter()
+            .position(|s| s.stage == stage_name)
+            .unwrap_or(0);
+        let mut buttons = div().flex().flex_row().flex_wrap().gap_2();
+        buttons = buttons
+            .child(
+                small_button("Add stage…".to_string(), palette)
+                    .id(SharedString::from(format!("line stages {stage_name} add")))
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} add")
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.line_new_stage.is_none() {
+                            let field = cx.new(input::Line::new);
+                            window.focus(&field.focus_handle(cx));
+                            this.line_new_stage = Some(field);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                small_button("Move up".to_string(), palette)
+                    .id(SharedString::from(format!("line stages {stage_name} up")))
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} up")
+                    })
+                    .when(at == 0, |el| el.text_color(palette.faint))
+                    .on_click(cx.listener({
+                        let (depot, flow, stage) =
+                            (depot.clone(), flow.clone(), stage_name.clone());
+                        move |this, _, _, cx| {
+                            if at > 0 {
+                                let proposed = model::line_stage_moved(&flow.stages, &stage, true);
+                                this.file_flow_change(&depot, &flow, &proposed, None, cx);
+                            }
+                        }
+                    })),
+            )
+            .child(
+                small_button("Move down".to_string(), palette)
+                    .id(SharedString::from(format!("line stages {stage_name} down")))
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} down")
+                    })
+                    .when(at + 1 >= flow.stages.len(), |el| {
+                        el.text_color(palette.faint)
+                    })
+                    .on_click(cx.listener({
+                        let (depot, flow, stage) =
+                            (depot.clone(), flow.clone(), stage_name.clone());
+                        move |this, _, _, cx| {
+                            if at + 1 < flow.stages.len() {
+                                let proposed = model::line_stage_moved(&flow.stages, &stage, false);
+                                this.file_flow_change(&depot, &flow, &proposed, None, cx);
+                            }
+                        }
+                    })),
+            )
+            .child(
+                small_button("Remove…".to_string(), palette)
+                    .id(SharedString::from(format!(
+                        "line stages {stage_name} remove"
+                    )))
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} remove")
+                    })
+                    .on_click(cx.listener({
+                        let (depot, flow, stage) =
+                            (depot.clone(), flow.clone(), stage_name.clone());
+                        move |this, _, _, cx| {
+                            let open = flow
+                                .stages
+                                .iter()
+                                .find(|s| s.stage == stage)
+                                .map_or(0, |s| s.open);
+                            if open > 0 {
+                                let beads = this.model.as_ref().map_or(Vec::new(), |m| {
+                                    m.line_stage_beads(&depot, &flow.name, &flow.flow_type, &stage)
+                                });
+                                this.line_refused =
+                                    Some(model::line_removal_refused(&stage, &beads, open));
+                                return cx.notify();
+                            }
+                            let proposed = model::line_stage_removed(&flow.stages, &stage);
+                            this.file_flow_change(&depot, &flow, &proposed, Some(&stage), cx);
+                        }
+                    })),
+            );
+        row = row.child(buttons);
+        if let Some(input) = &self.line_new_stage {
+            let (depot, flow, stage) = (depot.clone(), flow.clone(), stage_name.clone());
+            row = row.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        field(input.focus_handle(cx), input.clone(), palette).debug_selector({
+                            let stage = stage_name.clone();
+                            move || format!("line stages {stage} newname")
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                small_button("Cancel".to_string(), palette)
+                                    .id(SharedString::from(format!(
+                                        "line stages {stage_name} add cancel"
+                                    )))
+                                    .debug_selector({
+                                        let stage = stage_name.clone();
+                                        move || format!("line stages {stage} add cancel")
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.line_new_stage = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                small_button("Add".to_string(), palette)
+                                    .id(SharedString::from(format!(
+                                        "line stages {stage_name} add send"
+                                    )))
+                                    .debug_selector({
+                                        let stage = stage_name.clone();
+                                        move || format!("line stages {stage} add send")
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let Some(field) = this.line_new_stage.as_ref() else {
+                                            return;
+                                        };
+                                        let name =
+                                            field.read(cx).text().trim().to_string();
+                                        if name.is_empty()
+                                            || flow.stages.iter().any(|s| s.stage == name)
+                                        {
+                                            return this.notice(
+                                                format!(
+                                                    "a stage named {name} cannot be added to flow {}",
+                                                    flow.name
+                                                ),
+                                                cx,
+                                            );
+                                        }
+                                        let proposed = model::line_stage_added(
+                                            &flow.stages,
+                                            &stage,
+                                            &name,
+                                        );
+                                        this.file_flow_change(
+                                            &depot, &flow, &proposed, None, cx,
+                                        );
+                                    })),
+                            ),
+                    ),
+            );
+        }
+        row = row.child(
+            div()
+                .text_sm()
+                .text_color(palette.faint)
+                .debug_selector({
+                    let stage = stage_name.clone();
+                    move || format!("line stages {stage} door")
+                })
+                .child(door),
+        );
+        if let Some(refused) = &self.line_refused {
+            row = row.child(
+                div()
+                    .text_sm()
+                    .text_color(palette.warn)
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} refused")
+                    })
+                    .child(refused.clone()),
+            );
+        }
+        row
+    }
+
+    /// What stands under a stage after a filing was mailed for it:
+    /// that its card will stand in Decide and this window approves
+    /// nothing, the yardmaster's answer where one has come, and
+    /// Clear.
+    fn line_filed_row(&self, filed: &LineFiled, palette: Palette, cx: &mut Context<Self>) -> Div {
+        let mut row = div().flex().flex_col().gap_1().child(
+            div()
+                .text_sm()
+                .text_color(palette.faint)
+                .debug_selector(|| "line filed".to_string())
+                .child(filed.words.clone()),
+        );
+        if let Some(answer) = &filed.answer {
+            row = row.child(
+                div()
+                    .text_sm()
+                    .debug_selector(|| "line filed answer".to_string())
+                    .child(format!(
+                        "The yardmaster wrote: {}",
+                        shorten(answer, ANSWER_CHARS)
+                    )),
+            );
+        }
+        row.child(
+            small_button("Clear".to_string(), palette)
+                .id(SharedString::from("line filed clear"))
+                .debug_selector(|| "line filed clear".to_string())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.line_filed = None;
+                    cx.notify();
+                })),
+        )
     }
 
     /// The crew below the flows: one row per member, its prompt
@@ -1207,8 +1947,10 @@ impl Footplate {
     /// changed, with the yardmaster's answer. Once; a debug build's alone.
     pub(crate) fn shot_line_window(&mut self, cx: &mut Context<Self>) {
         let shot = std::env::var("FOOTPLATE_SHOT").unwrap_or_default();
-        if !matches!(shot.as_str(), "line-edit" | "line-sent")
-            || self.line_edit.is_some()
+        if !matches!(
+            shot.as_str(),
+            "line-edit" | "line-sent" | "line-picker" | "line-refused"
+        ) || self.line_edit.is_some()
             || self.line_sent.is_some()
         {
             return;
@@ -1223,6 +1965,40 @@ impl Footplate {
     }
 
     fn shot_line_edit(&mut self, shot: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // The picker shot stands on the yard-wide rule's stage, and
+        // the refused shot on the stage with a bead standing in it:
+        // neither needs a prompt.
+        match shot {
+            "line-picker" => {
+                self.line_stage = "review".to_string();
+                cx.notify();
+                return;
+            }
+            "line-refused" => {
+                self.line_stage = "new".to_string();
+                let (beads, open) = self
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.line_read_for("yardr"))
+                    .and_then(|line| line.flows.first())
+                    .and_then(|flow| flow.stages.first())
+                    .map_or((Vec::new(), 0), |stage| {
+                        (
+                            self.model.as_ref().map_or(Vec::new(), |m| {
+                                m.line_stage_beads("yardr", "default", "", &stage.stage)
+                            }),
+                            stage.open,
+                        )
+                    });
+                self.line_refused = Some(model::line_removal_refused("new", &beads, open));
+                // The Stages row stands at the foot of the detail:
+                // the refusal under it is what the shot shows.
+                self.decision.scroll_to_bottom();
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
         let found = self
             .model
             .as_ref()

@@ -894,6 +894,11 @@ impl Footplate {
         // that is left.
         self.line_edit = None;
         self.line_sent = None;
+        self.line_filing = false;
+        self.line_filed = None;
+        self.line_refused = None;
+        self.line_new_stage = None;
+        self.line_new_group = None;
         self.declining = None;
         self.back_position = None;
         // A paging request and its scroll position belonged to the yard
@@ -7056,7 +7061,8 @@ fn shot_selected() -> Option<Selected> {
         | Ok("lines-departures") => return Some(Selected::Arrivals),
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
-        Ok("line-window") | Ok("line-edit") | Ok("line-sent") => {
+        Ok("line-window") | Ok("line-edit") | Ok("line-sent") | Ok("line-picker")
+        | Ok("line-refused") => {
             return Some(Selected::LineWindow("yardr".into()));
         }
         Ok("grants") => return Some(Selected::Grants),

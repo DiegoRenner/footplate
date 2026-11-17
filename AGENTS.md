@@ -83,7 +83,20 @@ The window, its state and the yard:
     the row then says the card will stand in Decide, shows the
     yardmaster's next mail as the answer, and says where the edit
     stands whenever the line is read again (waiting, landed or moved).
-    No approval is drawn here: every approval is Decide's.
+    Its other writes file by the same door: a Served-by picker under
+    every Rule line (the representative's and each Other rule's,
+    naming its rule, scope and filters first) mails the route card
+    of a depot's own rule or the set-aside of a yard-wide one, New
+    group… mails its `group add` card with the runner chosen first,
+    and the Stages row (Add, Move up, Move down, Remove) mails the
+    flow card on a store flow or the depot bead's mail on a git
+    depot's repository flow, offers no control on a dir depot's
+    directory flow or a pack's flow, and files nothing where a bead
+    stands in a removed stage (`model::line_route_mail` and its
+    neighbours compose each); the stage's Last change line is the
+    representative rule's latest route or group change from the
+    stream (`Model::line_last_change`). No approval is drawn here:
+    every approval is Decide's.
   - `src/window/metrics.rs`: the window's measures: fixed sizes in pixels,
     sizes the words set in rems, the char budgets of the rows that end a long
     string in an ellipsis (`ui::shorten`), and the small functions that fit a

@@ -513,6 +513,68 @@ changed. A card over the old text is stale, and the yard refuses to
 approve it. Edit then opens over the text that stands now. One hand-off
 stands at a time, and it goes when the yard is switched.
 
+### Choosing what serves a stage
+
+Under the Rule line it edits, and under each rule of Other rules,
+stands a Served-by picker. It names that rule's id, its scope and
+every filter it sets first, then the yard's groups as the line names
+them, each with who it is (agents, script, people, another yard), the
+group that serves now marked. No pick is ambiguous about which rule
+it moves.
+
+Picking a group mails the yardmaster to file its card, once, and the
+window then says so under the stage, with the yardmaster's answer
+where one comes and Clear. The card stands in Decide, and this window
+approves nothing. Under a rule that is this depot's own the card is
+its route card (`route set`). Under a yard-wide rule the card is the
+set-aside for this depot alone (`route add --depot`): it names that
+rule and its scope, and the yard-wide rule itself is never named as
+changed, so every other depot that keeps it stands unmoved. A stage
+no rule serves takes a new rule the same way. A rule's filters and
+its chain's conditions are not edited here; they stay at a terminal.
+
+New group… stands in the representative rule's picker. It takes a
+name and the runner chosen first (herdr, exec or manual, as the card
+names them), and File mails the yardmaster to file its `group add`
+card. The group does nothing until a route sends it work.
+
+The stage's headline carries one Last change line, where the stream
+has told of one: the latest change of the representative rule the
+Rule line names, and of no rule under Other rules. A route change
+names the group that stood beside the one that stands; a change of
+its serving group names only that a `group_set` stands, with its day
+and who made it, since its event carries no more. It is read from
+the yard's events as they arrive, and no line stands where none has.
+
+### Adding, moving and removing stages
+
+The open stage's Stages row carries Add stage…, Move up, Move down
+and Remove… for that stage, where the flow may be edited here. A
+type's flow is not edited here.
+
+On a store flow the change files the flow card, whole, by mail as
+above: the card stands in Decide and nothing changes until it is
+approved there. Add asks for the new stage's name; it stands in the
+flow with no moves, no stage file and no route yet. Move up and Move
+down change the order alone, on the same card. Remove takes the
+stage and its moves out.
+
+On a git depot's repository flow the same controls compose the
+depot bead's mail instead: it names the depot, the flow and its
+`.flow` file, and carries the proposed text whole, and a removed
+stage's beads with move-them-out-first. The bead travels the depot's
+own flow and lands through its review. An added stage with no moves
+yet stands in that text as a comment naming it, for the bead to wire.
+
+On a dir depot's directory flow the row offers no control and names
+the terminal as the door, in the folder, and no mail is composed for
+it. Its store flow files the flow card as on any depot. On a pack's
+flow the row offers neither and names `yardr pack apply`.
+
+A removal with a bead standing in the stage files nothing, on either
+door: the row names the beads standing there, by id where the flows
+board lists them, and says to move them out first.
+
 ## Settings
 
 `cmd+,` opens the settings as their own sheet, with the sections down the

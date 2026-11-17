@@ -1250,6 +1250,13 @@ pub struct Model {
     line_unserved: bool,
     /// A newer Line read supersedes every answer from an earlier open.
     line_generation: u64,
+    /// The latest route change seen on the stream, by rule id: what the
+    /// Line window's Last change line reads for its representative rule.
+    line_route_last: HashMap<String, LineChange>,
+    /// The latest group change seen on the stream, by group name: a
+    /// representative rule's Last change where no route change of it
+    /// stands newer.
+    line_group_last: HashMap<String, LineChange>,
     /// The yard's operator, as its settings name them: who the grants
     /// view is offered to, and no one else.
     operator: String,
@@ -3139,6 +3146,128 @@ impl Model {
                 self.line_notice = Some(format!("the line could not be read: {err}"));
             }
         }
+    }
+
+    /// Keeps the latest route or group change the stream tells of, for
+    /// the Line window's Last change line: a `route_set` by its rule's
+    /// id (its `was` and `is` groups), a `route_added` or `route_removed`
+    /// by its id and group, and a `group_set` by its group's name, which
+    /// carries its day and actor alone. Nothing else is kept.
+    fn note_line_change(&mut self, e: &Event) {
+        let nested = |side: &str, field: &str| {
+            e.data
+                .get(side)
+                .and_then(|v| v.get(field))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        match e.kind.as_str() {
+            "route_set" => {
+                let id = nested("is", "id");
+                let id = match id.is_empty() {
+                    true => nested("was", "id"),
+                    false => id,
+                };
+                if !id.is_empty() {
+                    self.line_route_last.insert(
+                        id,
+                        LineChange {
+                            seq: e.seq,
+                            kind: e.kind.clone(),
+                            at: e.at.clone(),
+                            actor: e.actor.clone(),
+                            was: nested("was", "group"),
+                            is: nested("is", "group"),
+                            group: String::new(),
+                        },
+                    );
+                }
+            }
+            "route_added" | "route_removed" => {
+                let id = e.text("id").to_string();
+                if !id.is_empty() {
+                    self.line_route_last.insert(
+                        id,
+                        LineChange {
+                            seq: e.seq,
+                            kind: e.kind.clone(),
+                            at: e.at.clone(),
+                            actor: e.actor.clone(),
+                            was: String::new(),
+                            is: e.text("group").to_string(),
+                            group: String::new(),
+                        },
+                    );
+                }
+            }
+            "group_set" => {
+                let name = e.text("name").to_string();
+                if !name.is_empty() {
+                    self.line_group_last.insert(
+                        name.clone(),
+                        LineChange {
+                            seq: e.seq,
+                            kind: e.kind.clone(),
+                            at: e.at.clone(),
+                            actor: e.actor.clone(),
+                            was: String::new(),
+                            is: String::new(),
+                            group: name,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The Last change line of `stage`'s representative rule, in the
+    /// words the stage detail shows, where the stream has told of one:
+    /// the latest change of that rule alone (decide 26861), never of a
+    /// rule under Other rules. A route change names its `was` group
+    /// beside its `is` group; a group change of its serving group names
+    /// only that a `group_set` stands, with its day and actor, since
+    /// the event carries no more.
+    pub fn line_last_change(&self, stage: &LineStage) -> Option<String> {
+        let route = stage.route.as_ref()?;
+        let by_route = self.line_route_last.get(&route.id);
+        let by_group = route
+            .chain
+            .iter()
+            .filter_map(|g| self.line_group_last.get(&g.name))
+            .max_by_key(|change| change.seq);
+        let change = match (by_route, by_group) {
+            (Some(r), Some(g)) if g.seq > r.seq => g,
+            (Some(r), _) => r,
+            (None, Some(g)) => g,
+            (None, None) => return None,
+        };
+        Some(line_change_words(change))
+    }
+
+    /// The open beads standing in `stage` of the depot's flow, by id,
+    /// as the Flows board last read them: what a removal refused names.
+    /// Empty where the board lists none there.
+    pub fn line_stage_beads(
+        &self,
+        depot: &str,
+        flow_name: &str,
+        flow_type: &str,
+        stage: &str,
+    ) -> Vec<String> {
+        let Some(depot) = self.depot(depot) else {
+            return Vec::new();
+        };
+        depot
+            .flows
+            .iter()
+            .filter(|f| f.name == flow_name && f.flow_type == flow_type)
+            .flat_map(|f| &f.stages)
+            .filter(|s| s.stage == stage)
+            .flat_map(|s| &s.beads)
+            .map(|b| b.bead.clone())
+            .collect()
     }
 
     /// One line's flows as served, when the yard serves the line.
@@ -5715,6 +5844,7 @@ impl Model {
         // than what changed: the notices are read again.
         let mut effects = Vec::new();
         self.events_seen = self.events_seen.max(e.seq);
+        self.note_line_change(e);
         // One of the person's beads added or closed since they last had
         // Timetable open is its news, unless Timetable is open, which
         // saw it instead.
@@ -7489,6 +7619,373 @@ pub enum EditNow {
     Waiting,
     Landed,
     Moved,
+}
+
+/// One route or group change the stream told of, as the Line
+/// window's Last change line keeps it: its kind, day and actor, and,
+/// for a route change, the groups that stood and stand (`was` and
+/// `is` of the `route_set` event, which carries them whole).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LineChange {
+    pub seq: u64,
+    pub kind: String,
+    pub at: String,
+    pub actor: String,
+    pub was: String,
+    pub is: String,
+    pub group: String,
+}
+
+/// A change's day as the Last change line says it: `14 Nov`, from its
+/// RFC 3339 time; the date alone where the time does not parse.
+pub fn line_day(at: &str) -> String {
+    let (date, _) = at.split_once('T').unwrap_or((at, ""));
+    let mut parts = date.split('-');
+    let (Some(_year), Some(month), Some(day)) = (parts.next(), parts.next(), parts.next()) else {
+        return date.to_string();
+    };
+    let month = match month {
+        "01" => "Jan",
+        "02" => "Feb",
+        "03" => "Mar",
+        "04" => "Apr",
+        "05" => "May",
+        "06" => "Jun",
+        "07" => "Jul",
+        "08" => "Aug",
+        "09" => "Sep",
+        "10" => "Oct",
+        "11" => "Nov",
+        "12" => "Dec",
+        _ => return date.to_string(),
+    };
+    let day = day.trim_start_matches('0');
+    format!("{} {month}", if day.is_empty() { "0" } else { day })
+}
+
+/// The Last change line of one change: its kind, its day and its
+/// actor, with its `was` group beside its `is` group where the event
+/// carries them, as design yardr-y1cn 3.5 words it.
+pub fn line_change_words(change: &LineChange) -> String {
+    let mut words = format!(
+        "Last change: {}, {}, by {}",
+        change.kind,
+        line_day(&change.at),
+        change.actor
+    );
+    if !change.was.is_empty() && !change.is.is_empty() {
+        words.push_str(&format!(" (was {}, now {})", change.was, change.is));
+    } else if !change.is.is_empty() {
+        words.push_str(&format!(" (group {})", change.is));
+    } else if !change.was.is_empty() {
+        words.push_str(&format!(" (was {})", change.was));
+    }
+    words
+}
+
+/// Who a runner is, in the flow map's words beside a group's name in
+/// the serving picker: agents, script, people or another yard.
+pub fn line_runner_words(runner: &str) -> String {
+    match runner {
+        "herdr" => "agents".to_string(),
+        "exec" => "script".to_string(),
+        "manual" => "people".to_string(),
+        "peer" => "another yard".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The groups the serving picker offers, by name with their runner's
+/// words: every group of every representative chain the line reads,
+/// then the first groups of its other rules, each once, in the order
+/// the line names them. The line is the picker's only source, since
+/// the window makes no other call for it.
+pub fn line_groups(line: &Line) -> Vec<(String, String)> {
+    let mut groups: Vec<(String, String)> = Vec::new();
+    let mut offer = |name: &str, runner: &str| {
+        if !name.is_empty() && !groups.iter().any(|(n, _)| n == name) {
+            groups.push((name.to_string(), runner.to_string()));
+        }
+    };
+    for flow in &line.flows {
+        for stage in &flow.stages {
+            if let Some(route) = &stage.route {
+                for group in &route.chain {
+                    offer(&group.name, &group.runner);
+                }
+            }
+            for other in &stage.other_routes {
+                offer(&other.group, "");
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(name, runner)| (name, line_runner_words(&runner)))
+        .collect()
+}
+
+/// The mail that files the route card of a depot's own rule: its
+/// first lines name the depot, the stage, the rule by its id with its
+/// scope and every filter it sets, and the group picked; then what to
+/// file. The card will stand in Decide, and this window approves
+/// nothing.
+pub fn line_route_mail(
+    depot: &str,
+    stage: &str,
+    id: &str,
+    scope: &str,
+    filters: &LineFilters,
+    group: &str,
+) -> String {
+    format!(
+        "depot: {depot}\nstage: {stage}\nrule: {id}\nscope: {scope}\nfilters: {}\ngroup: {group}\n\nFile the route card route set {id} --group {group} for this depot's own rule. The card will stand in Decide; nothing changes until it is approved there.",
+        line_filter_words(filters)
+    )
+}
+
+/// The mail that files the set-aside card of a yard-wide rule for one
+/// depot: it names the yard-wide rule by id and scope and says it is
+/// not itself changed, in its first lines as in its body.
+pub fn line_set_aside_mail(
+    depot: &str,
+    stage: &str,
+    id: &str,
+    scope: &str,
+    filters: &LineFilters,
+    group: &str,
+) -> String {
+    format!(
+        "depot: {depot}\nstage: {stage}\nrule: {id}\nscope: {scope}\nfilters: {}\ngroup: {group}\n\nFile the set-aside card route add --depot {depot} --stage {stage} --group {group}, setting rule {id} aside for depot {depot} alone. Do not change rule {id} itself: it stays yard-wide for every other depot. The card will stand in Decide; nothing changes until it is approved there.",
+        line_filter_words(filters)
+    )
+}
+
+/// The mail that files a route card where a stage has no rule: a new
+/// rule of the depot sending its beads to the group picked.
+pub fn line_route_add_mail(depot: &str, stage: &str, group: &str) -> String {
+    format!(
+        "depot: {depot}\nstage: {stage}\ngroup: {group}\n\nFile the route card route add --stage {stage} --group {group} for depot {depot}, where no rule serves the stage. The card will stand in Decide; nothing changes until it is approved there."
+    )
+}
+
+/// The mail that files a new group's card, with the runner chosen
+/// first, as the card names it. A group does nothing until a route
+/// sends it work.
+pub fn line_group_mail(depot: &str, name: &str, runner: &str) -> String {
+    format!(
+        "depot: {depot}\ngroup: {name}\nrunner: {runner}\n\nFile the group card group add {name} --runner {runner}. The card will stand in Decide; nothing changes until it is approved there, and the group does nothing until a route sends it work."
+    )
+}
+
+/// The mail that files a store flow's card: its first lines name the
+/// depot and the flow, then the whole proposed flow after a blank
+/// line, as a prompt edit carries its text.
+pub fn line_flow_mail(depot: &str, flow: &str, proposed: &str) -> String {
+    format!(
+        "depot: {depot}\nflow: {flow}\n\nFile the flow card flow set {flow} with the flow below, whole. The card will stand in Decide; nothing changes until it is approved there.\n\n{proposed}"
+    )
+}
+
+/// The mail that files a depot bead for a git depot's repository
+/// flow: the flow file named, the proposed text whole, and a removed
+/// stage's open beads named with move-them-out-first, since the yard
+/// moves nothing when a stage goes.
+pub fn line_flow_bead_mail(
+    depot: &str,
+    flow: &str,
+    flow_file: &str,
+    proposed: &str,
+    removed: Option<(&str, &[String])>,
+) -> String {
+    let mut mail = format!(
+        "depot: {depot}\nflow: {flow}\nflow file: {flow_file}\n\nFile a bead in depot {depot} carrying the proposed text of {flow_file} below, whole, as the change to make. The bead travels the depot's own flow and lands through its review.\n"
+    );
+    if let Some((stage, beads)) = removed {
+        mail.push_str(&format!(
+            "The change removes the stage {stage}. Beads standing in it: {}. Move them out first; the yard moves nothing when a stage goes.\n",
+            beads.join(", ")
+        ));
+    }
+    mail.push_str(&format!("\n{proposed}"));
+    mail
+}
+
+/// What a removal refused says: it files nothing, names the beads
+/// standing in the stage (by id where the board lists them, else by
+/// their count), and says to move them out first.
+pub fn line_removal_refused(stage: &str, beads: &[String], open: usize) -> String {
+    match beads.is_empty() {
+        false => format!(
+            "Remove files nothing: {} standing in {stage} ({}). Move them out first.",
+            beads.join(", "),
+            match beads.len() {
+                1 => "1 bead".to_string(),
+                n => format!("{n} beads"),
+            }
+        ),
+        true => format!(
+            "Remove files nothing: {open} {} standing in {stage}. Move them out first.",
+            match open {
+                1 => "bead",
+                _ => "beads",
+            }
+        ),
+    }
+}
+
+/// One stage's edges as a flow file writes them: `<to> on <outcome>`
+/// once per outcome that leads there, with `max <n> then <stage>`
+/// after a limited one, a bare `<to>` when none does, as the yard's
+/// `Flow.Edges` writes them.
+fn line_edges(stage: &LineStage) -> Vec<String> {
+    let mut out = Vec::new();
+    for to in &stage.next {
+        let mut named = false;
+        for outcome in &stage.outcomes {
+            if outcome.to == *to {
+                let mut edge = format!("{} on {}", outcome.to, outcome.name);
+                if let Some(max) = outcome.max {
+                    edge.push_str(&format!(" max {max} then {}", outcome.then_stage));
+                }
+                out.push(edge);
+                named = true;
+            }
+            if outcome.then_stage == *to {
+                named = true;
+            }
+        }
+        if !named {
+            out.push(to.clone());
+        }
+    }
+    out
+}
+
+/// The flow of `stages` as its file writes it, whole: each stage's
+/// moves in the stages' order, then its terminal stages, as the
+/// yard's `Flow.String` writes it. A stage with no moves and no
+/// terminal stands in no line of it, as there; a caller naming one
+/// says so beside it.
+pub fn line_flow_text(stages: &[LineStage]) -> String {
+    let mut text = String::new();
+    for stage in stages {
+        if !stage.next.is_empty() {
+            text.push_str(&format!(
+                "{} -> {}\n",
+                stage.stage,
+                line_edges(stage).join(" | ")
+            ));
+        }
+    }
+    for stage in stages {
+        if stage.terminal {
+            text.push_str(&format!("{} terminal\n", stage.stage));
+        }
+    }
+    text
+}
+
+/// The flow of `stages` as a flow card carries it, whole: its stage
+/// order first, then its moves, outcomes and terminal stages, in the
+/// JSON the yard's `ParseFlow` also reads, so a stage with no moves
+/// yet stands in it as it stands in the line.
+pub fn line_flow_json(stages: &[LineStage]) -> String {
+    let order: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
+    let mut transitions = serde_json::Map::new();
+    let mut outcomes = serde_json::Map::new();
+    let mut terminal: Vec<&str> = Vec::new();
+    for stage in stages {
+        if !stage.next.is_empty() {
+            transitions.insert(stage.stage.clone(), serde_json::json!(stage.next));
+        }
+        if !stage.outcomes.is_empty() {
+            outcomes.insert(
+                stage.stage.clone(),
+                serde_json::json!(
+                    stage
+                        .outcomes
+                        .iter()
+                        .map(|o| {
+                            let mut one = serde_json::json!({"name": o.name, "to": o.to});
+                            if let Some(max) = o.max {
+                                one["max"] = serde_json::json!(max);
+                                one["then"] = serde_json::json!(o.then_stage);
+                            }
+                            one
+                        })
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+        if stage.terminal {
+            terminal.push(stage.stage.as_str());
+        }
+    }
+    serde_json::json!({
+        "stages": order,
+        "transitions": transitions,
+        "outcomes": outcomes,
+        "terminal": terminal,
+    })
+    .to_string()
+}
+
+/// The stages with a new stage `name` standing after `after` (at the
+/// end where no stage of the flow is so named): it has no moves, no
+/// stage file and no route yet, as a stage added on a card stands.
+pub fn line_stage_added(stages: &[LineStage], after: &str, name: &str) -> Vec<LineStage> {
+    let mut out = stages.to_vec();
+    let at = out
+        .iter()
+        .position(|s| s.stage == after)
+        .map_or(out.len(), |i| i + 1);
+    out.insert(
+        at,
+        LineStage {
+            stage: name.to_string(),
+            ..LineStage::default()
+        },
+    );
+    out
+}
+
+/// The stages with `stage` moved one place up or down in their
+/// order, and nothing else changed: a reorder alone.
+pub fn line_stage_moved(stages: &[LineStage], stage: &str, up: bool) -> Vec<LineStage> {
+    let mut out = stages.to_vec();
+    let Some(at) = out.iter().position(|s| s.stage == stage) else {
+        return out;
+    };
+    let to = match up {
+        true => at.saturating_sub(1),
+        false => (at + 1).min(out.len().saturating_sub(1)),
+    };
+    out.swap(at, to);
+    out
+}
+
+/// The stages with `stage` taken out, its moves with it, and every
+/// move to it taken out of the stages that stay, so the flow carried
+/// does not name it again: what a removal proposes, where its beads
+/// were moved out first.
+pub fn line_stage_removed(stages: &[LineStage], stage: &str) -> Vec<LineStage> {
+    stages
+        .iter()
+        .filter(|s| s.stage != stage)
+        .map(|s| {
+            let mut kept = s.clone();
+            kept.next.retain(|to| to != stage);
+            kept.outcomes.retain(|o| o.to != stage);
+            for outcome in &mut kept.outcomes {
+                if outcome.then_stage == stage {
+                    outcome.max = None;
+                    outcome.then_stage.clear();
+                }
+            }
+            kept
+        })
+        .collect()
 }
 
 /// Where the edit written over `over` and sent as `proposed` stands, by
@@ -14664,6 +15161,238 @@ mod tests {
         );
         assert_eq!((group.kind(), group.name()), ("group", "builders"));
         assert_eq!((crew.kind(), crew.name()), ("crew", "yardmaster"));
+    }
+
+    /// Slice C's mails name their rule, scope and filters first, and
+    /// never a yard-wide rule itself as changed; its flow text stands
+    /// whole in both shapes; its stage moves change the order alone;
+    /// and its Last change follows the representative rule alone.
+    #[test]
+    fn stage_and_server_edits_are_mailed_by_rule_and_flow_whole() {
+        let filters = LineFilters {
+            filter_type: "task".into(),
+            labels: vec!["eyes".into()],
+            priority: "P0-P1".into(),
+            originator: "any".into(),
+        };
+        assert_eq!(
+            line_route_mail(
+                "yardr",
+                "new",
+                "r-1",
+                "this depot's own",
+                &filters,
+                "reviewers"
+            ),
+            "depot: yardr\nstage: new\nrule: r-1\nscope: this depot's own\nfilters: type task · labels eyes · priority P0-P1 · for any originator\ngroup: reviewers\n\nFile the route card route set r-1 --group reviewers for this depot's own rule. The card will stand in Decide; nothing changes until it is approved there."
+        );
+        let aside = line_set_aside_mail("yardr", "new", "r-2", "yard-wide", &filters, "builders");
+        assert!(aside.starts_with(
+            "depot: yardr\nstage: new\nrule: r-2\nscope: yard-wide\nfilters: type task · labels eyes · priority P0-P1 · for any originator\ngroup: builders\n"
+        ));
+        assert!(aside.contains("setting rule r-2 aside for depot yardr alone"));
+        assert!(aside.contains("Do not change rule r-2 itself"));
+        assert!(!aside.contains("route set r-2"));
+        assert_eq!(
+            line_group_mail("yardr", "checkers", "exec"),
+            "depot: yardr\ngroup: checkers\nrunner: exec\n\nFile the group card group add checkers --runner exec. The card will stand in Decide; nothing changes until it is approved there, and the group does nothing until a route sends it work."
+        );
+        // The flow as its file writes it, and as its card carries it:
+        // order first in both, a limited outcome whole in both.
+        let stages = vec![
+            LineStage {
+                stage: "new".into(),
+                next: vec!["review".into()],
+                outcomes: vec![LineOutcome {
+                    name: "done".into(),
+                    to: "review".into(),
+                    max: Some(3),
+                    then_stage: "decide".into(),
+                }],
+                ..Default::default()
+            },
+            LineStage {
+                stage: "review".into(),
+                next: vec!["merged".into()],
+                ..Default::default()
+            },
+            LineStage {
+                stage: "merged".into(),
+                terminal: true,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            line_flow_text(&stages),
+            "new -> review on done max 3 then decide\nreview -> merged\nmerged terminal\n"
+        );
+        let carried: serde_json::Value = serde_json::from_str(&line_flow_json(&stages)).unwrap();
+        assert_eq!(
+            carried["stages"],
+            serde_json::json!(["new", "review", "merged"])
+        );
+        assert_eq!(
+            carried["outcomes"]["new"],
+            serde_json::json!([{"name": "done", "to": "review", "max": 3, "then": "decide"}])
+        );
+        assert_eq!(carried["terminal"], serde_json::json!(["merged"]));
+        // A stage added stands after the stage it was added from, with
+        // no moves; a move changes the order alone; a removal takes
+        // its stage out.
+        let added = line_stage_added(&stages, "new", "check");
+        assert_eq!(
+            added.iter().map(|s| s.stage.as_str()).collect::<Vec<_>>(),
+            ["new", "check", "review", "merged"]
+        );
+        assert!(line_flow_json(&added).contains("\"check\""));
+        let moved = line_stage_moved(&stages, "review", true);
+        assert_eq!(
+            moved.iter().map(|s| s.stage.as_str()).collect::<Vec<_>>(),
+            ["review", "new", "merged"]
+        );
+        assert_eq!(
+            line_stage_moved(&stages, "new", true)
+                .iter()
+                .map(|s| s.stage.as_str())
+                .collect::<Vec<_>>(),
+            ["new", "review", "merged"]
+        );
+        assert_eq!(
+            line_stage_removed(&stages, "review")
+                .iter()
+                .map(|s| s.stage.as_str())
+                .collect::<Vec<_>>(),
+            ["new", "merged"]
+        );
+        assert!(line_stage_removed(&stages, "review")[0].next.is_empty());
+        assert!(line_stage_removed(&stages, "review")[0].outcomes.is_empty());
+        // The picker offers the line's groups once, with their runners'
+        // words, and a removal refused names its beads.
+        let line = Line {
+            depot: "yardr".into(),
+            flows: vec![LineFlow {
+                stages: vec![LineStage {
+                    stage: "new".into(),
+                    route: Some(crate::api::LineRoute {
+                        id: "r-1".into(),
+                        scope: "this depot's own".into(),
+                        chain: vec![
+                            crate::api::LineGroup {
+                                name: "builders".into(),
+                                runner: "herdr".into(),
+                                ..Default::default()
+                            },
+                            crate::api::LineGroup {
+                                name: "assembly".into(),
+                                runner: "exec".into(),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }),
+                    other_routes: vec![crate::api::LineOther {
+                        id: "r-2".into(),
+                        scope: "yard-wide".into(),
+                        group: "reviewers".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            line_groups(&line),
+            [
+                ("builders".to_string(), "agents".to_string()),
+                ("assembly".to_string(), "script".to_string()),
+                ("reviewers".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(
+            line_removal_refused("new", &["yd-a".to_string()], 1),
+            "Remove files nothing: yd-a standing in new (1 bead). Move them out first."
+        );
+        assert_eq!(
+            line_removal_refused("new", &[], 2),
+            "Remove files nothing: 2 beads standing in new. Move them out first."
+        );
+        assert_eq!(line_day("2026-11-14T09:30:00Z"), "14 Nov");
+        // Last change follows the representative rule alone: a change
+        // of the other rule says nothing of it, and its serving
+        // group's change stands only until its own route change.
+        let mut m = Model::default();
+        let stage = LineStage {
+            stage: "new".into(),
+            route: Some(crate::api::LineRoute {
+                id: "r-1".into(),
+                scope: "this depot's own".into(),
+                chain: vec![
+                    crate::api::LineGroup {
+                        name: "reviewers".into(),
+                        runner: "herdr".into(),
+                        ..Default::default()
+                    },
+                    crate::api::LineGroup {
+                        name: "assembly".into(),
+                        runner: "exec".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(m.line_last_change(&stage), None);
+        m.event(&event(
+            5,
+            "route_set",
+            "jo",
+            serde_json::json!({"was": {"id": "r-2", "group": "builders"}, "is": {"id": "r-2", "group": "checkers"}}),
+        ));
+        assert_eq!(m.line_last_change(&stage), None);
+        m.event(&event(
+            6,
+            "group_set",
+            "jo",
+            serde_json::json!({"name": "assembly", "runner": "exec"}),
+        ));
+        let group_change = m.line_last_change(&stage).unwrap();
+        assert!(
+            group_change.starts_with("Last change: group_set, "),
+            "{group_change}"
+        );
+        assert!(group_change.ends_with("by jo"), "{group_change}");
+        m.event(&event(
+            7,
+            "route_set",
+            "mckean",
+            serde_json::json!({"was": {"id": "r-1", "group": "builders"}, "is": {"id": "r-1", "group": "reviewers"}}),
+        ));
+        let route_change = m.line_last_change(&stage).unwrap();
+        assert!(
+            route_change.starts_with("Last change: route_set, "),
+            "{route_change}"
+        );
+        assert!(
+            route_change.contains("(was builders, now reviewers)"),
+            "{route_change}"
+        );
+        assert!(route_change.contains("by mckean"), "{route_change}");
+        for kind in ["route_added", "route_removed"] {
+            let words = line_change_words(&LineChange {
+                kind: kind.into(),
+                at: "2026-11-14T09:30:00Z".into(),
+                actor: "jo".into(),
+                is: "reviewers".into(),
+                ..Default::default()
+            });
+            assert_eq!(
+                words,
+                format!("Last change: {kind}, 14 Nov, by jo (group reviewers)")
+            );
+        }
     }
 
     /// The Telemetry section is the operator's alone, on a yard that serves

@@ -81,7 +81,9 @@ use crate::yard::Env;
 /// line's flow open on its row with what landed under its landed
 /// station, the Line window open on yardr's depot with its flows
 /// named by their source, its first stage's detail and the crew
-/// below, the Lines pane against a yard too old
+/// below, that window on a yard-wide rule's stage with its serving
+/// picker, and with a removal refused where a bead stands in the
+/// stage, the Lines pane against a yard too old
 /// to serve it, saying so in plain words, the grants view open on its
 /// row with a read, an update and an `--as` grant, and a source's named
 /// read call and update call, the Pair a phone pane open on its row
@@ -225,6 +227,8 @@ pub const STATES: &[&str] = &[
     "line-window",
     "line-edit",
     "line-sent",
+    "line-picker",
+    "line-refused",
     "old-lines",
     "grants",
     "pairing",
@@ -417,7 +421,28 @@ pub(super) fn start_if_asked(env: Env) -> (Env, Option<ShotYard>) {
     if matches!(state.as_str(), "voice" | "voice-ready" | "voice-draft") {
         let _ = TALKING.set(stand_voice());
     }
-    start_for_state(env, &state)
+    let (env, shot) = start_for_state(env, &state);
+    if state == "line-picker"
+        && let Some(shot) = shot.as_ref()
+    {
+        // Let the window read its Line and open the stream before the
+        // picker shot's route change: the detail then shows the same
+        // change a person would see arrive while the Line is open.
+        let yard = shot.yard.clone();
+        std::thread::spawn(move || {
+            for _ in 0..200 {
+                if !yard.asked("Line").is_empty() && !yard.streams_asked().is_empty() {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    yard.answer("Head", r#"{"result": 21}"#);
+                    yard.emit(r#"{"seq": 21, "kind": "route_set", "actor": "mckean", "at": "2026-11-14T09:30:00Z", "data": {"was": {"id": "r-3", "group": "builders"}, "is": {"id": "r-3", "group": "assembly"}}}"#);
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        });
+    }
+    (env, shot)
 }
 
 /// The size a shot's window opens at, in pixels, when `SHOT_SIZE` names one
@@ -1348,7 +1373,10 @@ fn populate(yard: &Yard, state: &str) {
         // behind Read and a labelled yard-wide rule under Other rules.
         // The editor's shot and the hand-off's read the same line: the
         // builders' prompt is a file the yard wrote, named by its digest.
-        if matches!(state, "line-window" | "line-edit" | "line-sent") {
+        if matches!(
+            state,
+            "line-window" | "line-edit" | "line-sent" | "line-picker" | "line-refused"
+        ) {
             yard.answer_for(
                 "Line",
                 "depot",
@@ -1444,6 +1472,8 @@ fn populate(yard: &Yard, state: &str) {
         | "line-window"
         | "line-edit"
         | "line-sent"
+        | "line-picker"
+        | "line-refused"
         | "old-lines"
         | "switcher"
         | "switcher-shut"
@@ -4625,7 +4655,7 @@ mod tests {
                     );
                     assert!(!crate::model::screen_over_the_link(&err), "{state}");
                 }
-                "line-window" | "line-edit" | "line-sent" => {
+                "line-window" | "line-edit" | "line-sent" | "line-picker" | "line-refused" => {
                     // The window's read of yardr's depot: its flows
                     // named by their source, an exec stage's cmd
                     // whole, a prompt's text and a labelled yard-wide

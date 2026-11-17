@@ -379,6 +379,22 @@ pub struct Footplate {
     /// answer once one has come: the window says its card will stand in
     /// Decide, and reads where it stands whenever the line is read again.
     line_sent: Option<line::LineSent>,
+    /// A stage or server filing of the Line window is on its way, so
+    /// no second mail goes after it.
+    line_filing: bool,
+    /// The last stage or server filing the Line window mailed, with
+    /// the yardmaster's answer once one has come: the window says its
+    /// card will stand in Decide, and approves nothing itself.
+    line_filed: Option<line::LineFiled>,
+    /// Why a stage removal filed nothing, drawn under the Stages row
+    /// until the stage, flow or depot changes.
+    line_refused: Option<String>,
+    /// The Add stage field of the Line window, while it stands open
+    /// under a flow's Stages row, over the flow it would add to.
+    line_new_stage: Option<Entity<input::Line>>,
+    /// The New group form of the Line window, while it stands open:
+    /// its name field and the runner chosen for its card.
+    line_new_group: Option<line::LineNewGroup>,
     /// How the web view answers at the setting's address (up, behind a
     /// login the browser cannot pass, or not at all): what a note's page is
     /// drawn with.
@@ -959,6 +975,11 @@ impl Footplate {
             line_reads: HashSet::new(),
             line_edit: None,
             line_sent: None,
+            line_filing: false,
+            line_filed: None,
+            line_refused: None,
+            line_new_stage: None,
+            line_new_group: None,
             view_up: ViewUp::Unknown,
             run_up: ViewUp::Unknown,
             rows_shown: Cell::new(false),
@@ -1169,6 +1190,20 @@ impl Render for Footplate {
                 .line_edit
                 .as_ref()
                 .is_some_and(|edit| edit.field.focus_handle(cx).is_focused(window)) =>
+            {
+                CONTEXT
+            }
+            // Nor with the focus in the Line window's Add stage or New
+            // group fields, whose names take any letter a card's keys
+            // are.
+            _ if self
+                .line_new_stage
+                .as_ref()
+                .is_some_and(|field| field.focus_handle(cx).is_focused(window))
+                || self
+                    .line_new_group
+                    .as_ref()
+                    .is_some_and(|form| form.name.focus_handle(cx).is_focused(window)) =>
             {
                 CONTEXT
             }
@@ -16212,6 +16247,359 @@ yardr.dev
         );
     }
 
+    /// A serving pick from the Line window: under a depot's own rule
+    /// it mails the route card, under a yard-wide rule the set-aside
+    /// naming that rule and never it as changed, and New group… mails
+    /// its group card with the runner chosen first; the window
+    /// approves nothing, and the Last change follows the
+    /// representative rule alone.
+    #[gpui::test]
+    fn a_serving_pick_is_mailed_as_its_card_and_stands_in_decide(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": []}]}], "elsewhere": []}], "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "new", "next": ["review"], "terminal": false,
+                     "route": {"id": "r-1", "scope": "this depot's own",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "builders", "runner": "herdr", "kind": "claude"}], "limit": 3},
+                     "other_routes": [{"id": "r-2", "scope": "yard-wide",
+                       "filters": {"type": "task", "labels": ["eyes"], "priority": "P0-P1", "originator": "any"},
+                       "group": "reviewers"}],
+                     "open": 1},
+                    {"stage": "review", "next": ["merged"], "terminal": false,
+                     "route": {"id": "r-3", "scope": "yard-wide",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": "any"},
+                       "chain": [{"name": "assembly", "runner": "exec", "cmd": "scripts/merge-local --fast"}],
+                       "limit": 1},
+                     "other_routes": [], "open": 0},
+                    {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]}],
+              "crew": []}})
+            .to_string(),
+        );
+        yard.answer("Mail", "{}");
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
+        click_on(cx, "line window open yardr");
+        wait(cx, "the line window", |cx| drawn(cx, "line rule new"));
+        // A picker stands under the Rule line it edits and under each
+        // Other rule, naming its rule first.
+        for selector in [
+            "line served new r-1",
+            "line serve new r-1 reviewers",
+            "line serve new r-1 assembly",
+            "line served new r-2",
+            "line serve new r-2 builders",
+            "line newgroup open",
+        ] {
+            assert!(drawn(cx, selector), "{selector}");
+        }
+        // Under the depot's own rule, the route card.
+        click_on(cx, "line serve new r-1 reviewers");
+        wait(cx, "the route mail", |_| yard.asked("Mail").len() == 1);
+        assert_eq!(
+            yard.asked("Mail")[0],
+            json!({"to": "yardmaster", "actor": "jo", "text":
+                "depot: yardr\nstage: new\nrule: r-1\nscope: this depot's own\nfilters: type any · labels none · priority any · for the operator\ngroup: reviewers\n\nFile the route card route set r-1 --group reviewers for this depot's own rule. The card will stand in Decide; nothing changes until it is approved there."})
+        );
+        wait(cx, "the hand-off", |cx| drawn(cx, "line filed"));
+        // Under a yard-wide rule, the set-aside for this depot alone:
+        // the rule itself is never named as changed.
+        click_on(cx, "line serve new r-2 builders");
+        wait(cx, "the set-aside mail", |_| yard.asked("Mail").len() == 2);
+        let aside = yard.asked("Mail")[1]["text"].as_str().unwrap().to_string();
+        assert!(
+            aside.starts_with("depot: yardr\nstage: new\nrule: r-2\nscope: yard-wide\n"),
+            "{aside}"
+        );
+        assert!(
+            aside.contains("setting rule r-2 aside for depot yardr alone"),
+            "{aside}"
+        );
+        assert!(aside.contains("Do not change rule r-2 itself"), "{aside}");
+        assert!(!aside.contains("route set r-2"), "{aside}");
+        // New group…: the runner is chosen first, then its card.
+        click_on(cx, "line newgroup open");
+        click_on(cx, "line newgroup name");
+        cx.simulate_input("checkers");
+        click_on(cx, "line newgroup runner exec");
+        click_on(cx, "line newgroup file");
+        wait(cx, "the group mail", |_| yard.asked("Mail").len() == 3);
+        assert_eq!(
+            yard.asked("Mail")[2],
+            json!({"to": "yardmaster", "actor": "jo", "text":
+                "depot: yardr\ngroup: checkers\nrunner: exec\n\nFile the group card group add checkers --runner exec. The card will stand in Decide; nothing changes until it is approved there, and the group does nothing until a route sends it work."})
+        );
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
+        // The yardmaster's next mail is the filing's answer.
+        yard.emit(
+            &json!({"seq": 31, "kind": "mail", "actor": "yardmaster", "at": "2026-10-08T09:40:00Z",
+                "data": {"to": "jo", "to_user": true, "text": "Filed as bead yd-card."}})
+            .to_string(),
+        );
+        wait(cx, "the filing's answer", |cx| {
+            drawn(cx, "line filed answer")
+        });
+        // Last change follows the representative rule alone: a change
+        // of the other rule draws none, and its own route change
+        // stands with its was group.
+        yard.emit(
+            &json!({"seq": 32, "kind": "route_set", "actor": "jo", "at": "2026-11-13T09:30:00Z",
+                "data": {"was": {"id": "r-2", "group": "builders"}, "is": {"id": "r-2", "group": "checkers"}}})
+            .to_string(),
+        );
+        cx.run_until_parked();
+        assert!(!drawn(cx, "line last new"));
+        yard.emit(
+            &json!({"seq": 33, "kind": "route_set", "actor": "mckean", "at": "2026-11-14T09:30:00Z",
+                "data": {"was": {"id": "r-1", "group": "builders"}, "is": {"id": "r-1", "group": "reviewers"}}})
+            .to_string(),
+        );
+        wait(cx, "the last change", |cx| drawn(cx, "line last new"));
+        view.read_with(cx, |v, _| {
+            let model = v.model.as_ref().unwrap();
+            let stage = &model.line_read_for("yardr").unwrap().flows[0].stages[0];
+            assert_eq!(
+                model.line_last_change(stage).as_deref(),
+                Some("Last change: route_set, 14 Nov, by mckean (was builders, now reviewers)")
+            );
+        });
+    }
+
+    /// Stage edits from the Line window: on a store flow each files
+    /// its flow card by mail, a removal with a bead standing files
+    /// nothing and names the bead, and the window approves nothing.
+    #[gpui::test]
+    fn stage_edits_on_a_store_flow_are_mailed_as_its_flow_card(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": [{"bead": "yd-a", "title": "A", "expected": "1h",
+                                    "remark": "", "tone": "none", "working": false}]},
+                        {"stage": "review", "group": "assembly", "human": false, "lamp": "none",
+                         "beads": []}]}], "elsewhere": []}], "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "new", "next": ["review"], "outcomes": [{"name": "done", "to": "review"}],
+                     "terminal": false, "other_routes": [], "open": 1},
+                    {"stage": "review", "next": ["merged"], "terminal": false,
+                     "other_routes": [], "open": 0},
+                    {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]}],
+              "crew": []}})
+            .to_string(),
+        );
+        yard.answer("Mail", "{}");
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
+        click_on(cx, "line window open yardr");
+        wait(cx, "the line window", |cx| drawn(cx, "line detail new"));
+        // A removal with a bead standing files nothing and names it.
+        click_on(cx, "line stages new remove");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
+        assert!(drawn(cx, "line stages new refused"));
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.line_refused.as_deref(),
+                Some("Remove files nothing: yd-a standing in new (1 bead). Move them out first.")
+            );
+        });
+        // A removal with none standing files the flow card, whole.
+        click_on(cx, "line stage default review");
+        wait(cx, "the review stage", |cx| drawn(cx, "line detail review"));
+        click_on(cx, "line stages review remove");
+        wait(cx, "the removal mail", |_| yard.asked("Mail").len() == 1);
+        let removal = yard.asked("Mail")[0]["text"].as_str().unwrap().to_string();
+        assert!(
+            removal.starts_with("depot: yardr\nflow: default\n"),
+            "{removal}"
+        );
+        assert!(removal.contains("flow set default"), "{removal}");
+        assert!(
+            removal.contains("\"stages\":[\"new\",\"merged\"]"),
+            "{removal}"
+        );
+        assert!(!removal.contains("\"review\""), "{removal}");
+        // A reorder is the same card with the order changed alone.
+        click_on(cx, "line stage default new");
+        wait(cx, "the new stage", |cx| drawn(cx, "line detail new"));
+        click_on(cx, "line stages new down");
+        wait(cx, "the reorder mail", |_| yard.asked("Mail").len() == 2);
+        let reorder = yard.asked("Mail")[1]["text"].as_str().unwrap().to_string();
+        assert!(
+            reorder.contains("\"stages\":[\"review\",\"new\",\"merged\"]"),
+            "{reorder}"
+        );
+        // An added stage stands after the stage it was added from.
+        click_on(cx, "line stages new add");
+        click_on(cx, "line stages new newname");
+        cx.simulate_input("check");
+        click_on(cx, "line stages new add send");
+        wait(cx, "the add mail", |_| yard.asked("Mail").len() == 3);
+        let added = yard.asked("Mail")[2]["text"].as_str().unwrap().to_string();
+        assert!(
+            added.contains("\"stages\":[\"new\",\"check\",\"review\",\"merged\"]"),
+            "{added}"
+        );
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
+    }
+
+    /// The Stages row by its door: a repository flow composes the
+    /// depot bead's mail, a pack's flow names `yardr pack apply`, a
+    /// directory flow names the terminal and composes no mail, and a
+    /// type's flow is not edited here.
+    #[gpui::test]
+    fn stage_controls_follow_the_flow_s_door(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": []}]}], "elsewhere": []},
+                {"name": "notes", "kind": "dir", "travelling": 0, "flows": [], "elsewhere": []}],
+              "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "repo", "type": "", "source": "repo@abcdef0", "stages": [
+                    {"stage": "new", "next": ["review"], "terminal": false, "other_routes": [], "open": 0},
+                    {"stage": "review", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                {"name": "managed", "type": "", "source": "pack starter", "stages": [
+                    {"stage": "intake", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                {"name": "default", "type": "task", "source": "store", "stages": [
+                    {"stage": "task-new", "next": [], "terminal": false, "other_routes": [], "open": 0}]}],
+              "crew": []}})
+            .to_string(),
+        );
+        yard.answer_for(
+            "Line",
+            "depot",
+            "notes",
+            r#"{"result": {"depot": "notes", "kind": "dir", "flows": [
+                {"name": "dirflow", "type": "", "source": "repo (directory)", "directory": "/home/jo/notes",
+                 "stages": [{"stage": "inbox", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                {"name": "notes-store", "type": "", "source": "store", "stages": [
+                 {"stage": "inbox", "next": ["kept"], "terminal": false, "other_routes": [], "open": 0},
+                 {"stage": "kept", "next": [], "terminal": true, "other_routes": [], "open": 0}]}],
+              "crew": []}}"#,
+        );
+        yard.answer("Mail", "{}");
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
+        click_on(cx, "line window open yardr");
+        wait(cx, "the line window", |cx| drawn(cx, "line detail new"));
+        // A repository flow: the change travels as a bead in the depot.
+        click_on(cx, "line stages new down");
+        wait(cx, "the bead mail", |_| yard.asked("Mail").len() == 1);
+        let bead_mail = yard.asked("Mail")[0]["text"].as_str().unwrap().to_string();
+        assert!(
+            bead_mail.contains("flow file: .yardr/flows/repo.flow"),
+            "{bead_mail}"
+        );
+        assert!(
+            bead_mail.contains("File a bead in depot yardr"),
+            "{bead_mail}"
+        );
+        assert!(bead_mail.contains("new -> review"), "{bead_mail}");
+        // A dir depot's directory flow has no control and names the
+        // terminal. Its store flow still files the flow card.
+        click_on(cx, "line depot notes");
+        wait(cx, "the notes directory flow", |cx| {
+            drawn(cx, "line detail inbox")
+        });
+        view.read_with(cx, |v, _| {
+            let flows = &v
+                .model
+                .as_ref()
+                .unwrap()
+                .line_read_for("notes")
+                .unwrap()
+                .flows;
+            assert_eq!(
+                flows
+                    .iter()
+                    .map(|flow| (flow.name.as_str(), flow.source.as_str()))
+                    .collect::<Vec<_>>(),
+                [("dirflow", "repo (directory)"), ("notes-store", "store")]
+            );
+        });
+        assert!(drawn(cx, "line stages inbox terminal"));
+        for control in ["add", "up", "down", "remove"] {
+            assert!(!drawn(cx, &format!("line stages inbox {control}")));
+        }
+        assert_eq!(yard.asked("Mail").len(), 1);
+        click_on(cx, "line flow notes-store store");
+        wait(cx, "the notes store flow", |cx| {
+            drawn(cx, "line detail inbox")
+        });
+        click_on(cx, "line stages inbox down");
+        wait(cx, "the directory depot's store flow card", |_| {
+            yard.asked("Mail").len() == 2
+        });
+        let store_mail = yard.asked("Mail")[1]["text"].as_str().unwrap().to_string();
+        assert!(store_mail.starts_with("depot: notes\nflow: notes-store\n"));
+        assert!(store_mail.contains("flow set notes-store"));
+        assert!(store_mail.contains("\"stages\":[\"kept\",\"inbox\"]"));
+        click_on(cx, "line depot yardr");
+        wait(cx, "yardr's line again", |cx| drawn(cx, "line detail new"));
+        // A pack's flow offers neither and names its door.
+        click_on(cx, "line flow managed pack starter");
+        wait(cx, "the pack flow", |cx| drawn(cx, "line detail intake"));
+        assert!(drawn(cx, "line stages intake pack"));
+        assert!(!drawn(cx, "line stages intake remove"));
+        // A type's flow is not edited here.
+        click_on(cx, "line flow task default store");
+        wait(cx, "the typed flow", |cx| drawn(cx, "line detail task-new"));
+        assert!(drawn(cx, "line stages task-new typed"));
+        assert!(!drawn(cx, "line stages task-new remove"));
+    }
+
     /// A yard from before the Line call: the pane says the yard is
     /// too old in no red and with no notice, and the window is not
     /// offered again.
@@ -24024,6 +24412,9 @@ yardr.dev
             v.secret
                 .update(cx, |field, cx| field.set_text("hunter2", cx));
             v.secret_typed.push("first of two".into());
+            // A Line filing belongs to this yard too; a stale response
+            // cannot clear the in-flight state after another yard opens.
+            v.line_filing = true;
         });
 
         // The second home's yard: its line is empty, nothing is attached,
@@ -24035,6 +24426,7 @@ yardr.dev
         assert_eq!(typed(&view, cx), "");
         assert_eq!(attached(&view, cx), []);
         view.read_with(cx, |v, cx| {
+            assert!(!v.line_filing);
             assert!(v.ask_words.is_empty());
             assert_eq!(v.secret.read(cx).text(), "");
             assert!(v.secret_typed.is_empty());
