@@ -7262,7 +7262,7 @@ fn shot_selected() -> Option<Selected> {
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
         Ok("line-window") | Ok("line-edit") | Ok("line-sent") | Ok("line-picker")
-        | Ok("line-refused") => {
+        | Ok("line-refused") | Ok("line-pack") => {
             return Some(Selected::LineWindow("yardr".into()));
         }
         Ok("grants") => return Some(Selected::Grants),

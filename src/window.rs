@@ -16546,9 +16546,10 @@ yardr.dev
     }
 
     /// The Stages row by its door: a repository flow composes the
-    /// depot bead's mail, a pack's flow names `yardr pack apply`, a
-    /// directory flow names the terminal and composes no mail, and a
-    /// type's flow is not edited here.
+    /// depot bead's mail, a pack's flow files the flow card as a store
+    /// flow does, under the card's own words for it, a directory flow
+    /// names the terminal and composes no mail, and a type's flow is
+    /// not edited here.
     #[gpui::test]
     fn stage_controls_follow_the_flow_s_door(cx: &mut TestAppContext) {
         let yard = Yard::start();
@@ -16573,7 +16574,8 @@ yardr.dev
                     {"stage": "new", "next": ["review"], "terminal": false, "other_routes": [], "open": 0},
                     {"stage": "review", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
                 {"name": "managed", "type": "", "source": "pack starter", "stages": [
-                    {"stage": "intake", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
+                    {"stage": "intake", "next": ["check"], "terminal": false, "other_routes": [], "open": 0},
+                    {"stage": "check", "next": [], "terminal": true, "other_routes": [], "open": 0}]},
                 {"name": "default", "type": "task", "source": "store", "stages": [
                     {"stage": "task-new", "next": [], "terminal": false, "other_routes": [], "open": 0}]}],
               "crew": []}})
@@ -16655,11 +16657,41 @@ yardr.dev
         assert!(store_mail.contains("\"stages\":[\"kept\",\"inbox\"]"));
         click_on(cx, "line depot yardr");
         wait(cx, "yardr's line again", |cx| drawn(cx, "line detail new"));
-        // A pack's flow offers neither and names its door.
+        // A pack's flow is a store flow its pack brought: it offers the
+        // controls, says whose it is and what pack apply then keeps, and
+        // files the flow card, never a bead of the depot (which has no
+        // file of it), approving nothing.
         click_on(cx, "line flow managed pack starter");
         wait(cx, "the pack flow", |cx| drawn(cx, "line detail intake"));
-        assert!(drawn(cx, "line stages intake pack"));
-        assert!(!drawn(cx, "line stages intake remove"));
+        for control in ["add", "up", "down", "remove"] {
+            assert!(
+                drawn(cx, &format!("line stages intake {control}")),
+                "{control}"
+            );
+        }
+        for words in ["door", "pack whose", "pack keeps", "pack take"] {
+            assert!(drawn(cx, &format!("line stages intake {words}")), "{words}");
+        }
+        assert_eq!(yard.asked("Mail").len(), 2);
+        click_on(cx, "line stages intake down");
+        wait(cx, "the pack flow's card", |_| {
+            yard.asked("Mail").len() == 3
+        });
+        let pack_mail = yard.asked("Mail")[2]["text"].as_str().unwrap().to_string();
+        assert!(
+            pack_mail
+                .starts_with("depot: yardr\nflow: managed\n\nFile the flow card flow set managed"),
+            "{pack_mail}"
+        );
+        assert!(
+            pack_mail.contains("\"stages\":[\"check\",\"intake\"]"),
+            "{pack_mail}"
+        );
+        assert!(
+            !pack_mail.contains("flow file:") && !pack_mail.contains("File a bead"),
+            "{pack_mail}"
+        );
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
         // A type's flow is not edited here.
         click_on(cx, "line flow task default store");
         wait(cx, "the typed flow", |cx| drawn(cx, "line detail task-new"));

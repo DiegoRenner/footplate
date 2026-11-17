@@ -567,6 +567,16 @@ flow with no moves, no stage file and no route yet. Move up and Move
 down change the order alone, on the same card. Remove takes the
 stage and its moves out.
 
+A pack's flow, which a pack brought into the depot and the line names
+`pack <name>`, is a store flow too, and the same controls file the
+same card. The row says what the card says of it: the flow is the
+pack's, imported into the depot, and the card sets the yard's version
+and changes nothing of the pack; `yardr pack apply` then keeps the
+yard's version, whatever the pack moves, and sets the pack's again
+only where it is told to (`--take flow/<name>`). The command that
+takes the pack's own version instead stands under it, to be run in a
+terminal: the window runs nothing.
+
 On a git depot's repository flow the same controls compose the
 depot bead's mail instead: it names the depot, the flow and its
 `.flow` file, and carries the proposed text whole, and a removed
@@ -576,8 +586,7 @@ yet stands in that text as a comment naming it, for the bead to wire.
 
 On a dir depot's directory flow the row offers no control and names
 the terminal as the door, in the folder, and no mail is composed for
-it. Its store flow files the flow card as on any depot. On a pack's
-flow the row offers neither and names `yardr pack apply`.
+it. Its store flow files the flow card as on any depot.
 
 A removal with a bead standing in the stage files nothing, on either
 door: the row names the beads standing there, by id where the flows

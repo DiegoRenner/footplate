@@ -109,9 +109,11 @@ The window, its state and the yard:
     of a depot's own rule or the set-aside of a yard-wide one, New
     group… mails its `group add` card with the runner chosen first,
     and the Stages row (Add, Move up, Move down, Remove) mails the
-    flow card on a store flow or the depot bead's mail on a git
+    flow card on a store flow or on a pack's flow (a store flow its
+    pack brought, with the card's own lines for it under the row:
+    `model::line_pack_words`), or the depot bead's mail on a git
     depot's repository flow, offers no control on a dir depot's
-    directory flow or a pack's flow, and files nothing where a bead
+    directory flow, and files nothing where a bead
     stands in a removed stage (`model::line_route_mail` and its
     neighbours compose each); the stage's Last change line is the
     representative rule's latest route or group change from the

@@ -82,8 +82,9 @@ use crate::yard::Env;
 /// station, the Line window open on yardr's depot with its flows
 /// named by their source, its first stage's detail and the crew
 /// below, that window on a yard-wide rule's stage with its serving
-/// picker, and with a removal refused where a bead stands in the
-/// stage, the Lines pane against a yard too old
+/// picker, with a removal refused where a bead stands in the
+/// stage, and on a pack's flow, its Stages row's controls under the
+/// card's own words for it, the Lines pane against a yard too old
 /// to serve it, saying so in plain words, the grants view open on its
 /// row with a read, an update and an `--as` grant, and a source's named
 /// read call and update call, the Pair a phone pane open on its row
@@ -229,6 +230,7 @@ pub const STATES: &[&str] = &[
     "line-sent",
     "line-picker",
     "line-refused",
+    "line-pack",
     "old-lines",
     "grants",
     "pairing",
@@ -1373,9 +1375,16 @@ fn populate(yard: &Yard, state: &str) {
         // behind Read and a labelled yard-wide rule under Other rules.
         // The editor's shot and the hand-off's read the same line: the
         // builders' prompt is a file the yard wrote, named by its digest.
+        // The pack's flow has three stages, so that its middle one has
+        // every control of the Stages row live.
         if matches!(
             state,
-            "line-window" | "line-edit" | "line-sent" | "line-picker" | "line-refused"
+            "line-window"
+                | "line-edit"
+                | "line-sent"
+                | "line-picker"
+                | "line-refused"
+                | "line-pack"
         ) {
             yard.answer_for(
                 "Line",
@@ -1405,11 +1414,17 @@ fn populate(yard: &Yard, state: &str) {
                          "other_routes": [], "open": 0},
                         {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]},
                     {"name": "managed", "type": "", "source": "pack starter", "stages": [
-                        {"stage": "new", "next": [], "terminal": false,
+                        {"stage": "new", "next": ["review"], "terminal": false,
                          "route": {"id": "r-4", "scope": "yard-wide",
                            "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
                            "chain": [{"name": "people", "runner": "manual", "members": ["jo"]}], "limit": 1},
-                         "other_routes": [], "open": 0}]},
+                         "other_routes": [], "open": 0},
+                        {"stage": "review", "next": ["merged"], "terminal": false,
+                         "route": {"id": "r-5", "scope": "yard-wide",
+                           "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                           "chain": [{"name": "people", "runner": "manual", "members": ["jo"]}], "limit": 1},
+                         "other_routes": [], "open": 0},
+                        {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]},
                     {"name": "repo", "type": "", "source": "repo@abcdef0", "stages": [
                         {"stage": "new", "next": [], "terminal": false, "other_routes": [], "open": 0}]},
                     {"name": "dirflow", "type": "", "source": "repo (directory)", "directory": "/home/jo/notes", "stages": [
@@ -1474,6 +1489,7 @@ fn populate(yard: &Yard, state: &str) {
         | "line-sent"
         | "line-picker"
         | "line-refused"
+        | "line-pack"
         | "old-lines"
         | "switcher"
         | "switcher-shut"
@@ -4655,7 +4671,8 @@ mod tests {
                     );
                     assert!(!crate::model::screen_over_the_link(&err), "{state}");
                 }
-                "line-window" | "line-edit" | "line-sent" | "line-picker" | "line-refused" => {
+                "line-window" | "line-edit" | "line-sent" | "line-picker" | "line-refused"
+                | "line-pack" => {
                     // The window's read of yardr's depot: its flows
                     // named by their source, an exec stage's cmd
                     // whole, a prompt's text and a labelled yard-wide

@@ -8178,6 +8178,44 @@ pub fn line_flow_mail(depot: &str, flow: &str, proposed: &str) -> String {
     )
 }
 
+/// What a pack's flow says under its Stages row: the lines the flow
+/// card itself carries for a flow a pack manages, which yardr words in
+/// `flowPackWords` and its take-back (`internal/store/runask_flow.go`),
+/// so that what the window says before a change is filed is what the
+/// card says once it stands in Decide.
+pub struct LinePackWords {
+    /// Whose the flow is, and what the card sets: the yard's version,
+    /// never the pack where it is kept.
+    pub whose: String,
+    /// What `pack apply` then keeps, and the only way it sets the
+    /// pack's again.
+    pub keeps: String,
+    /// The card's take-back to the pack's own version, up to the
+    /// command.
+    pub back: String,
+    /// The command that takes the pack's own version of the flow, run
+    /// in a terminal.
+    pub door: String,
+}
+
+/// The words of a flow that `pack` manages, in `depot`: the pack its
+/// source names and the depot it was imported into, which is the depot
+/// the line is of, since the line names no other import (yardr joins
+/// only the imports into the depot it reads). `flow` is the flow's
+/// name, which the `--take` names it by.
+pub fn line_pack_words(pack: &str, depot: &str, flow: &str) -> LinePackWords {
+    LinePackWords {
+        whose: format!(
+            "The flow is the pack {pack}'s, imported into depot {depot}: this sets the yard's version of it, and changes nothing of the pack."
+        ),
+        keeps: format!(
+            "yardr pack apply then keeps the yard's version, whatever the pack moves, and sets the pack's again only where it is told to (--take flow/{flow})."
+        ),
+        back: "For the pack's own version of the flow instead, in a terminal:".to_string(),
+        door: format!("yardr pack apply {pack} --depot {depot} --take flow/{flow}"),
+    }
+}
+
 /// The mail that files a depot bead for a git depot's repository
 /// flow: the flow file named, the proposed text whole, and a removed
 /// stage's open beads named with move-them-out-first, since the yard
@@ -15711,6 +15749,28 @@ mod tests {
         assert_eq!(
             line_group_mail("yardr", "checkers", "exec"),
             "depot: yardr\ngroup: checkers\nrunner: exec\n\nFile the group card group add checkers --runner exec. The card will stand in Decide; nothing changes until it is approved there, and the group does nothing until a route sends it work."
+        );
+        // A pack's flow says what the flow card says of it, copied from
+        // yardr's `flowPackWords` (its whose and keeps lines) and the
+        // take-back of `flowSetCard` (its words around the door, which
+        // the window sets before the command): the pack and the depot as
+        // the line names them. When the card's words move, these do.
+        let words = line_pack_words("starter", "yardr", "managed");
+        assert_eq!(
+            words.whose,
+            "The flow is the pack starter's, imported into depot yardr: this sets the yard's version of it, and changes nothing of the pack."
+        );
+        assert_eq!(
+            words.keeps,
+            "yardr pack apply then keeps the yard's version, whatever the pack moves, and sets the pack's again only where it is told to (--take flow/managed)."
+        );
+        assert_eq!(
+            words.back,
+            "For the pack's own version of the flow instead, in a terminal:"
+        );
+        assert_eq!(
+            words.door,
+            "yardr pack apply starter --depot yardr --take flow/managed"
         );
         // The flow as its file writes it, and as its card carries it:
         // order first in both, a limited outcome whole in both.

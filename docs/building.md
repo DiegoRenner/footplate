@@ -391,7 +391,8 @@ it), `line-sent` (that window with the hand-off of an edit written over
 that prompt before it changed: the yardmaster's answer and Read again), `line-picker` (that window on a yard-wide rule's stage, with
 its serving picker under the Rule line and the route change the stream
 gave its Last change line), `line-refused` (that window
-with a stage removal refused where a bead stands in the stage), `old-lines` (the Lines pane against a yard too old to
+with a stage removal refused where a bead stands in the stage), `line-pack` (that window on a pack's flow, at its
+middle stage: the Stages row's controls with the flow card's own words for a pack's flow under them), `old-lines` (the Lines pane against a yard too old to
 serve it, saying so in plain words), `grants` (the grants view open on
 its row, with a read, an update and an `--as` grant, and a source's named
 read call and update call), `pairing` (the Pair a phone pane open on

@@ -25,6 +25,7 @@ use super::ui::{field, shorten, small_button};
 use crate::api::{Event, LineFlow, LinePrompt, LineStage};
 use crate::input;
 use crate::model::{self, EditNow, Model, PromptOwner, Selected};
+use crate::select;
 use crate::theme::Palette;
 
 /// What the editor says before Send, which is design yardr-y1cn's two
@@ -400,8 +401,11 @@ impl Footplate {
     }
 
     /// Files the stage change `proposed` of `flow`: a store flow by
-    /// its flow card, a git depot's repository flow by a bead in the
-    /// depot. No other flow is filed from here.
+    /// its flow card, and a pack's flow by the same card, since it is
+    /// a store flow its pack brought; a git depot's repository flow by
+    /// a bead in the depot. No other flow is filed from here, and a
+    /// pack's flow is never filed as a bead of the depot, which has no
+    /// file of it.
     pub(crate) fn file_flow_change(
         &mut self,
         depot: &str,
@@ -410,7 +414,7 @@ impl Footplate {
         removed: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        if flow.source == "store" {
+        if flow.source == "store" || flow.source.starts_with("pack ") {
             let mail = model::line_flow_mail(depot, &flow.name, &model::line_flow_json(proposed));
             let words = format!(
                 "Mailed the yardmaster to file the flow card for flow {}. The card will stand in Decide; this window approves nothing.",
@@ -1203,12 +1207,14 @@ impl Footplate {
 
     /// One flow's Stages row under its open stage: Add, Move up,
     /// Move down and Remove for that stage, by the door its source
-    /// names. A store flow files its flow card; a git depot's
-    /// repository flow composes the depot bead's mail; a dir
-    /// depot's directory flow offers no control and names the
-    /// terminal; a pack's flow offers neither and names
-    /// `yardr pack apply`; a type's flow is not edited here. A
-    /// removal with beads standing files nothing and names them.
+    /// names. A store flow files its flow card, and so does a pack's
+    /// flow, a store flow its pack brought, under the card's own lines
+    /// for it: whose it is, what `yardr pack apply` then keeps and the
+    /// `--take` that sets the pack's again; a git depot's repository
+    /// flow composes the depot bead's mail; a dir depot's directory
+    /// flow offers no control and names the terminal; a type's flow is
+    /// not edited here. A removal with beads standing files nothing
+    /// and names them.
     fn line_stages(
         &self,
         depot: &str,
@@ -1241,20 +1247,6 @@ impl Footplate {
                     .child("A type's flow is not edited here."),
             );
         }
-        if let Some(pack) = flow.source.strip_prefix("pack ") {
-            return row.child(
-                div()
-                    .text_sm()
-                    .text_color(palette.faint)
-                    .debug_selector({
-                        let stage = stage_name.clone();
-                        move || format!("line stages {stage} pack")
-                    })
-                    .child(format!(
-                        "This flow is the pack {pack}'s: change it where the pack is kept, then yardr pack apply."
-                    )),
-            );
-        }
         if flow.source == "repo (directory)" {
             return row.child(
                 div()
@@ -1276,8 +1268,12 @@ impl Footplate {
                     }),
             );
         }
+        // A pack's flow stands in the store as any flow does, so its change
+        // is the same card; the pack's words stand under it.
+        let pack = flow.source.strip_prefix("pack ").map(str::to_string);
         let door = match flow.source.as_str() {
             "store" => "On a store flow the change stands on its card in Decide.",
+            _ if pack.is_some() => "On a pack's flow the change stands on its card in Decide.",
             _ => {
                 "This flow is the depot's file: the change travels as a bead and lands through its review."
             }
@@ -1458,6 +1454,45 @@ impl Footplate {
                 })
                 .child(door),
         );
+        if let Some(pack) = &pack {
+            let words = model::line_pack_words(pack, &depot, &flow.name);
+            for (name, text) in [("whose", words.whose), ("keeps", words.keeps)] {
+                row = row.child(
+                    div()
+                        .text_sm()
+                        .text_color(palette.faint)
+                        .debug_selector({
+                            let stage = stage_name.clone();
+                            move || format!("line stages {stage} pack {name}")
+                        })
+                        .child(text),
+                );
+            }
+            // The command is one a person types at a terminal: drawn as
+            // code is, and not run from here.
+            let mut command = div()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(palette.code)
+                .text_sm()
+                .child(words.door);
+            if let Some(mono) = select::mono(cx) {
+                command = command.font_family(mono);
+            }
+            row = row.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .debug_selector({
+                        let stage = stage_name.clone();
+                        move || format!("line stages {stage} pack take")
+                    })
+                    .child(div().text_sm().text_color(palette.faint).child(words.back))
+                    .child(div().flex().flex_row().child(command)),
+            );
+        }
         if let Some(refused) = &self.line_refused {
             row = row.child(
                 div()
@@ -1944,12 +1979,13 @@ impl Footplate {
     /// `line-edit` opens the editor on the first stage's first prompt a card
     /// can carry, with a change typed in it, and `line-sent` stands the
     /// hand-off of an edit written over that prompt as it stood before it
-    /// changed, with the yardmaster's answer. Once; a debug build's alone.
+    /// changed, with the yardmaster's answer; `line-pack` stands on the
+    /// pack's flow, at its middle stage. Once; a debug build's alone.
     pub(crate) fn shot_line_window(&mut self, cx: &mut Context<Self>) {
         let shot = std::env::var("FOOTPLATE_SHOT").unwrap_or_default();
         if !matches!(
             shot.as_str(),
-            "line-edit" | "line-sent" | "line-picker" | "line-refused"
+            "line-edit" | "line-sent" | "line-picker" | "line-refused" | "line-pack"
         ) || self.line_edit.is_some()
             || self.line_sent.is_some()
         {
@@ -1965,10 +2001,32 @@ impl Footplate {
     }
 
     fn shot_line_edit(&mut self, shot: &str, window: &mut Window, cx: &mut Context<Self>) {
-        // The picker shot stands on the yard-wide rule's stage, and
-        // the refused shot on the stage with a bead standing in it:
-        // neither needs a prompt.
+        // The picker shot stands on the yard-wide rule's stage, the
+        // refused shot on the stage with a bead standing in it, and the
+        // pack's on its flow's middle stage, where every control of the
+        // Stages row is live: none needs a prompt.
         match shot {
+            "line-pack" => {
+                let key = self
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.line_read_for("yardr"))
+                    .and_then(|line| {
+                        line.flows
+                            .iter()
+                            .find(|flow| flow.source.starts_with("pack "))
+                    })
+                    .map(model::line_flow_key);
+                if let Some(key) = key {
+                    self.line_flow = key;
+                }
+                self.line_stage = "review".to_string();
+                // The Stages row stands at the foot of the detail, with
+                // the pack's words under its controls.
+                self.decision.scroll_to_bottom();
+                cx.notify();
+                return;
+            }
             "line-picker" => {
                 self.line_stage = "review".to_string();
                 cx.notify();
