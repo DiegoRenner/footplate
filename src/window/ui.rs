@@ -10,6 +10,7 @@ use gpui::{
 use super::Footplate;
 use super::metrics::SELECT_CHOICE;
 use crate::input::Line;
+use crate::model::Outcome;
 use crate::theme::Palette;
 
 /// A rail glyph's canvas: 28 pixels, drawn from the mock's geometry
@@ -20,14 +21,83 @@ use crate::theme::Palette;
 pub(crate) fn glyph_canvas(
     paint: impl Fn(gpui::Point<Pixels>, f32, &mut Window) + 'static,
 ) -> impl IntoElement {
+    glyph_canvas_at(28., paint)
+}
+
+/// A glyph's canvas at `size` pixels, its 24-grid scaled to it.
+fn glyph_canvas_at(
+    size: f32,
+    paint: impl Fn(gpui::Point<Pixels>, f32, &mut Window) + 'static,
+) -> impl IntoElement {
     gpui::canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             paint(bounds.origin, f32::from(bounds.size.width) / 24., window);
         },
     )
-    .size(px(28.))
+    .size(px(size))
     .flex_none()
+}
+
+/// Joined straight lines through `points` on `path`, in the grid.
+fn glyph_poly(path: &mut gpui::PathBuilder, o: gpui::Point<Pixels>, s: f32, points: &[(f32, f32)]) {
+    let at = |x: f32, y: f32| gpui::point(o.x + px(x * s), o.y + px(y * s));
+    if let Some(&(x, y)) = points.first() {
+        path.move_to(at(x, y));
+    }
+    for &(x, y) in &points[1.min(points.len())..] {
+        path.line_to(at(x, y));
+    }
+}
+
+/// A clockwise arc of radius `r` on `path` from where it stands to
+/// (`x`, `y`), in the grid.
+fn glyph_arc(path: &mut gpui::PathBuilder, o: gpui::Point<Pixels>, s: f32, r: f32, x: f32, y: f32) {
+    let at = gpui::point(o.x + px(x * s), o.y + px(y * s));
+    path.arc_to(gpui::point(px(r * s), px(r * s)), px(0.), false, true, at);
+}
+
+/// A dealt with ask's mark, first on its history row: Lucide's glyph for
+/// its outcome (the design system's icon set, which allows no unicode
+/// character as an icon), drawn from Lucide's 24-grid paths at its
+/// stroke, at `size` pixels: `check` approved, `message-square` words or a
+/// secret given, `undo-2` taken back, `clock` put aside (Later: it can
+/// still be answered), `x` declined.
+pub(crate) fn outcome_glyph(outcome: Outcome, size: f32, color: Rgba) -> impl IntoElement {
+    glyph_canvas_at(size, move |o, s, window| {
+        let mut path = gpui::PathBuilder::stroke(px(2. * s));
+        match outcome {
+            Outcome::Approved => glyph_poly(&mut path, o, s, &[(20., 6.), (9., 17.), (4., 12.)]),
+            Outcome::Declined => {
+                glyph_line(&mut path, o, s, 18., 6., 6., 18.);
+                glyph_line(&mut path, o, s, 6., 6., 18., 18.);
+            }
+            Outcome::TakenBack => {
+                glyph_poly(&mut path, o, s, &[(9., 14.), (4., 9.), (9., 4.)]);
+                glyph_poly(&mut path, o, s, &[(4., 9.), (14.5, 9.)]);
+                glyph_arc(&mut path, o, s, 5.5, 20., 14.5);
+                glyph_arc(&mut path, o, s, 5.5, 14.5, 20.);
+                path.line_to(gpui::point(o.x + px(11. * s), o.y + px(20. * s)));
+            }
+            Outcome::PutAside => {
+                glyph_circle(&mut path, o, s, 12., 12., 10.);
+                glyph_poly(&mut path, o, s, &[(12., 6.), (12., 12.), (16., 14.)]);
+            }
+            Outcome::Words => {
+                glyph_poly(&mut path, o, s, &[(21., 5.), (21., 15.)]);
+                glyph_arc(&mut path, o, s, 2., 19., 17.);
+                path.line_to(gpui::point(o.x + px(7. * s), o.y + px(17. * s)));
+                path.line_to(gpui::point(o.x + px(3. * s), o.y + px(21. * s)));
+                path.line_to(gpui::point(o.x + px(3. * s), o.y + px(5. * s)));
+                glyph_arc(&mut path, o, s, 2., 5., 3.);
+                path.line_to(gpui::point(o.x + px(19. * s), o.y + px(3. * s)));
+                glyph_arc(&mut path, o, s, 2., 21., 5.);
+            }
+        }
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
+    })
 }
 
 /// A straight line on `path`, in the mock's grid: `o` is the glyph's

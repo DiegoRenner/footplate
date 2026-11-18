@@ -1610,8 +1610,8 @@ mod tests {
         assert_eq!(recommended_line(""), "recommended");
         // The recommendation stands on its lever's plate, outlined and
         // never filled; the one fill on a card is its Answer button.
-        assert_eq!(lever_plate(2, true), "2 · recommended");
-        assert_eq!(lever_plate(1, false), "1");
+        assert_eq!(lever_plate(2), "2");
+        assert_eq!(lever_plate(11), "11");
         assert_eq!(
             lever_words("Move them now", "the change is ready"),
             (
@@ -1768,6 +1768,7 @@ mod tests {
     fn ordinary(options: usize, chosen: u64, recommend: u64) -> DecisionAsk {
         DecisionAsk {
             ask: 3,
+            kind: "pick",
             question: "Move them now?".to_string(),
             asker: "yardmaster".to_string(),
             waits: "2h".to_string(),
@@ -7460,6 +7461,14 @@ yardr.dev
         wait(cx, "that the other image is gone", |cx| {
             picture(&view, cx, &gone) == "image cdcdcdcd: the yard no longer has it"
         });
+        // The newest note stands directly under the cards, before the
+        // older note in the same thread.
+        let first = bounds_of(cx, "thread note bead-a 0");
+        let newest = bounds_of(cx, "thread note bead-a 1");
+        assert!(
+            newest.bottom() <= first.top(),
+            "the newest note is not above the first: {newest:?} {first:?}"
+        );
         assert!(drawn(cx, "thread bead-a"));
         // One key expands it: the same images stand in the bead whole
         // too, and no second ask goes for them.
@@ -10038,15 +10047,15 @@ yardr.dev
         assert_eq!(
             rows,
             [
-                ("✓approved".to_string(), "mayor · 11:07".to_string()),
-                ("✓approved".to_string(), "mayor · 11:07".to_string()),
-                ("‖put aside".to_string(), "mayor · 11:07".to_string()),
+                ("approved".to_string(), "mayor · 11:07".to_string()),
+                ("approved".to_string(), "mayor · 11:07".to_string()),
+                ("put aside".to_string(), "mayor · 11:07".to_string()),
                 (
-                    "✕declined: not mine".to_string(),
+                    "declined: not mine".to_string(),
                     "mayor · 11:07".to_string()
                 ),
-                ("✓left to mayor".to_string(), "11:07".to_string()),
-                ("✎warmly".to_string(), "mayor · 11:07".to_string()),
+                ("left to mayor".to_string(), "11:07".to_string()),
+                ("warmly".to_string(), "mayor · 11:07".to_string()),
             ]
         );
 
@@ -10474,9 +10483,16 @@ yardr.dev
         wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-d"));
         let long = bounds_of(cx, "decided head bead-d 11");
         let id = bounds_of(cx, "decided id bead-d 11");
+        let outcome = bounds_of(cx, "decided outcome bead-d 11");
+        // The id stands on the outcome's line, past it, and the head above
+        // ends inside the row as the id does.
         assert!(
-            long.right() < id.left(),
-            "the long head touches the id: {long:?} {id:?}"
+            long.right() <= id.right() && long.bottom() <= id.top() + px(1.),
+            "the long head leaves its row: {long:?} {id:?}"
+        );
+        assert!(
+            outcome.right() < id.left(),
+            "the outcome touches the id: {outcome:?} {id:?}"
         );
         let short = bounds_of(cx, "decided head bead-d 15");
         assert_eq!(
@@ -10485,16 +10501,16 @@ yardr.dev
         );
     }
 
-    /// An open decision row has the same width constraint as a decided row:
-    /// its head must be measured at the space left before the bead id.
+    /// An open decision row's title is cut at the row's end, and its last
+    /// line, who asks and how long, before the bead id with a gap.
     #[gpui::test]
-    fn a_long_decision_head_ends_before_the_bead_id_with_a_gap(cx: &mut TestAppContext) {
+    fn a_long_decision_head_ends_inside_its_row_and_the_sub_before_the_id(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer(
             "UserAsks",
             &json!({"result": {"open": [
-                {"bead": "bead-a", "bead_title": "Move the links", "topic": "topic:linear-out",
+                {"bead": "bead-a", "bead_title": "A deliberately long title that must be cut before the row's end", "topic": "topic:linear-out",
                  "ask": 3, "question": "A deliberately long question that must be cut before the id", "asker": "yardmaster",
                  "since": "2026-10-10T10:00:00Z"},
                 {"bead": "bead-b", "bead_title": "Short", "topic": "topic:linear-out",
@@ -10523,11 +10539,17 @@ yardr.dev
         wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-a"));
 
         let long = bounds_of(cx, "decision head bead-a");
+        let row = bounds_of(cx, "decision row bead-a");
+        let sub = bounds_of(cx, "decision sub bead-a");
         let id = bounds_of(cx, "decision id bead-a");
         let short = bounds_of(cx, "decision head bead-b");
         assert!(
-            long.right() < id.left(),
-            "the long head touches the id: {long:?} {id:?}"
+            long.right() <= id.right() && id.right() <= row.right(),
+            "the long head leaves its row: {long:?} {row:?}"
+        );
+        assert!(
+            sub.right() < id.left(),
+            "the sub touches the id: {sub:?} {id:?}"
         );
         assert_eq!(
             short.size.width, long.size.width,
@@ -11376,9 +11398,9 @@ yardr.dev
         );
 
         // Each open card names its bead and its ask's number, on the
-        // disclosure's row and to the right of it. A drag over the line
-        // selects them, the key copies them, and the press that selected
-        // opened no details.
+        // disclosure's row over the question and to the left of it. A drag
+        // over the line selects them, the key copies them, and the press
+        // that selected opened no details.
         for ask in [3, 4, 5] {
             assert!(drawn(cx, &format!("ask line bead-a {ask}")), "ask {ask}");
         }
@@ -11386,8 +11408,8 @@ yardr.dev
         let disclosure = bounds_of(cx, "expand bead-a 3");
         assert_eq!(line.top(), disclosure.top());
         assert!(
-            disclosure.right() <= line.left(),
-            "the line is not to the right of the disclosure: {line:?} {disclosure:?}"
+            line.right() <= disclosure.left(),
+            "the line is not to the left of the disclosure: {line:?} {disclosure:?}"
         );
         drag(
             cx,
@@ -11422,14 +11444,14 @@ yardr.dev
 
         // The same card path at the narrowest window keeps a long bead id
         // and ask number inside the card.
-        a_long_bead_id_s_line_drops_under_the_disclosure_at_the_narrowest_window(cx);
+        a_long_bead_id_s_line_wraps_over_the_disclosure_at_the_narrowest_window(cx);
     }
 
     /// The line of a card that names the bead of another yard and an ask
     /// number as long as the yard counts them is too wide for the narrowest
-    /// window beside the disclosure: it drops under it, and wraps inside
-    /// the card instead of running past the pane.
-    fn a_long_bead_id_s_line_drops_under_the_disclosure_at_the_narrowest_window(
+    /// window beside the disclosure: the disclosure drops under it, and the
+    /// line wraps inside the card instead of running past the pane.
+    fn a_long_bead_id_s_line_wraps_over_the_disclosure_at_the_narrowest_window(
         cx: &mut VisualTestContext,
     ) {
         let yard = Yard::start();
@@ -11487,8 +11509,8 @@ yardr.dev
             "the line runs past the pane: {line:?}"
         );
         assert!(
-            disclosure.bottom() <= line.top(),
-            "the line is not under the disclosure: {line:?} {disclosure:?}"
+            line.bottom() <= disclosure.top(),
+            "the disclosure is not under the line: {line:?} {disclosure:?}"
         );
         // Wrapped in the card, it still selects and copies whole.
         drag(
@@ -14290,7 +14312,7 @@ yardr.dev
         yard.answer(
             "UserAsks",
             &json!({"result": {"open": [
-                {"bead": "bead-a", "bead_title": "Move the links", "topic": "topic:linear-out",
+                {"bead": "bead-a", "bead_title": "A deliberately long title that must be cut before the row's end", "topic": "topic:linear-out",
                  "ask": 3, "question": "A deliberately long question that must be cut before the id", "asker": "yardmaster",
                  "since": "2026-10-10T10:00:00Z"},
                 {"bead": "bead-b", "bead_title": "Short", "topic": "topic:linear-out",
@@ -14350,8 +14372,8 @@ yardr.dev
                 "at {text} px the head leaves its row: {long:?} {first:?}"
             );
             assert!(
-                long.right() < id.left() && id.right() <= first.right(),
-                "at {text} px the long head touches the id: {long:?} {id:?}"
+                long.right() <= id.right() && id.right() <= first.right(),
+                "at {text} px the long head leaves its row: {long:?} {id:?}"
             );
             assert_eq!(
                 short.size.width, long.size.width,
@@ -32899,8 +32921,8 @@ yardr.dev
     }
 
     /// The same forged run ask in the decisions list: the row draws the
-    /// question whole, wrapped to two lines, with whose it is beneath it,
-    /// as a mail row draws its wrapped text with its sender.
+    /// question's first line alone, as the Decided row does, with whose it
+    /// is beneath it, and neither the forged sentence nor the command.
     #[gpui::test]
     fn a_forged_run_ask_s_row_shows_its_question_with_whose(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -32915,17 +32937,19 @@ yardr.dev
             cx,
         );
         assert!(drawn(cx, "decision head bead-s"));
-        // The row's drawn text: the question whole, whose beneath it.
+        assert!(drawn(cx, "decision ask 7 bead-s"));
+        // The row's drawn text: the bead's title, the question's first line
+        // after what it wants, and whose it is beneath them.
         let row = view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
             model.decision_groups(&chrono::Utc::now())[0].rows[0].clone()
         });
-        assert_eq!(row.head, question);
-        assert!(
-            row.sub.starts_with("yardmaster · approval wanted ·"),
-            "{:?}",
-            row.sub
+        assert_eq!(row.head, "The link with airy");
+        assert_eq!(
+            (row.asks[0].kind, row.asks[0].head.as_str()),
+            ("run", "Take more?")
         );
+        assert!(row.sub.starts_with("yardmaster ·"), "{:?}", row.sub);
     }
 
     /// The same forged run ask in the Decided list, put aside: the row
@@ -35295,11 +35319,11 @@ yardr.dev
             rows,
             [
                 (
-                    "↩taken back by yardmaster: the books moved".to_string(),
+                    "taken back by yardmaster: the books moved".to_string(),
                     "yardmaster · 10:00".to_string()
                 ),
                 (
-                    "↩it was taken back in north's yard".to_string(),
+                    "it was taken back in north's yard".to_string(),
                     "yardmaster · 10:00".to_string()
                 ),
             ]
@@ -37303,14 +37327,16 @@ yardr.dev
             let m = v.model.as_ref().unwrap();
             assert_eq!((m.decisions_count(), m.parked_count()), (1, 2));
         });
-        // The row leads with the title, the id small at its end.
+        // The row leads with the title, the id small at the end of the
+        // line under it.
         let (head, sub, id) = (
             bounds_of(cx, "waiting head bead-p"),
             bounds_of(cx, "waiting sub bead-p"),
             bounds_of(cx, "waiting id bead-p"),
         );
         assert!(head.bottom() <= sub.top() + px(1.), "{head:?} {sub:?}");
-        assert!(head.right() < id.left() && id.right() <= first.right());
+        assert!(sub.right() < id.left() && id.right() <= first.right());
+        assert!(head.right() <= id.right());
         assert!(first.top() <= head.top() && sub.bottom() <= first.bottom());
 
         // A press on the head folds the rows away: the head stays with its
@@ -37350,8 +37376,8 @@ yardr.dev
         wait(cx, "bead-q read whole", |cx| has_bead(&view, cx, "bead-q"));
         assert_eq!(yard.asked("Bead").len(), 2, "{:?}", yard.asked("Bead"));
 
-        // A row fits the list at the window's floor, wrapping its title to
-        // two lines where it has to.
+        // A row fits the list at the window's floor, its title cut where it
+        // has to be and the id past the line under it.
         cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(360.)));
         for bead in ["bead-p", "bead-q"] {
             let row = bounds_of(cx, &format!("waiting row {bead}"));
@@ -37363,8 +37389,8 @@ yardr.dev
                 "{bead} {row:?} {head:?} {sub:?}"
             );
             assert!(
-                head.right() < id.left() && id.right() <= row.right(),
-                "{bead} {head:?} {id:?} {row:?}"
+                head.right() <= row.right() && sub.right() < id.left() && id.right() <= row.right(),
+                "{bead} {head:?} {sub:?} {id:?} {row:?}"
             );
         }
     }

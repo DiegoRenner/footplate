@@ -2819,24 +2819,67 @@ fn populate(yard: &Yard, state: &str) {
             );
         }
         "frame" => {
-            // The lever frame at 960x640: one run ask with a short
-            // command, its four levers under it, and the bead's thread
-            // with its image under the card. The yard holds the image,
-            // as in the mail state.
+            // The lever frame at 960x640: the open card's bead with two
+            // asks, a run ask with a short command and its four levers
+            // and a pick, and the bead's thread with its image under the
+            // cards. Under it in the list, two more beads with three asks,
+            // one bead parked for a move, twelve dealt with, and a crew of
+            // four, two at work. The yard
+            // holds the image, as in the mail state.
             yard.blob(IMAGE_HASH, IMAGE);
             yard.answer(
+                "Crew",
+                r#"{"result": [{"name": "yardmaster", "enabled": true, "state": "running", "status": "idle"},
+                               {"name": "assembly", "enabled": true, "state": "running", "status": "working"},
+                               {"name": "shaper", "enabled": true, "state": "running", "status": "working"},
+                               {"name": "brakeman", "enabled": true, "state": "stopped"}]}"#,
+            );
+            yard.answer(
                 "UserInbox",
-                r#"{"result": {"mail": [{"seq": 12, "from": "yardmaster", "to": "jo", "text": "Shall I land it?", "read": false}], "unread": 1, "last": 12, "from": ["yardmaster"]}}"#,
+                &json!({"result": {"mail": [
+                    {"seq": 14, "from": "yardmaster", "to": "jo", "text": "Two asks on footplate-q2rd, the landing first.", "read": false},
+                    {"seq": 15, "from": "shaper", "to": "jo", "text": "Quiet hours: two questions in Decide.", "read": false},
+                    {"seq": 16, "from": "assembly", "to": "jo", "text": "The fares cache works, at a cost.", "read": false}],
+                    "unread": 3, "last": 16, "from": ["yardmaster", "shaper", "assembly"]}})
+                .to_string(),
             );
             yard.answer(
                 "Conversation",
-                r#"{"result": [{"seq": 12, "at": "2026-10-08T09:30:00Z", "from": "yardmaster", "to": "jo", "text": "Shall I land it?", "read": false}]}"#,
+                &json!({"result": [
+                    {"seq": 11, "at": landed_at(2, 30), "from": "jo", "to": "yardmaster", "text": "How is the dock badge coming?", "read": true},
+                    {"seq": 12, "at": landed_at(2, 25), "from": "yardmaster", "to": "jo", "text": "Built and in review. ada is on it.", "read": true},
+                    {"seq": 13, "at": landed_at(0, 40), "from": "yardmaster", "to": "jo", "text": "Review passed, with a picture of the dock.", "read": true},
+                    {"seq": 14, "at": landed_at(0, 12), "from": "yardmaster", "to": "jo", "text": "Two asks on footplate-q2rd, the landing first.", "read": false}]})
+                .to_string(),
             );
+            let decided: Vec<serde_json::Value> = decided_history()
+                .as_array()
+                .unwrap()
+                .iter()
+                .take(12)
+                .cloned()
+                .collect();
             yard.answer(
                 "UserAsks",
-                &json!({"result": {"open": [queued_frame()], "decided": []}}).to_string(),
+                &json!({"result": {"open": queued_frame(), "decided": decided}}).to_string(),
+            );
+            // One bead parked for jo's move, as the pick's list has it.
+            yard.answer(
+                "Waiting",
+                &json!({"result": [
+                    {"bead": "footplate-j152", "title": "Main window on macOS: three directions to pick from",
+                     "depot": "footplate", "stage": "pick", "group": "design-pickers",
+                     "since": landed_at(0, 20), "revision": "01KJB",
+                     "actions": [
+                        {"kind": "done", "label": "picked: move to build",
+                         "outcome": "picked", "to": "build"}]}
+                ]})
+                .to_string(),
             );
             yard.answer("Bead", &bead_frame());
+            for (bead, answer) in beads_frame() {
+                yard.answer_for("Bead", "bead", bead, &answer);
+            }
         }
         "teammates" => {
             // An open card of a teammate invite: the address, the yard
@@ -3160,33 +3203,128 @@ fn frame_run() -> serde_json::Value {
            "back": ""})
 }
 
-/// The frame ask 1 on footplate-q2rd as the queue lists it. Its asker
-/// is the yardmaster, who can be written to from here, so no unreachable
-/// line stands under its levers.
-fn queued_frame() -> serde_json::Value {
-    json!({
-        "bead": "footplate-q2rd", "bead_title": "Show the open asks on the dock badge",
-        "topic": "", "ask": 1, "question": "May I land it?",
-        "asker": "yardmaster", "since": "2026-10-10T10:00:00Z", "run": frame_run()
-    })
+/// The frame shot's open asks as the queue lists them, the open card's
+/// two first: ask 1, the landing, and ask 2, a pick on the same bead.
+/// Two more beads wait under them, one with two asks, and one asked by
+/// the assembly. None names a topic, so the list draws no topic's head. Their
+/// ages are from now, so the list reads minutes and hours whenever the
+/// shot runs. The yardmaster asks the open card's, and can be written to
+/// from here, so no unreachable line stands under its levers.
+fn queued_frame() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "bead": "footplate-q2rd", "bead_title": "Show the open asks on the dock badge",
+            "topic": "", "ask": 1, "question": "May I land it?",
+            "asker": "yardmaster", "since": landed_at(0, 12), "run": frame_run()
+        }),
+        json!({
+            "bead": "footplate-q2rd", "bead_title": "Show the open asks on the dock badge",
+            "topic": "", "ask": 2,
+            "question": "Should the badge count parked beads too?",
+            "asker": "yardmaster", "since": landed_at(0, 9)
+        }),
+        json!({
+            "bead": "yardr-m4kt", "bead_title": "Quiet hours for the yard's notifications",
+            "topic": "", "ask": 4,
+            "question": "Hold every notification overnight, or only mail?",
+            "asker": "shaper", "since": landed_at(1, 40)
+        }),
+        json!({
+            "bead": "yardr-m4kt", "bead_title": "Quiet hours for the yard's notifications",
+            "topic": "", "ask": 5,
+            "question": "Which hours count as the night?",
+            "asker": "shaper", "since": landed_at(1, 35)
+        }),
+        json!({
+            "bead": "plantime-7wq3", "bead_title": "Fares page loads in under a second",
+            "topic": "", "ask": 6,
+            "question": "The cache doubles memory on staging. Keep it?",
+            "asker": "assembly", "since": landed_at(3, 5)
+        }),
+    ]
 }
 
-/// The bead of that ask, with its thread: one note with the shot image.
+/// The bead of the frame's open card, with its two asks and its thread:
+/// the builder's note, the review's note with the shot image, and the
+/// yardmaster's word on what changed since.
 fn bead_frame() -> String {
     json!({"result": {"id": "footplate-q2rd", "title": "Show the open asks on the dock badge",
-        "body": "", "stage": "new", "labels": [],
-        "notes": [{"seq": 2, "kind": "note", "author": "ada",
-                   "text": "Review passed. The dock with three open asks.",
-                   "at": "2026-10-10T11:40:00Z",
-                   "files": [{"hash": IMAGE_HASH, "type": "image/png",
-                              "bytes": IMAGE.len(), "name": "dock-badge.png"}]}],
+        "body": "The Dock icon carries the number of open asks, as the tray does.",
+        "stage": "decide", "labels": ["eyes"],
+        "notes": [
+            {"seq": 1, "kind": "note", "author": "muse-wonder",
+             "text": "Built: the badge counts open asks and clears as each is decided. Tests pass.",
+             "at": landed_at(1, 50)},
+            {"seq": 2, "kind": "note", "author": "ada",
+             "text": "Review passed. The dock with three open asks.",
+             "at": landed_at(0, 40),
+             "files": [{"hash": IMAGE_HASH, "type": "image/png",
+                        "bytes": IMAGE.len(), "name": "dock-badge.png"}]},
+            {"seq": 3, "kind": "note", "author": "yardmaster",
+             "text": "main moved two commits since the review; neither touches src/dock.rs.",
+             "at": landed_at(0, 14)}],
         "asks": [
             {"ask": 1, "to": "jo", "asker": "yardmaster",
-             "since": "2026-10-10T10:00:00Z",
+             "since": landed_at(0, 12),
              "question": "May I land it?",
              "context": ["Review passed at 3f1c2ab; main has moved two commits since"],
-             "options": [], "state": "open", "run": frame_run()}]}})
+             "options": [], "state": "open", "run": frame_run()},
+            {"ask": 2, "to": "jo", "asker": "yardmaster",
+             "since": landed_at(0, 9),
+             "question": "Should the badge count parked beads too?",
+             "context": ["Three beads wait for your move today; the badge leaves them out."],
+             "options": [
+                {"label": "Asks only", "consequence": "the badge stays as built"},
+                {"label": "Asks and parked beads", "consequence": "a follow-up bead counts both"},
+                {"label": "You decide", "consequence": "leave it to yardmaster"}],
+             "recommend": 1, "why": "parked beads already show in the list",
+             "state": "open"}]}})
     .to_string()
+}
+
+/// The frame's other beads, each with its open asks, as the Bead call
+/// answers them by id.
+fn beads_frame() -> [(&'static str, String); 2] {
+    [
+        (
+            "yardr-m4kt",
+            json!({"result": {"id": "yardr-m4kt", "title": "Quiet hours for the yard's notifications",
+                "body": "No notification wakes the operator at night.",
+                "stage": "shape", "labels": [],
+                "notes": [{"seq": 1, "kind": "note", "author": "shaper",
+                           "text": "Two questions before I draft the design.",
+                           "at": landed_at(1, 45)}],
+                "asks": [
+                    {"ask": 4, "to": "jo", "asker": "shaper", "since": landed_at(1, 40),
+                     "question": "Hold every notification overnight, or only mail?",
+                     "options": [
+                        {"label": "Everything", "consequence": "asks wait for the morning too"},
+                        {"label": "Only mail", "consequence": "asks still reach you at night"}],
+                     "state": "open"},
+                    {"ask": 5, "to": "jo", "asker": "shaper", "since": landed_at(1, 35),
+                     "question": "Which hours count as the night?",
+                     "options": [], "state": "open"}]}})
+            .to_string(),
+        ),
+        (
+            "plantime-7wq3",
+            json!({"result": {"id": "plantime-7wq3", "title": "Fares page loads in under a second",
+                "body": "The fares page takes 2.4s on staging.",
+                "stage": "build", "labels": [],
+                "notes": [{"seq": 1, "kind": "note", "author": "assembly",
+                           "text": "With the cache the page loads in 0.6s; memory goes from 210 to 430 MB.",
+                           "at": landed_at(3, 10)}],
+                "asks": [
+                    {"ask": 6, "to": "jo", "asker": "assembly", "since": landed_at(3, 5),
+                     "question": "The cache doubles memory on staging. Keep it?",
+                     "options": [
+                        {"label": "Keep it", "consequence": "ship with the cache"},
+                        {"label": "Cap it at 300 MB", "consequence": "slower on a cold start"},
+                        {"label": "Drop it", "consequence": "find another way"}],
+                     "state": "open"}]}})
+            .to_string(),
+        ),
+    ]
 }
 
 /// The weighty shot's command: the mail limit the trust class is of,
@@ -3707,7 +3845,8 @@ mod tests {
                     assert_eq!(loaded.asks.decided.len(), 156, "{state}")
                 }
                 "waiting" | "waiting-folded" | "waiting-end" | "old-waiting" | "lines-waiting"
-                | "lines-waiting-end" | "lines-help" | "lines-panel" | "lines-departures" => {
+                | "lines-waiting-end" | "lines-help" | "lines-panel" | "lines-departures"
+                | "frame" => {
                     assert_eq!(loaded.asks.decided.len(), 12, "{state}")
                 }
                 "pair-qr" | "pair-ended" => {
@@ -4084,7 +4223,7 @@ mod tests {
                     assert!(bead.asks[0].run.is_some(), "{state}");
                 }
                 "frame" => {
-                    assert_eq!(loaded.asks.open.len(), 1, "{state}");
+                    assert_eq!(loaded.asks.open.len(), 5, "{state}");
                     let run = loaded.asks.open[0].run.as_ref().unwrap();
                     assert_eq!(
                         run.line().as_str(),
@@ -4092,11 +4231,16 @@ mod tests {
                         "{state}"
                     );
                     let bead = yard.client().bead("footplate-q2rd").unwrap();
-                    assert_eq!(bead.asks.len(), 1, "{state}");
+                    assert_eq!(bead.asks.len(), 2, "{state}");
                     assert!(bead.asks[0].run.is_some(), "{state}");
-                    assert_eq!(bead.notes.len(), 1, "{state}");
-                    assert_eq!(bead.notes[0].files.len(), 1, "{state}");
-                    assert_eq!(bead.notes[0].files[0].hash, IMAGE_HASH, "{state}");
+                    assert_eq!(bead.asks[1].options.len(), 3, "{state}");
+                    assert_eq!(bead.notes.len(), 3, "{state}");
+                    assert_eq!(bead.notes[1].files.len(), 1, "{state}");
+                    assert_eq!(bead.notes[1].files[0].hash, IMAGE_HASH, "{state}");
+                    for (id, asks) in [("yardr-m4kt", 2), ("plantime-7wq3", 1)] {
+                        let bead = yard.client().bead(id).unwrap();
+                        assert_eq!(bead.asks.len(), asks, "{state} {id}");
+                    }
                 }
                 "teammates" => {
                     assert_eq!(loaded.asks.open.len(), 1, "{state}");

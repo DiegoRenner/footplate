@@ -13,8 +13,8 @@ use gpui::{
 use super::Expanded;
 use super::Footplate;
 use super::ask::{
-    ANSWER_WORDS, APPROVE_ELSEWHERE, Approval, DECLINE_IS_NO_PICK, RUN_PROPOSED, RunText,
-    SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate, action_lever,
+    ANSWER_WORDS, APPROVE_ELSEWHERE, Approval, DECLINE_IS_NO_PICK, RECOMMENDED, RUN_PROPOSED,
+    RunText, SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate, action_lever,
     answer_label, approval, approve_button, approve_lever_label, ask_line, asked_age,
     candidate_choice_line, card_head, carried_texts, decided_keys, decision_head, description_line,
     fenced, fold_head, give_label, give_unlock_label, is_device_pair_run, lever_plate, lever_words,
@@ -25,22 +25,25 @@ use super::ask::{
 };
 use super::expanded_text_key;
 use super::keys::{APPROVE_KEY, SETUP_SECRET_CONTEXT};
-use super::metrics::{ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL};
+use super::metrics::{
+    ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL, ROW_ASK_CHARS, ROW_LAMP, ROW_LAMP_GAP,
+    ROW_MARK, ROW_TITLE_CHARS,
+};
 use super::rail::{Picture, RailTip, UnsentNote, post_note};
 use super::state::{Adding, ApprovalPairing};
-use super::ui::{field, keys_row, send_held, small_button};
-use super::words::{bead_words, decide_words, decided_words, left_words, row_summary, time_column};
+use super::ui::{field, keys_row, outcome_glyph, send_held, shorten, small_button};
+use super::words::{bead_words, decide_words, decided_words, left_words};
 use super::{AskAbout, Decline, Expand, FocusFilter, FocusWords};
 use crate::api::{self};
 use crate::draft::{self, Attachment};
 use crate::input::Line;
 use crate::model::{
     self, AnswerAction, DecidedEntry, DecidedFold, DecidedRow, DecisionAsk, DecisionDetail,
-    DecisionRow, Effect, Mode, Model, Selected, Sending, Taken, Target, Write,
+    DecisionRow, Effect, Mode, Model, Outcome, Selected, Sending, Taken, Target, Write,
 };
 use crate::select::{self};
 use crate::theme::{
-    Palette, TYPE_BODY, TYPE_LABEL, TYPE_META, TYPE_QUESTION, TYPE_TITLE, yard_color,
+    Palette, TYPE_BODY, TYPE_CODE, TYPE_LABEL, TYPE_META, TYPE_QUESTION, TYPE_TITLE, yard_color,
 };
 use crate::unlock;
 
@@ -2881,11 +2884,14 @@ impl Footplate {
         let decisions = model.decisions_count();
         let decided = model.decided_count();
         body = body.child(section_head("Decisions", decide_words(decisions), palette));
-        for group in model.decision_groups(&now) {
-            // A topic above a single ask is noise: the head stands only
-            // where two asks or more share the topic.
+        let groups = model.decision_groups(&now);
+        let several = groups.len() > 1;
+        for group in groups {
+            // A topic above a single ask is noise, and so is one above the
+            // only group: the head stands only where two asks or more share
+            // the topic, beside another topic.
             let asks: usize = group.rows.iter().map(|row| row.asks.len().max(1)).sum();
-            if asks > 1 {
+            if several && asks > 1 {
                 body = body.child(
                     div()
                         .debug_selector({
@@ -3117,10 +3123,11 @@ impl Footplate {
         chips
     }
 
-    /// One bead's open row: the question wrapped to two lines, then
-    /// whose it is, what it wants and how long it waits. A bead with
-    /// several open asks carries its title instead, with each ask beneath
-    /// it in the same shape.
+    /// One bead's open row: a lamp and the bead's title, then a line for
+    /// each open ask, what it wants and its number before the question,
+    /// and last who asks and how long the oldest ask waits, with the
+    /// bead's short id at the right. The lamp is the accent's: every row
+    /// here waits on the person.
     pub(crate) fn decision_row(
         &self,
         row: DecisionRow,
@@ -3128,55 +3135,99 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let sel = Selected::Decision(row.bead.clone());
-        // The right-hand time column's words, before the row's lines
-        // move into the column below.
-        let time = time_column(&row.sub, select::mono(cx), palette)
-            .map(|time| time.debug_selector(|| format!("decision time {}", row.bead)));
+        let mono = select::mono(cx);
         let mut col = div()
             .flex()
             .flex_col()
-            // Resolve the available row width before measuring the
-            // head, so it wraps within the row.
             .flex_1()
             .min_w_0()
+            .gap(px(2.))
             .child(
                 div()
-                    .line_clamp(2)
-                    .text_size(rems(TYPE_LABEL))
-                    .font_weight(FontWeight::MEDIUM)
-                    .debug_selector(|| format!("decision head {}", row.bead))
-                    .child(row.head),
+                    .flex()
+                    .items_center()
+                    .gap(px(ROW_LAMP_GAP))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .debug_selector(|| format!("decision lamp {}", row.bead))
+                            .size(px(ROW_LAMP))
+                            .rounded_full()
+                            .flex_none()
+                            .bg(palette.accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rems(TYPE_LABEL))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .debug_selector(|| format!("decision head {}", row.bead))
+                            .child(shorten(&row.head, ROW_TITLE_CHARS)),
+                    ),
             );
+        // The asks' lines and the last line stand under the title, past
+        // the lamp.
+        let indent = px(ROW_LAMP + ROW_LAMP_GAP);
         for ask in &row.asks {
             let seq = ask.ask;
-            col = col
-                .child(
-                    div()
-                        .line_clamp(2)
-                        .text_size(rems(TYPE_LABEL))
-                        .font_weight(FontWeight::MEDIUM)
-                        .debug_selector(|| format!("decision ask {seq} {}", row.bead))
-                        .child(ask.head.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette.faint)
-                        .truncate()
-                        .debug_selector(|| format!("decision meta {seq} {}", row.bead))
-                        .child(ask.meta.clone()),
-                );
-        }
-        if !row.sub.is_empty() {
             col = col.child(
                 div()
+                    .pl(indent)
+                    .truncate()
                     .text_xs()
                     .text_color(palette.faint)
-                    .truncate()
-                    .debug_selector(|| format!("decision sub {}", row.bead))
-                    .child(row_summary(&row.sub).to_string()),
+                    .debug_selector(|| format!("decision ask {seq} {}", row.bead))
+                    .child(
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette.text)
+                                    .child(format!("{} {seq}", ask.kind)),
+                            )
+                            .child(div().flex_none().child("·"))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(shorten(&ask.head, ROW_ASK_CHARS)),
+                            ),
+                    ),
             );
         }
+        let mut short = div()
+            .flex_none()
+            .text_size(rems(TYPE_CODE))
+            .text_color(palette.faint)
+            .debug_selector(|| format!("decision id {}", row.bead))
+            .child(row.short);
+        if let Some(mono) = mono {
+            short = short.font_family(mono);
+        }
+        col = col.child(
+            div()
+                .pl(indent)
+                .flex()
+                .items_baseline()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(palette.faint)
+                        .debug_selector(|| format!("decision sub {}", row.bead))
+                        .child(row.sub),
+                )
+                .child(short),
+        );
         div()
             .id(SharedString::from(format!("decision {}", row.bead)))
             .debug_selector(|| format!("decision row {}", row.bead))
@@ -3185,9 +3236,6 @@ impl Footplate {
             .py_1p5()
             .rounded_md()
             .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
             .cursor_pointer()
             .border_1()
             .border_color(rgba(0x00000000))
@@ -3197,23 +3245,6 @@ impl Footplate {
             })
             .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
             .child(col)
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_baseline()
-                    .gap_2()
-                    // The right-hand time column (mono 12) beside the
-                    // id: how long the bead's oldest ask waits.
-                    .children(time)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.faint)
-                            .debug_selector(|| format!("decision id {}", row.bead))
-                            .child(row.short),
-                    ),
-            )
     }
 
     /// The grants row, last of decisions where the window is the
@@ -3403,9 +3434,8 @@ impl Footplate {
             )
     }
 
-    /// One dealt with, with its outcome's icon first, then whose it was
-    /// and when it was asked. The outcome stands in the text colour, the
-    /// rest quiet, each cut with an ellipsis where it does not fit.
+    /// One dealt with, in the open rows' shape (`decided_lines`), with the
+    /// bead's short id at the right of its outcome's line.
     pub(crate) fn decided_row(
         &self,
         row: DecidedRow,
@@ -3413,85 +3443,41 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let sel = Selected::Decided(row.bead.clone(), row.ask);
-        div()
+        let mut short = div()
+            .flex_none()
+            .text_size(rems(TYPE_CODE))
+            .text_color(palette.faint)
+            .debug_selector(|| format!("decided id {} {}", row.bead, row.ask))
+            .child(row.short.clone());
+        if let Some(mono) = select::mono(cx) {
+            short = short.font_family(mono);
+        }
+        let lines = decided_lines(
+            row.mark,
+            &row.outcome,
+            &row.head,
+            &row.detail,
+            format!("{} {}", row.bead, row.ask),
+            "decided",
+            short,
+            palette,
+        );
+        lines
             .id(SharedString::from(format!(
                 "decided {} {}",
                 row.bead, row.ask
             )))
-            .mx_1()
-            .px_2()
-            .py_1p5()
-            .rounded_md()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .cursor_pointer()
-            .border_1()
-            .border_color(rgba(0x00000000))
             .when(row.selected, |el| el.bg(palette.open))
             .when(!row.selected, |el| {
                 el.hover(|style| style.border_color(palette.line))
             })
             .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    // Resolve the available row width before measuring the
-                    // head, so truncate() can draw its ellipsis.
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(rems(TYPE_LABEL))
-                            .font_weight(FontWeight::MEDIUM)
-                            .debug_selector(|| format!("decided head {} {}", row.bead, row.ask))
-                            .child(row.head),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_baseline()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(relative(0.6))
-                                    .text_xs()
-                                    .truncate()
-                                    .debug_selector(|| {
-                                        format!("decided outcome {} {}", row.bead, row.ask)
-                                    })
-                                    .child(row.outcome),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(palette.faint)
-                                    .truncate()
-                                    .child(format!("· {}", row.detail)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .debug_selector(|| format!("decided id {} {}", row.bead, row.ask))
-                    .child(row.short),
-            )
     }
 
-    /// Several look-alikes folded into one row: the first's question with
-    /// the shared outcome and asker. A click opens the fold to show them,
-    /// or folds it shut again; the count with ▸ and ▾ stands where one
-    /// row's bead id does, past what the head's cut would hide.
+    /// Several look-alikes folded into one row, in a dealt with row's
+    /// shape: the first's question with the shared outcome and asker. A
+    /// click opens the fold to show them, or folds it shut again; the
+    /// count with ▸ and ▾ stands where one row's bead id does.
     pub(crate) fn decided_fold(
         &self,
         fold: DecidedFold,
@@ -3501,80 +3487,33 @@ impl Footplate {
         let bead = fold.bead.clone();
         let ask = fold.ask;
         let mark = if fold.open { "▾" } else { "▸" };
-        let count = format!("×{} {mark}", fold.rows.len());
-        div()
-            .id(SharedString::from(format!(
-                "decided fold {} {}",
-                fold.bead, fold.ask
-            )))
-            .debug_selector(|| format!("decided fold {} {}", fold.bead, fold.ask))
-            .mx_1()
-            .px_2()
-            .py_1p5()
-            .rounded_md()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .cursor_pointer()
-            .border_1()
-            .border_color(rgba(0x00000000))
-            .hover(|style| style.border_color(palette.line))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.change(cx, |m| {
-                    m.toggle_decided_fold(&bead, ask);
-                    Vec::new()
-                })
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(rems(TYPE_LABEL))
-                            .font_weight(FontWeight::MEDIUM)
-                            .debug_selector(|| {
-                                format!("decided fold head {} {}", fold.bead, fold.ask)
-                            })
-                            .child(fold.head),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_baseline()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .debug_selector(|| {
-                                        format!("decided fold outcome {} {}", fold.bead, fold.ask)
-                                    })
-                                    .child(fold.outcome),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(palette.faint)
-                                    .truncate()
-                                    .child(format!("· {}", fold.detail)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .child(count),
-            )
+        let count = div()
+            .flex_none()
+            .text_xs()
+            .text_color(palette.faint)
+            .child(format!("×{} {mark}", fold.rows.len()));
+        decided_lines(
+            fold.mark,
+            &fold.outcome,
+            &fold.head,
+            &fold.detail,
+            format!("{} {}", fold.bead, fold.ask),
+            "decided fold",
+            count,
+            palette,
+        )
+        .id(SharedString::from(format!(
+            "decided fold {} {}",
+            fold.bead, fold.ask
+        )))
+        .debug_selector(|| format!("decided fold {} {}", fold.bead, fold.ask))
+        .hover(|style| style.border_color(palette.line))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.change(cx, |m| {
+                m.toggle_decided_fold(&bead, ask);
+                Vec::new()
+            })
+        }))
     }
 
     /// A bead's open asks, each as its card: the yard, the bead and the
@@ -3598,43 +3537,70 @@ impl Footplate {
                 .text_color(palette.faint)
                 .child("Its questions are answered.");
         };
+        // The head: the yard, the bead and the topic, small, over the bead's
+        // title, as the pick's breadcrumb stands over it.
+        let title = match detail.title.is_empty() {
+            true => detail.bead.clone(),
+            false => detail.title.clone(),
+        };
         let head = div()
-            .p_3()
+            .px_4()
+            .py_2()
             .border_b_1()
             .border_color(palette.line)
-            .debug_selector(|| format!("in {} {}", self.yard, detail.bead))
             .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
+            .flex_col()
+            .gap_0p5()
             .child(
                 div()
-                    .debug_selector(|| format!("in {} {} dot", self.yard, detail.bead))
-                    .flex_none()
-                    .size(px(8.))
-                    .rounded_full()
-                    .bg(yard_color(&self.yard, palette.dark)),
+                    .debug_selector(|| format!("in {} {}", self.yard, detail.bead))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .text_size(rems(TYPE_META))
+                    .text_color(palette.faint)
+                    .child(
+                        div()
+                            .debug_selector(|| format!("in {} {} dot", self.yard, detail.bead))
+                            .flex_none()
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(yard_color(&self.yard, palette.dark)),
+                    )
+                    .child(decision_head(&self.yard, &detail.bead, &detail.topic)),
             )
-            .child(decision_head(&self.yard, &detail.bead, &detail.topic));
+            .child(
+                div()
+                    .debug_selector(|| format!("title {}", detail.bead))
+                    .truncate()
+                    .text_size(rems(TYPE_LABEL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title),
+            );
         let list = div()
             .id("decision")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.decision)
-            .p_4()
+            .px_4()
+            .py_3()
             .flex()
-            .flex_col()
-            .gap_4();
+            .flex_col();
         let list = if !model.has_bead(bead) {
             list.child(div().text_color(palette.faint).child("Reading the bead."))
         } else {
-            let mut list = list.children(
-                detail
-                    .asks
-                    .iter()
-                    .map(|ask| self.decision_card(&detail, ask, palette, cx)),
-            );
+            // The cards flat on the pane, each after the first ruled off
+            // from the one above with a thin line.
+            let mut list = list.children(detail.asks.iter().enumerate().map(|(ix, ask)| {
+                div()
+                    .pb_4()
+                    .when(ix > 0, |el| {
+                        el.pt_4().border_t_1().border_color(palette.line)
+                    })
+                    .child(self.decision_card(&detail, ask, palette, cx))
+            }));
             // The bead's thread under the asks, as the pick draws it:
             // its notes in order, each with its files, the images
             // compact, so a short card and its thread stand together
@@ -3660,7 +3626,7 @@ impl Footplate {
             })
     }
 
-    /// The bead's thread under its open asks: its notes in order, each
+    /// The bead's thread under its open asks: its notes newest first, each
     /// headed by who wrote it, its time and the bead, its words beside
     /// its image where it has one (the pick's thread: words left, the
     /// picture right at 156 wide), its other files under its words as
@@ -3683,7 +3649,10 @@ impl Footplate {
             .flex()
             .flex_col()
             .gap_3();
-        for (ix, note) in detail.notes.iter().enumerate() {
+        // The newest first, right under the asks: the latest note is most
+        // often what the ask is about, and a long thread does not push it
+        // out of view. Each keeps its own index, so its keys do not move.
+        for (ix, note) in detail.notes.iter().enumerate().rev() {
             let at = model::clock_time(&note.at, &chrono::Local);
             let head = match at.is_empty() {
                 true => format!("{} · on {bead}", note.author),
@@ -3859,18 +3828,14 @@ impl Footplate {
         } else {
             ask.chosen
         };
-        // The Ask card's frame: raised and bordered, at the reading pane's
-        // measures. Everything the card says stands inside it.
+        // The Ask card's frame: flat on the pane, as the pick draws it. The
+        // pane rules one card off from the next; everything the card says
+        // stands inside it.
         let mut card = div()
             .debug_selector(|| format!("card {bead_id} {ask_seq}"))
             .flex()
             .flex_col()
-            .gap_2p5()
-            .p_4()
-            .rounded(px(RADIUS_CARD))
-            .border_1()
-            .border_color(palette.line)
-            .bg(palette.raised);
+            .gap_2p5();
         // How the card approves: nowhere where the yard takes no approval
         // from this window, after the ask's number is typed back where a
         // weighty card has no gate.
@@ -3918,6 +3883,7 @@ impl Footplate {
                 format!("run question {bead_id} {ask_seq}"),
                 &ask.question,
                 &ask.asker,
+                palette,
             )
             .into_any_element()
         } else {
@@ -3928,41 +3894,75 @@ impl Footplate {
             )
             .into_any_element()
         };
-        // The asker's label and the age both need room beside the question.
-        // At a narrow window let the age wrap before the label squeezes the
-        // words down to a few pixels. The current ask's question stands at
-        // the question size, the card the pane is for; the rest at the
-        // title size, as the pick's second question does.
+        // Over the question, what waits and on whom: that it waits on the
+        // person, what it wants and its number in the accent, then how long
+        // and who asks, quiet. At the row's right the bead's id with the
+        // ask's number, to select and copy, so a decision named by number
+        // is found on its card, and the bead whole one disclosure away.
+        // The line is no part of the disclosure: pressing to select it
+        // opens nothing. The row wraps, so a card too narrow for both puts
+        // them under the words and squeezes neither.
+        let mark = if ask.expanded { "▾" } else { "▸" };
+        let bead_click = bead_id.clone();
+        let line = ask_line(&bead_id, ask_seq);
+        let line_key = expanded_text_key(card_key, "ask", 0, &line);
+        let asked = [asked_age(&ask.waits), ask.asker.clone()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
         card = card.child(
             div()
                 .flex()
                 .flex_wrap()
-                .justify_between()
-                .gap_2()
+                .items_baseline()
+                .gap_x_2()
+                .text_size(rems(TYPE_META))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w(px(ASK_QUESTION_MIN))
-                        .debug_selector(|| format!("question {bead_id} {ask_seq}"))
-                        .text_size(rems(if current { TYPE_QUESTION } else { TYPE_TITLE }))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(question),
+                        .debug_selector(|| format!("waits on {bead_id} {ask_seq}"))
+                        .text_color(palette.text_accent)
+                        .child(format!("Waiting on you · {} {ask_seq}", ask.kind)),
                 )
                 .child(
                     div()
-                        .flex_none()
-                        .ml_auto()
-                        .text_xs()
+                        .debug_selector(|| format!("asked {bead_id} {ask_seq}"))
+                        .flex_grow()
                         .text_color(palette.faint)
-                        .child(asked_age(&ask.waits)),
+                        .child(asked),
+                )
+                // One line to select and copy whole, so the bead's id keeps
+                // the line's quiet colour rather than the link's.
+                .child(
+                    div()
+                        .debug_selector(|| format!("ask line {bead_id} {ask_seq}"))
+                        .min_w_0()
+                        .text_color(palette.faint)
+                        .child(select::verbatim(line_key, line, &self.selection)),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("expand {bead_id} {ask_seq}")))
+                        .debug_selector(|| format!("expand {bead_id} {ask_seq}"))
+                        .text_color(palette.faint)
+                        .cursor_pointer()
+                        .hover(|style| style.text_color(palette.text))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.expand_for(bead_click.clone(), ask_seq, cx)
+                        }))
+                        .child(format!("{mark} details (e)")),
                 ),
         );
-        // The asker. The recommendation stands on its own option, below.
+        // The question. The current ask's stands at the question size, the
+        // card the pane is for; the rest at the title size, as the pick's
+        // second question does.
         card = card.child(
             div()
-                .text_xs()
-                .text_color(palette.faint)
-                .child(format!("asked by {}", ask.asker)),
+                .min_w(px(ASK_QUESTION_MIN))
+                .debug_selector(|| format!("question {bead_id} {ask_seq}"))
+                .text_size(rems(if current { TYPE_QUESTION } else { TYPE_TITLE }))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(question),
         );
         // The context lines: text as it was written, and no block in it.
         // A run or setup ask's each begin with who says them, and wrap
@@ -3979,6 +3979,7 @@ impl Footplate {
                             format!("run context {bead_id} {ask_seq} {line}"),
                             text,
                             &ask.asker,
+                            palette,
                         )),
                 );
             } else {
@@ -3994,47 +3995,8 @@ impl Footplate {
                 );
             }
         }
-        // The bead whole, one disclosure away: beside the context it opens
-        // from, not at the card's end. On its row stands the bead's id and
-        // the ask's number, to select and copy, so a decision named by
-        // number is found on its card. The line is no part of the
-        // disclosure: pressing to select it opens nothing. The row wraps,
-        // so a card too narrow for both puts the line under the disclosure
-        // and squeezes neither.
-        let mark = if ask.expanded { "▾" } else { "▸" };
-        let bead_click = bead_id.clone();
-        let line = ask_line(&bead_id, ask_seq);
-        let line_key = expanded_text_key(card_key, "ask", 0, &line);
-        card = card.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .child(
-                    div()
-                        .id(SharedString::from(format!("expand {bead_id} {ask_seq}")))
-                        .debug_selector(|| format!("expand {bead_id} {ask_seq}"))
-                        .flex_grow()
-                        .text_sm()
-                        .text_color(palette.faint)
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(palette.text))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.expand_for(bead_click.clone(), ask_seq, cx)
-                        }))
-                        .child(format!("{mark} bead details (e)")),
-                )
-                // One line to select and copy whole, so the bead's id keeps
-                // the line's quiet colour rather than the link's.
-                .child(
-                    div()
-                        .debug_selector(|| format!("ask line {bead_id} {ask_seq}"))
-                        .min_w_0()
-                        .text_xs()
-                        .text_color(palette.faint)
-                        .child(select::verbatim(line_key, line, &self.selection)),
-                ),
-        );
+        // The bead whole, opened from the row over the question, under
+        // the context it adds to.
         if ask.expanded {
             card = card.child(self.expanded_body(
                 card_key,
@@ -4083,15 +4045,22 @@ impl Footplate {
                 let mut marked = false;
                 for option in &ask.options {
                     // A lever: its key plate, its label and its
-                    // consequence. The chosen and the recommended lever
-                    // are outlined in the accent, never filled: the
-                    // card's one filled control is its Answer button
-                    // below (the one-fill rule).
+                    // consequence. The chosen lever alone is outlined in
+                    // the accent, never filled: the card's one filled
+                    // control is its Answer button below (the one-fill
+                    // rule). The recommended one is chosen until another
+                    // is picked, so two outlines never stand at once. Every
+                    // plate holds its number alone, so the labels line up;
+                    // the recommended lever's plate is in the accent, the
+                    // word "recommended" stands at its row's right, and its
+                    // why under its label, inside the lever.
                     let n = option.number;
                     let recommended = ask.recommend != 0 && n == ask.recommend;
                     let chosen = n == answered;
                     let (label, consequence) = lever_words(&option.label, &option.consequence);
                     let bead_click = bead_id.clone();
+                    let why = (recommended && !ask.why.is_empty()).then(|| ask.why.clone());
+                    marked |= recommended;
                     card = card.child(
                         div()
                             .id(SharedString::from(format!("pick {bead_id} {ask_seq} {n}")))
@@ -4099,7 +4068,7 @@ impl Footplate {
                             .cursor_pointer()
                             .rounded(px(RADIUS_CONTROL))
                             .border_1()
-                            .border_color(match chosen || recommended {
+                            .border_color(match chosen {
                                 true => palette.accent,
                                 false => rgba(0x00000000),
                             })
@@ -4108,10 +4077,9 @@ impl Footplate {
                             .min_h(px(LEVER_H))
                             .flex()
                             .flex_row()
-                            .flex_wrap()
-                            .items_center()
+                            .items_start()
                             .gap_2()
-                            .when(!chosen && !recommended, |el| {
+                            .when(!chosen, |el| {
                                 el.hover(|style| style.border_color(palette.line))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -4124,7 +4092,7 @@ impl Footplate {
                                     .py_0p5()
                                     .rounded_md()
                                     .border_1()
-                                    .border_color(match recommended || chosen {
+                                    .border_color(match chosen || recommended {
                                         true => palette.accent,
                                         false => palette.line,
                                     })
@@ -4134,34 +4102,71 @@ impl Footplate {
                                         true => palette.text_accent,
                                         false => palette.faint,
                                     })
-                                    .child(lever_plate(n, recommended)),
+                                    .child(lever_plate(n)),
                             )
                             .child(
                                 div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_size(rems(TYPE_LABEL))
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(TYPE_META))
-                                    .text_color(palette.faint)
-                                    .child(consequence),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_0p5()
+                                    // The words wrap on their own, and the
+                                    // tag keeps its column at the right.
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_baseline()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .flex_wrap()
+                                                    .items_baseline()
+                                                    .gap_x_2()
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_size(rems(TYPE_LABEL))
+                                                            .child(label),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(rems(TYPE_META))
+                                                            .text_color(palette.faint)
+                                                            .child(consequence),
+                                                    ),
+                                            )
+                                            .when(recommended, |el| {
+                                                el.child(
+                                                    div()
+                                                        .debug_selector(|| {
+                                                            format!(
+                                                                "recommended {bead_id} {ask_seq} {n}"
+                                                            )
+                                                        })
+                                                        .flex_none()
+                                                        .text_size(rems(TYPE_META))
+                                                        .text_color(palette.text_accent)
+                                                        .child(RECOMMENDED),
+                                                )
+                                            }),
+                                    )
+                                    .children(why.map(|why| {
+                                        div()
+                                            .debug_selector(|| {
+                                                format!("recommended why {bead_id} {ask_seq}")
+                                            })
+                                            .text_xs()
+                                            .text_color(palette.faint)
+                                            .child(why)
+                                    })),
                             ),
                     );
-                    // The recommended one's why, under its own lever.
-                    if recommended {
-                        marked = true;
-                        if !ask.why.is_empty() {
-                            card = card.child(
-                                div()
-                                    .ml_6()
-                                    .text_xs()
-                                    .text_color(palette.faint)
-                                    .child(ask.why.clone()),
-                            );
-                        }
-                    }
                 }
                 // A recommendation the options do not hold stands past them, as
                 // nothing else names it.
@@ -4549,6 +4554,7 @@ impl Footplate {
         id: String,
         question: &str,
         asker: &str,
+        palette: Palette,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -4561,6 +4567,7 @@ impl Footplate {
                     format!("{id} {line}"),
                     text,
                     asker,
+                    palette,
                 )
             }))
     }
@@ -4568,7 +4575,11 @@ impl Footplate {
     /// One run asker's line with the trusted label beside its words where
     /// they fit, and above them where they do not. The words select and
     /// copy, drawn as they were written with no block in them; the label
-    /// stays plain, so a copy of the words does not carry it.
+    /// stays plain, so a copy of the words does not carry it. The label is
+    /// quiet, in the faint colour at the regular weight, so that it marks
+    /// every line without reading as a second question: it stands on each
+    /// line all the same.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn marked_asker_line(
         &self,
         card_key: u64,
@@ -4577,6 +4588,7 @@ impl Footplate {
         id: String,
         line: &str,
         asker: &str,
+        palette: Palette,
     ) -> impl IntoElement + use<> {
         let prefix = format!("{asker} says: ");
         let words = line.strip_prefix(&prefix).unwrap_or(line).to_string();
@@ -4592,6 +4604,8 @@ impl Footplate {
             .child(
                 div()
                     .flex_none()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(palette.faint)
                     .debug_selector(move || label_id.clone())
                     .child(label),
             )
@@ -5161,6 +5175,7 @@ impl Footplate {
                 format!("run decided question {bead} {ask}"),
                 &detail.question,
                 &detail.asker,
+                palette,
             )
             .into_any_element()
         } else {
@@ -5250,6 +5265,7 @@ impl Footplate {
                             format!("run decided context {bead} {ask} {line}"),
                             text,
                             &detail.asker,
+                            palette,
                         ),
                     ));
                 } else {
@@ -6648,4 +6664,103 @@ pub(crate) fn file_url(path: &str, windows: bool) -> String {
         }
     }
     url
+}
+
+/// A dealt with row's shape, one ask's or a fold's, as the open rows stand:
+/// the outcome's mark where their lamp stands (an approval's in the go
+/// colour, the rest quiet), the question's first line, then the outcome in
+/// the text colour with `detail` quiet after it, and `right` at the end of
+/// that line.
+/// The debug selectors are `<kind> head <key>`, `<kind> outcome <key>` and
+/// `<kind> icon <key>`.
+#[allow(clippy::too_many_arguments)]
+fn decided_lines(
+    mark: Outcome,
+    outcome: &str,
+    head: &str,
+    detail: &str,
+    key: String,
+    kind: &'static str,
+    right: Div,
+    palette: Palette,
+) -> Div {
+    let icon_color = match mark {
+        Outcome::Approved => palette.ok,
+        _ => palette.faint,
+    };
+    let words = outcome.to_string();
+    let (icon_key, head_key, outcome_key) = (key.clone(), key.clone(), key);
+    div()
+        .mx_1()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .flex()
+        .items_start()
+        .cursor_pointer()
+        .border_1()
+        .border_color(rgba(0x00000000))
+        .child(
+            // The mark stands in the lamp's room, on the head's first line.
+            div()
+                .flex_none()
+                .w(px(ROW_LAMP + ROW_LAMP_GAP))
+                .h(rems(TYPE_LABEL * 1.5))
+                .flex()
+                .items_center()
+                .debug_selector(move || format!("{kind} icon {icon_key}"))
+                .child(outcome_glyph(mark, ROW_MARK, icon_color)),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(rems(TYPE_LABEL))
+                        .font_weight(FontWeight::MEDIUM)
+                        .debug_selector(move || format!("{kind} head {head_key}"))
+                        .child(shorten(head, ROW_TITLE_CHARS)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_baseline()
+                                .gap_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(relative(0.6))
+                                        .text_xs()
+                                        .truncate()
+                                        .debug_selector(move || {
+                                            format!("{kind} outcome {outcome_key}")
+                                        })
+                                        .child(words),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(palette.faint)
+                                        .truncate()
+                                        .child(format!("· {detail}")),
+                                ),
+                        )
+                        .child(right),
+                ),
+        )
 }

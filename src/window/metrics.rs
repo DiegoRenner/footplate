@@ -105,6 +105,25 @@ pub(crate) const ASK_QUESTION_MIN: f32 = 200.;
 /// with the same rule.
 pub(crate) const LIST: f32 = 352.;
 
+/// A list row's lamp, in pixels: the dot before a row's title that says
+/// whose turn it is, as the crew's rows have it, and the gap after it,
+/// which the lines under the title are indented by so they stand under
+/// its first letter.
+pub(crate) const ROW_LAMP: f32 = 8.;
+pub(crate) const ROW_LAMP_GAP: f32 = 8.;
+
+/// A dealt with row's outcome mark in pixels: Lucide's glyph, at a size
+/// that sits in the lamp's room with a gap before the title.
+pub(crate) const ROW_MARK: f32 = 12.;
+
+/// The char budgets of a list row's lines, which end in an ellipsis past
+/// them (`ui::shorten`): gpui's `truncate()` clips mid-glyph in a row's
+/// flex items. At the list's full 352 a title of 34 chars at the label size
+/// and a question of 34 at the meta size after its `words 4 ·` fit; a
+/// narrower list still clips what is left.
+pub(crate) const ROW_TITLE_CHARS: usize = 34;
+pub(crate) const ROW_ASK_CHARS: usize = 34;
+
 /// A lever's measures, in pixels where the frame stands fixed and rems
 /// where its words do: the key plate's least height is the control's
 /// (32, the tokens' `--control-h`), its radius the control's (6), the

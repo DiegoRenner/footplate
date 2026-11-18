@@ -1,7 +1,7 @@
 //! The window's words for its rows: what heads and counts say stands
 //! where, and the colours that say what waits and for whom.
 
-use gpui::{Div, Rgba, SharedString, div, prelude::*, rems};
+use gpui::{Div, Rgba, div, prelude::*, rems};
 
 use crate::api::{Flow, FlowBead, FlowStage};
 use crate::fetch::Seen;
@@ -9,7 +9,7 @@ use crate::model::{
     self, ArrivalDetail, Route, Selected, WorkingGroup, backlog_count, held_by_you, is_held,
     waits_on_you,
 };
-use crate::theme::{Palette, TYPE_CODE};
+use crate::theme::Palette;
 
 /// What a backlog column's head says waits in it: the number with
 /// "waiting", or that none does. Decide's heads do not use it. The
@@ -459,52 +459,6 @@ pub(crate) fn plural(n: usize, zero: &str, one: &str, many: &str) -> String {
     }
 }
 
-/// The time a list row's right-hand column shows: how long its ask or
-/// bead waits, taken from the tail of its sub or meta line, where the
-/// model ends it with [`model::waits`]' words (`now`, `5m`, `2h`, `3d`).
-/// Nothing where the line ends with anything else, so a row whose time
-/// cannot be read stands with no time column rather than a wrong one.
-/// The column is drawn in the mono face at the code size.
-fn row_time_tail(line: &str) -> Option<&str> {
-    let tail = line.rsplit(" · ").next()?.trim();
-    let waits = tail == "now"
-        || [("m", 1), ("h", 1), ("d", 1)].iter().any(|(unit, _)| {
-            tail.strip_suffix(unit)
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        });
-    waits.then_some(tail)
-}
-
-pub(crate) fn row_time(line: &str) -> Option<String> {
-    row_time_tail(line).map(str::to_string)
-}
-
-/// A row's subline with its wait age removed when that age has its own
-/// column. The same age should not be read twice in one row.
-pub(crate) fn row_summary(line: &str) -> &str {
-    if row_time_tail(line).is_some() {
-        line.rsplit_once(" · ").map_or("", |(summary, _)| summary)
-    } else {
-        line
-    }
-}
-
-/// A row's right-hand time column: [`row_time`] of its line in the mono
-/// face at the code size (12 at the usual rem), quiet. None where the
-/// line carries no readable time, so the row ends with its id alone.
-pub(crate) fn time_column(line: &str, mono: Option<SharedString>, palette: Palette) -> Option<Div> {
-    let time = row_time(line)?;
-    let mut column = div()
-        .flex_none()
-        .text_size(rems(TYPE_CODE))
-        .text_color(palette.faint)
-        .child(time);
-    if let Some(mono) = mono {
-        column = column.font_family(mono);
-    }
-    Some(column)
-}
-
 /// How many things wait, in words: none where none do, one numbered
 /// with its single word, more with their many. What [`Counts::line`]
 /// and the rail's tooltips say.
@@ -513,24 +467,5 @@ pub(crate) fn count_words(n: usize, one: &str, more: &str) -> Option<String> {
         0 => None,
         1 => Some(format!("1 {one}")),
         n => Some(format!("{n} {more}")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_row_s_time_is_the_waits_at_its_line_s_end() {
-        assert_eq!(row_time("jo · 2 options · 3d").as_deref(), Some("3d"));
-        assert_eq!(row_summary("jo · 2 options · 3d"), "jo · 2 options");
-        assert_eq!(row_time("3d").as_deref(), Some("3d"));
-        assert_eq!(row_summary("3d"), "");
-        assert_eq!(row_time("jo · words wanted · now").as_deref(), Some("now"));
-        assert_eq!(row_time("build · agents · 5m").as_deref(), Some("5m"));
-        assert_eq!(row_time("jo · 2 options").as_deref(), None);
-        assert_eq!(row_time("landed").as_deref(), None);
-        assert_eq!(row_summary("jo · landed"), "jo · landed");
-        assert_eq!(row_time("").as_deref(), None);
     }
 }

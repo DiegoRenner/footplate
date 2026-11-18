@@ -8,13 +8,12 @@ use gpui::{
 };
 
 use super::Footplate;
-use super::metrics::WAITING_SUB;
+use super::metrics::{ROW_LAMP, ROW_LAMP_GAP, ROW_TITLE_CHARS, WAITING_SUB};
 use super::ui::{field, keys_hint, shorten};
-use super::words::{row_summary, time_column};
 use crate::api::{Address, Reach};
 use crate::model::{self, Effect, Model, Selected, WaitingDetail, WaitingMove, WaitingRow};
 use crate::select;
-use crate::theme::{Palette, TYPE_LABEL, yard_color};
+use crate::theme::{Palette, TYPE_CODE, TYPE_LABEL, yard_color};
 
 /// What the card says under its moves while the yard is reconnecting, which
 /// stand faint: nothing is queued, and the move is made by hand once the
@@ -122,9 +121,10 @@ impl Footplate {
     }
 
     /// One bead's row of the Waiting section, in the decisions row's shape:
-    /// the title wrapped to two lines (a parked bead has no question), then
-    /// its stage, its group and how long it waits, with the bead's short id
-    /// at the row's end.
+    /// the title, under the decisions' titles past their lamp's room (a
+    /// parked bead waits on a move, and no lamp of a question), then its
+    /// stage, its group and how long it waits, with the bead's short id at
+    /// the right.
     pub(crate) fn waiting_row(
         &self,
         row: WaitingRow,
@@ -132,6 +132,16 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let sel = Selected::Waiting(row.bead.clone());
+        let indent = px(ROW_LAMP + ROW_LAMP_GAP);
+        let mut short = div()
+            .flex_none()
+            .text_size(rems(TYPE_CODE))
+            .text_color(palette.faint)
+            .debug_selector(|| format!("waiting id {}", row.bead))
+            .child(row.short);
+        if let Some(mono) = select::mono(cx) {
+            short = short.font_family(mono);
+        }
         div()
             .id(SharedString::from(format!("waiting {}", row.bead)))
             .debug_selector(|| format!("waiting row {}", row.bead))
@@ -140,9 +150,6 @@ impl Footplate {
             .py_1p5()
             .rounded_md()
             .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
             .cursor_pointer()
             .border_1()
             .border_color(rgba(0x00000000))
@@ -155,44 +162,34 @@ impl Footplate {
                 div()
                     .flex()
                     .flex_col()
-                    // Resolve the available row width before measuring the
-                    // head, so it wraps within the row.
                     .flex_1()
                     .min_w_0()
+                    .gap(px(2.))
+                    .pl(indent)
                     .child(
                         div()
-                            .line_clamp(2)
+                            .truncate()
                             .text_size(rems(TYPE_LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .debug_selector(|| format!("waiting head {}", row.bead))
-                            .child(row.head),
+                            .child(shorten(&row.head, ROW_TITLE_CHARS)),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(palette.faint)
-                            .truncate()
-                            .debug_selector(|| format!("waiting sub {}", row.bead))
-                            .child(waiting_sub(row_summary(&row.sub))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_baseline()
-                    .gap_2()
-                    .children(
-                        time_column(&row.sub, select::mono(cx), palette).map(|time| {
-                            time.debug_selector(|| format!("waiting time {}", row.bead))
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.faint)
-                            .debug_selector(|| format!("waiting id {}", row.bead))
-                            .child(row.short),
+                            .flex()
+                            .items_baseline()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(palette.faint)
+                                    .truncate()
+                                    .debug_selector(|| format!("waiting sub {}", row.bead))
+                                    .child(waiting_sub(&row.sub)),
+                            )
+                            .child(short),
                     ),
             )
     }

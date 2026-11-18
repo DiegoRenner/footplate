@@ -2991,7 +2991,10 @@ impl Footplate {
             );
             // Who wrote a note stands over it and not before it: a note's
             // first line may be a heading or an item, which begin a line.
-            for (ix, note) in detail.notes.iter().enumerate() {
+            // The newest stands first, under the body, as the bead's latest
+            // word is what it is read for; each keeps its own index, so its
+            // selection's key is the same whatever the order.
+            for (ix, note) in detail.notes.iter().enumerate().rev() {
                 let mut block = div()
                     .flex()
                     .flex_col()
@@ -3076,7 +3079,8 @@ impl Footplate {
             );
             // Who wrote a note stands over it and not before it: a note's
             // first line may be a heading or an item, which begin a line.
-            for (ix, note) in notes.iter().enumerate() {
+            // The newest stands first, as in the bead whole above.
+            for (ix, note) in notes.iter().enumerate().rev() {
                 let mut block = div()
                     .flex()
                     .flex_col()
