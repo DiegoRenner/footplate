@@ -7375,6 +7375,7 @@ fn shot_selected() -> Option<Selected> {
         | Ok("lines-context") => return Some(Selected::Arrivals),
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
+        Ok("lines-board") => return Some(Selected::Line("footplate".into())),
         Ok("lines-flow") => {
             return Some(Selected::Flow("yardr".into(), "default".into(), "".into()));
         }

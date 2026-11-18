@@ -2980,9 +2980,10 @@ impl Footplate {
                     move || format!("column {flow} {stage} rule")
                 }),
             );
-        // What landed stands under the landed station alone; any
-        // other column draws the stages' beads and nothing else.
-        let landings = match stage.terminal {
+        // What landed stands under the landed station alone — the
+        // stage the list stands it under — and any other column
+        // draws the stages' beads and nothing else.
+        let landings = match Self::flow_has_landings_at(flow, &stage.stage) {
             true => flow.landings.as_slice(),
             false => &[],
         };
@@ -3004,7 +3005,7 @@ impl Footplate {
                 column.child(self.bead_card(bead, Some(stage), now, mono.clone(), palette, cx));
         }
         for landing in landings {
-            column = column.child(self.landing_row(landing, now, palette, cx));
+            column = column.child(self.landing_row(flow, stage, landing, now, palette, cx));
         }
         column
     }
@@ -3012,9 +3013,12 @@ impl Footplate {
     /// One bead that landed under the flow's landed station: its title
     /// with its headcode and how long ago it landed faint under it, in
     /// the served order, newest first. A tap opens the bead whole, as a
-    /// card's tap does; the Bead call serves closed beads.
+    /// card's tap does; the Bead call serves closed beads. Scoped to
+    /// its column, as the column's own selectors are.
     pub(crate) fn landing_row(
         &self,
+        flow: &Flow,
+        stage: &FlowStage,
         landing: &FlowLanding,
         now: &chrono::DateTime<chrono::Utc>,
         palette: Palette,
@@ -3022,6 +3026,7 @@ impl Footplate {
     ) -> impl IntoElement + use<> {
         let bead = landing.bead.clone();
         let sel = Selected::Bead(landing.bead.clone());
+        let scope = format!("{} {} {bead}", flow.name, stage.stage);
         let meta = [
             short_bead(&landing.bead),
             landed_age(&model::waits(&landing.landed_at, now)),
@@ -3031,10 +3036,10 @@ impl Footplate {
         .collect::<Vec<_>>()
         .join(" · ");
         div()
-            .id(SharedString::from(format!("landing {bead}")))
+            .id(SharedString::from(format!("landing {scope}")))
             .debug_selector({
-                let bead = bead.clone();
-                move || format!("landing {bead}")
+                let scope = scope.clone();
+                move || format!("landing {scope}")
             })
             .pt_2()
             .flex()
@@ -3045,8 +3050,8 @@ impl Footplate {
             .child(
                 div()
                     .debug_selector({
-                        let bead = bead.clone();
-                        move || format!("landing title {bead}")
+                        let scope = scope.clone();
+                        move || format!("landing title {scope}")
                     })
                     .truncate()
                     .text_sm()
@@ -3055,8 +3060,8 @@ impl Footplate {
             .child(
                 div()
                     .debug_selector({
-                        let bead = bead.clone();
-                        move || format!("landing meta {bead}")
+                        let scope = scope.clone();
+                        move || format!("landing meta {scope}")
                     })
                     .text_xs()
                     .text_color(palette.faint)

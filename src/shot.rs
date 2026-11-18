@@ -273,6 +273,7 @@ pub const STATES: &[&str] = &[
     "lines-departures",
     "lines-arrivals",
     "lines-flow",
+    "lines-board",
     "lines-context",
     "keys",
     "about",
@@ -1528,6 +1529,7 @@ fn populate(yard: &Yard, state: &str) {
         | "flow"
         | "lines-arrivals"
         | "lines-flow"
+        | "lines-board"
         | "lines-context"
         | "line-window"
         | "line-edit"
@@ -3212,6 +3214,43 @@ fn populate(yard: &Yard, state: &str) {
         };
         yard.answer("Flows", &served.to_string());
     }
+    if state == "lines-board" {
+        // The board this state shoots: footplate's pull-request flow
+        // with one bead past triage, two terminals, and two landings,
+        // which stand under merged alone. Compact, so the shot holds
+        // every column.
+        yard.answer(
+            "Flows",
+            &json!({"result": {
+                "travelling": 1,
+                "depots": [
+                    {"name": "footplate", "kind": "git", "travelling": 1, "flows": [
+                        {"name": "contributors.pr", "type": "pr", "source": "store", "stages": [
+                            {"stage": "contributor", "group": "mckean", "human": true,
+                             "lamp": "turn", "terminal": false, "limit": 1, "taken": 0,
+                             "beads": [
+                                {"bead": "footplate-c1",
+                                 "title": "A contributor's pull request",
+                                 "expected": "1h–2h", "remark": "waits for jo",
+                                 "tone": "amber", "working": false}]},
+                            {"stage": "merged", "group": "", "human": false,
+                             "lamp": "none", "terminal": true, "beads": []},
+                            {"stage": "closed", "group": "", "human": false,
+                             "lamp": "none", "terminal": true, "beads": []},
+                        ],
+                        "landings": [
+                            {"bead": "yd-r9pn", "title": "Serve the landings",
+                             "landed_at": landed_at(2, 15)},
+                            {"bead": "yd-points", "title": "Oil the points",
+                             "landed_at": landed_at(5, 40)},
+                        ]},
+                    ], "elsewhere": []},
+                ],
+                "unassigned": [],
+            }})
+            .to_string(),
+        );
+    }
     if state == "lines-arrivals" || state == "lines-flow" || state == "lines-context" {
         // The asks the head's pills count: two open on beads of
         // yardr's default flow, and two beads parked for jo's move on
@@ -4358,6 +4397,42 @@ mod tests {
                             "{state}"
                         );
                     }
+                }
+                "lines-board" => {
+                    // The board's one flow: a contributor's bead past
+                    // triage, two terminals, and two landings, which the
+                    // window stands under merged alone.
+                    assert!(loaded.asks.open.is_empty(), "{state}");
+                    let letters = yard.client().conversation("jo", "yardmaster", 0).unwrap();
+                    assert_eq!(letters.len(), 6, "{state}");
+                    assert_eq!(loaded.arrivals.rows.len(), 3, "{state}");
+                    assert_eq!(loaded.flows.travelling, 1, "{state}");
+                    assert_eq!(loaded.flows.depots.len(), 1, "{state}");
+                    assert_eq!(loaded.flows.depots[0].name, "footplate", "{state}");
+                    let flow = &loaded.flows.depots[0].flows[0];
+                    assert_eq!(flow.name, "contributors.pr", "{state}");
+                    assert_eq!(flow.flow_type, "pr", "{state}");
+                    assert_eq!(
+                        flow.stages
+                            .iter()
+                            .map(|s| (s.stage.as_str(), s.terminal))
+                            .collect::<Vec<_>>(),
+                        [("contributor", false), ("merged", true), ("closed", true)],
+                        "{state}"
+                    );
+                    assert_eq!(flow.stages[0].beads.len(), 1, "{state}");
+                    assert_eq!(flow.stages[0].beads[0].bead, "footplate-c1", "{state}");
+                    assert_eq!(
+                        flow.landings
+                            .iter()
+                            .map(|l| (l.bead.as_str(), l.title.as_str()))
+                            .collect::<Vec<_>>(),
+                        [
+                            ("yd-r9pn", "Serve the landings"),
+                            ("yd-points", "Oil the points"),
+                        ],
+                        "{state}"
+                    );
                 }
                 "lines-arrivals" | "lines-flow" => {
                     // The rich flows with a quiet flow on yardr, the

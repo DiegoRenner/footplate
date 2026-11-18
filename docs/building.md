@@ -451,7 +451,9 @@ the same), `lines-arrivals` (the arrivals pane over the rich yard: the depot
 tree with its nested flows, the head's stats, each moving flow a track of
 stations with its beads' chips, the quiet flows as one line each),
 `lines-flow` (yardr's default flow open from that tree: its list grouped by
-stage, the empty stages folded), `lines-context` (that pane with a stage's
+stage, the empty stages folded), `lines-board` (footplate's board over its
+pull-request flow: one bead past triage, two terminals, two landings under
+merged alone), `lines-context` (that pane with a stage's
 context drawer open on footplate's default flow at new, over the pane),
 `keys` (the cheatsheet open over an open card),
 `about` (the About card open over the yardmaster's conversation,

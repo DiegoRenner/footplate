@@ -19908,12 +19908,21 @@ yardr.dev
         }
         // Landings stand beneath the landed station, newest first.
         for bead in ["yd-r9pn", "yd-q04p"] {
-            assert!(drawn(cx, &format!("landing {bead}")), "{bead}");
-            assert!(drawn(cx, &format!("landing title {bead}")), "{bead}");
-            assert!(drawn(cx, &format!("landing meta {bead}")), "{bead}");
+            assert!(
+                drawn(cx, &format!("landing default merged {bead}")),
+                "{bead}"
+            );
+            assert!(
+                drawn(cx, &format!("landing title default merged {bead}")),
+                "{bead}"
+            );
+            assert!(
+                drawn(cx, &format!("landing meta default merged {bead}")),
+                "{bead}"
+            );
         }
-        let first = bounds_of(cx, "landing yd-r9pn");
-        let second = bounds_of(cx, "landing yd-q04p");
+        let first = bounds_of(cx, "landing default merged yd-r9pn");
+        let second = bounds_of(cx, "landing default merged yd-q04p");
         assert!(
             first.top() < second.top(),
             "the landings stand out of the served order"
@@ -19928,7 +19937,7 @@ yardr.dev
         assert!(drawn(cx, "column no-landings merged empty"));
         // A landing's tap opens the whole bead, and back returns to
         // the line.
-        click_on(cx, "landing yd-r9pn");
+        click_on(cx, "landing default merged yd-r9pn");
         wait(cx, "the landed bead", |cx| drawn(cx, "bead back"));
         assert_eq!(yard.asked("Bead"), [json!({"bead": "yd-r9pn"})]);
         view.read_with(cx, |v, _| {
@@ -19956,6 +19965,51 @@ yardr.dev
                 v.model.as_ref().unwrap().selected() == Some(&Selected::Line("yardr".into()))
             })
         });
+    }
+
+    /// A flow with two terminal stages stands its landings once,
+    /// under merged: the closed column reads terminal with the buffer
+    /// stop but draws no landing row, keeping the empty-stage line.
+    #[gpui::test]
+    fn a_flow_s_landings_stand_under_merged_alone_with_two_terminal_stages(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer("Arrivals", &arrivals_board());
+        let mut flows: Value = serde_json::from_str(&flows_landings()).unwrap();
+        flows["result"]["depots"][0]["flows"][0]["stages"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "stage": "closed", "group": "", "human": false,
+                "lamp": "none", "terminal": true, "beads": []
+            }));
+        yard.answer("Flows", &flows.to_string());
+        let (_view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        to_timetable(&_view, cx);
+        click_on(cx, "row yardr");
+        wait(cx, "the flow", |cx| drawn(cx, "flow head yardr"));
+        // Both ends read terminal with the buffer stop, closed past
+        // merged in travel order.
+        assert!(drawn(cx, "column default merged stop"));
+        assert!(drawn(cx, "column default closed"));
+        assert!(drawn(cx, "column default closed stop"));
+        let merged = bounds_of(cx, "column default merged").left();
+        let closed = bounds_of(cx, "column default closed").left();
+        assert!(merged < closed, "closed stands out of travel order");
+        // Each landing stands under merged, and never under closed.
+        for bead in ["yd-r9pn", "yd-q04p"] {
+            assert!(
+                drawn(cx, &format!("landing default merged {bead}")),
+                "{bead}"
+            );
+            assert!(
+                !drawn(cx, &format!("landing default closed {bead}")),
+                "{bead}"
+            );
+        }
+        assert!(drawn(cx, "column default closed empty"));
     }
 
     /// A line's held beads read red only where the reader holds
