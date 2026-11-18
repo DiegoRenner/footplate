@@ -19653,13 +19653,22 @@ yardr.dev
     /// stands next, the landed end's with what landed under it — with
     /// the empty stages folded to one row. The board stands under the
     /// toggle, the flow's columns as the depot's board draws them. A
-    /// row opens the bead whole, and back returns to the flow.
+    /// row opens the bead whole, and back returns to the flow. At the
+    /// narrowest window its short strip has no mark, and its long one
+    /// marks the track that runs past the pane.
     #[gpui::test]
     fn a_flow_s_list_groups_its_beads_by_stage_with_the_empty_folded(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
         let mut flows: Value = serde_json::from_str(&flows_panel()).unwrap();
+        let wrapping: Value = serde_json::from_str(&flows_wrapping()).unwrap();
+        flows["result"]["depots"][0]["flows"]
+            .as_array_mut()
+            .unwrap()
+            .push(wrapping["result"]["depots"][0]["flows"][0].clone());
+        flows["result"]["travelling"] = json!(10);
+        flows["result"]["depots"][0]["travelling"] = json!(8);
         flows["result"]["depots"][0]["flows"][0]["landings"] = json!([
             {"bead": "yd-old1", "title": "First to land",
              "landed_at": "2026-10-08T09:30:00Z"},
@@ -19741,6 +19750,38 @@ yardr.dev
         wait(cx, "the unfolded stages", |cx| {
             drawn(cx, "flow empty stage design critique")
         });
+        // A short flow's knots fit the strip with no mark; the long
+        // flow's track runs past its edge, with the mark inside the pane.
+        cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(360.)));
+        view.update_in(cx, |v, window, cx| {
+            v.select(
+                Selected::Flow("yardr".into(), "design".into(), "".into()),
+                window,
+                cx,
+            )
+        });
+        wait(cx, "the short flow", |cx| drawn(cx, "flow strip design"));
+        assert!(!drawn(cx, "flow strip more design"));
+        view.update_in(cx, |v, window, cx| {
+            v.select(
+                Selected::Flow("yardr".into(), "release".into(), "release".into()),
+                window,
+                cx,
+            )
+        });
+        wait(cx, "the long flow", |cx| {
+            drawn(cx, "flow strip more release")
+        });
+        let last = bounds_of(cx, "flow knot release closed");
+        assert!(
+            px(WINDOW_MIN) < last.right(),
+            "the long flow stands inside the pane, scrolling nowhere: {last:?}"
+        );
+        let mark = bounds_of(cx, "flow strip more release");
+        assert!(
+            mark.right() <= px(WINDOW_MIN),
+            "the mark runs past the pane: {mark:?}"
+        );
     }
 
     /// With beads travelling with no flow the No flow row stands last,
@@ -21170,8 +21211,9 @@ yardr.dev
     /// above its stations, and No flow's section stands below the fold,
     /// reached by scrolling down. Nothing but the tracks' stations runs
     /// past the pane's right edge: the stations keep their narrowest
-    /// and the track scrolls. The stats' longer worked pill, split by
-    /// kind, holds inside the pane too.
+    /// and the track scrolls. Each head's meta stands on one line with
+    /// its status, the backlog never wrapping under it. The stats'
+    /// longer worked pill, split by kind, holds inside the pane too.
     #[gpui::test]
     fn the_panel_holds_at_the_narrowest_window(cx: &mut TestAppContext) {
         let yard = Yard::start();
@@ -21292,6 +21334,14 @@ yardr.dev
                     "{part} runs past the pane: {at:?}"
                 );
             }
+            // The head's meta stands on one line with its status: the
+            // backlog never wraps under it starting with its dot.
+            let status = bounds_of(cx, &format!("panel head {depot} {flow} status"));
+            let backlog = bounds_of(cx, &format!("panel head {depot} {flow} backlog"));
+            assert!(
+                (status.top() - backlog.top()).abs() < px(1.),
+                "the {depot} {flow} meta wraps under its status: {status:?} {backlog:?}"
+            );
             for stage in stages {
                 let station = bounds_of(cx, &format!("panel station {depot} {flow} {stage}"));
                 assert!(

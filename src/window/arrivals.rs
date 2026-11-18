@@ -12,7 +12,8 @@ use super::ask::section_head;
 use super::metrics::{
     BACKLOG_TITLES, BOARD_BEAD, BOARD_EXPECTED, BOARD_LINE, BOARD_PLATFORM, BOARD_REMARK, FLOW_ID,
     LINE_COLUMN, LINE_HEAD, QUIET_NAME, QUIET_NAME_CHARS, ROW_MARK, TRACK_STATION,
-    flow_empty_budgets, flow_empty_stage_budget, flow_group_budgets, flow_row_budgets, grown,
+    flow_empty_budgets, flow_empty_stage_budget, flow_group_budgets, flow_quiet_path_budget,
+    flow_row_budgets, flow_strip_overflows, grown, panel_head_name_budget,
 };
 use super::panel::{
     buffer_stop, column_rule, lines_too_old, panel_card, panel_stage_name, waits_head,
@@ -790,6 +791,8 @@ impl Footplate {
     pub(crate) fn talk_arrivals(
         &self,
         model: &Model,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -797,7 +800,9 @@ impl Footplate {
         let head = self.arrivals_head(model, palette, cx);
         let body = match model.departures() {
             true => self.departures_board(model, palette, cx).into_any_element(),
-            false => self.panel(model, palette, cx).into_any_element(),
+            false => self
+                .panel(model, pane_width, rem, palette, cx)
+                .into_any_element(),
         };
         pane.children(self.reconnect_strip(palette))
             .child(head)
@@ -1105,6 +1110,8 @@ impl Footplate {
     pub(crate) fn panel(
         &self,
         model: &Model,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1132,7 +1139,15 @@ impl Footplate {
                 empty = false;
                 body = body.child(self.panel_legend(palette));
             }
-            body = body.child(self.panel_depot(model, depot, mono.clone(), palette, cx));
+            body = body.child(self.panel_depot(
+                model,
+                depot,
+                mono.clone(),
+                pane_width,
+                rem,
+                palette,
+                cx,
+            ));
         }
         if !model.unassigned().is_empty() {
             empty = false;
@@ -1191,11 +1206,14 @@ impl Footplate {
     /// no stage of its flows. The head opens the depot's board. The
     /// rows never shrink: squeezed, their cards would spill over the
     /// next row, so the panel scrolls instead.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn panel_depot(
         &self,
         model: &Model,
         depot: &FlowDepot,
         mono: Option<SharedString>,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1249,12 +1267,21 @@ impl Footplate {
             );
         }
         for flow in Model::moving_flows(depot) {
-            section =
-                section.child(self.panel_track(model, depot, flow, mono.clone(), palette, cx));
+            section = section.child(self.panel_track(
+                model,
+                depot,
+                flow,
+                mono.clone(),
+                pane_width,
+                rem,
+                palette,
+                cx,
+            ));
         }
         let quiet = Model::quiet_flows(depot);
         if !quiet.is_empty() {
-            section = section.child(self.panel_quiet_flows(depot, quiet, palette, cx));
+            section =
+                section.child(self.panel_quiet_flows(depot, quiet, pane_width, rem, palette, cx));
         }
         if !depot.elsewhere.is_empty() {
             section = section.child(self.panel_elsewhere(depot, palette, cx));
@@ -1267,12 +1294,15 @@ impl Footplate {
     /// order, with the beads' chips on their stations. The head opens
     /// the flow's list; the card reads rust-edged where any of its
     /// beads waits on the reader.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn panel_track(
         &self,
         model: &Model,
         depot: &FlowDepot,
         flow: &Flow,
         mono: Option<SharedString>,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1311,19 +1341,23 @@ impl Footplate {
                 move || format!("panel track {selector}")
             })
             .when(on_you > 0, |el| el.border_color(palette.accent))
-            .child(self.panel_track_head(depot, flow, on_you, palette, cx))
+            .child(self.panel_track_head(depot, flow, on_you, pane_width, rem, palette, cx))
             .child(stations)
     }
 
     /// One track's head above its stations: the flow's name with its
     /// type where typed, else its source, and at the right who the flow
     /// waits on with its backlog counted apart. It opens the flow's
-    /// list. Where one line cannot hold them they wrap whole, never cut.
+    /// list. The head holds one line: the name ends in an ellipsis past
+    /// its budget, and the chip with the meta stands whole at the right.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn panel_track_head(
         &self,
         depot: &FlowDepot,
         flow: &Flow,
         on_you: usize,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1338,6 +1372,18 @@ impl Footplate {
             _ => palette.text,
         };
         let counts = line_counts(flow);
+        let backlog = format!("· {} backlog", counts.backlog);
+        let name = shorten(
+            &flow.name,
+            panel_head_name_budget(
+                pane_width,
+                rem,
+                flow.name.chars().count(),
+                chip.chars().count(),
+                status.chars().count(),
+                backlog.chars().count(),
+            ),
+        );
         let selector = format!("{} {}", depot.name, Self::flow_label(depot, flow));
         let to = Selected::Flow(
             depot.name.clone(),
@@ -1354,7 +1400,6 @@ impl Footplate {
             .min_w_0()
             .flex()
             .flex_row()
-            .flex_wrap()
             .items_baseline()
             .gap_2()
             .pb_3()
@@ -1367,9 +1412,12 @@ impl Footplate {
                         let selector = selector.clone();
                         move || format!("panel head {selector} name")
                     })
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_size(rems(TYPE_LABEL))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(flow.name.clone()),
+                    .child(name),
             )
             .when(!chip.is_empty(), |el| {
                 el.child(
@@ -1378,6 +1426,7 @@ impl Footplate {
                             let selector = selector.clone();
                             move || format!("panel head {selector} chip")
                         })
+                        .flex_none()
                         .rounded(px(4.))
                         .border_1()
                         .border_color(palette.line)
@@ -1393,13 +1442,13 @@ impl Footplate {
                         }),
                 )
             })
-            .child(div().flex_1())
             .child(
                 div()
                     .debug_selector({
                         let selector = selector.clone();
                         move || format!("panel head {selector} status")
                     })
+                    .flex_none()
                     .text_size(rems(TYPE_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(color)
@@ -1411,9 +1460,10 @@ impl Footplate {
                         let selector = selector.clone();
                         move || format!("panel head {selector} backlog")
                     })
+                    .flex_none()
                     .text_size(rems(TYPE_META))
                     .text_color(palette.faint)
-                    .child(format!("· {} backlog", counts.backlog)),
+                    .child(backlog),
             )
     }
 
@@ -1687,11 +1737,14 @@ impl Footplate {
     }
 
     /// The depot's quiet flows as one line each: the name, the path
-    /// of its stages, and its backlog. Each opens the flow's list.
+    /// of its stages, and its backlog. Each opens the flow's list. The
+    /// path ends in an ellipsis past its budget, as the name does.
     pub(crate) fn panel_quiet_flows(
         &self,
         depot: &FlowDepot,
         quiet: Vec<&Flow>,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1712,6 +1765,17 @@ impl Footplate {
             .overflow_hidden();
         for (at, flow) in quiet.iter().enumerate() {
             let label = Self::flow_label(depot, flow);
+            let path = flow_path(flow);
+            let backlog = format!("{} backlog", model::backlog_count(flow));
+            let path = shorten(
+                &path,
+                flow_quiet_path_budget(
+                    pane_width,
+                    rem,
+                    path.chars().count(),
+                    backlog.chars().count(),
+                ),
+            );
             let to = Selected::Flow(
                 depot.name.clone(),
                 flow.name.clone(),
@@ -1751,14 +1815,14 @@ impl Footplate {
                             .truncate()
                             .text_size(rems(TYPE_META))
                             .text_color(palette.faint)
-                            .child(flow_path(flow)),
+                            .child(path),
                     )
                     .child(
                         div()
                             .flex_none()
                             .text_size(rems(TYPE_META))
                             .text_color(palette.faint)
-                            .child(format!("{} backlog", model::backlog_count(flow))),
+                            .child(backlog),
                     ),
             );
         }
@@ -2111,16 +2175,18 @@ impl Footplate {
                 );
             }
             false => {
-                list = list.child(self.flow_strip(depot, flow, palette, cx)).child(
-                    div()
-                        .px_4()
-                        .py_2()
-                        .border_b_1()
-                        .border_color(palette.line)
-                        .text_size(rems(TYPE_META))
-                        .text_color(palette.faint)
-                        .child("Grouped by stage · moving a bead goes through a Decide card"),
-                );
+                list = list
+                    .child(self.flow_strip(depot, flow, pane_width, rem, palette, cx))
+                    .child(
+                        div()
+                            .px_4()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(palette.line)
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.faint)
+                            .child("Grouped by stage · moving a bead goes through a Decide card"),
+                    );
                 for stage in &flow.stages {
                     list = list.child(self.flow_group(
                         model,
@@ -2255,12 +2321,15 @@ impl Footplate {
     /// The flow's stages as a strip: each but the backlog's a knot on
     /// the track with its name, the stages with beads named with their
     /// count, the landed end with its served landing rows. It scrolls
-    /// sideways past the pane's edge. A press on a knot opens the
+    /// sideways past the pane's edge, where the track runs on a tie with
+    /// a › stands at the edge to say so. A press on a knot opens the
     /// stage's context drawer, as a press on a panel station does.
     pub(crate) fn flow_strip(
         &self,
         depot: &str,
         flow: &Flow,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -2270,14 +2339,15 @@ impl Footplate {
                 let flow = flow.name.clone();
                 move || format!("flow strip {flow}")
             })
+            .flex_1()
+            .min_w_0()
             .flex()
             .flex_row()
             .items_center()
             .overflow_x_scroll()
             .px_4()
-            .py_3()
-            .border_b_1()
-            .border_color(palette.line);
+            .py_3();
+        let mut labels: Vec<usize> = Vec::new();
         let stages: Vec<&FlowStage> = flow
             .stages
             .iter()
@@ -2303,6 +2373,7 @@ impl Footplate {
             if Self::flow_has_landings_at(flow, &stage.stage) {
                 on = true;
             }
+            labels.push(label.chars().count());
             let knot = match station_node(stage) {
                 "end" => div()
                     .size(px(10.))
@@ -2375,7 +2446,37 @@ impl Footplate {
                     ),
             );
         }
-        strip
+        let marks = flow_strip_overflows(pane_width, rem, &labels);
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .border_b_1()
+            .border_color(palette.line)
+            .child(strip)
+            .when(marks, |el| {
+                el.child(
+                    div()
+                        .debug_selector({
+                            let flow = flow.name.clone();
+                            move || format!("flow strip more {flow}")
+                        })
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
+                        .pl_2()
+                        .pr_4()
+                        .child(div().w(px(20.)).h(px(2.)).flex_none().bg(palette.strong))
+                        .child(
+                            div()
+                                .text_size(rems(TYPE_META))
+                                .text_color(palette.faint)
+                                .child("›"),
+                        ),
+                )
+            })
     }
 
     /// Whether the flow's served landings stand under the stage. They

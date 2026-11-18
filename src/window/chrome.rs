@@ -7068,7 +7068,15 @@ impl Footplate {
                 .talk_conversation(model, with, palette, cx)
                 .into_any_element(),
             Some(Selected::Yard) => self.talk_yard(model, palette, cx).into_any_element(),
-            Some(Selected::Arrivals) => self.talk_arrivals(model, palette, cx).into_any_element(),
+            Some(Selected::Arrivals) => self
+                .talk_arrivals(
+                    model,
+                    pane_width(window.viewport_size().width, f32::from(window.rem_size())),
+                    f32::from(window.rem_size()),
+                    palette,
+                    cx,
+                )
+                .into_any_element(),
             Some(Selected::Line(line)) => {
                 self.talk_flow(model, line, palette, cx).into_any_element()
             }

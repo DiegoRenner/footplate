@@ -286,6 +286,81 @@ pub(crate) fn flow_empty_stage_budget(pane: f32, rem: f32, stage_len: usize) -> 
     before_ellipsis(stage_len, visible)
 }
 
+/// The chars before an ellipsis in a quiet flow's path on the panel: the
+/// room past the panel's padding, the row's padding, the name's box, the
+/// row's two gaps and the backlog's words, which stand whole. The path's
+/// room moves with the pane, so the budget is figured from its width, as
+/// the flow list's are; the row's `truncate()` cuts what is left where the
+/// pane is narrower still.
+pub(crate) fn flow_quiet_path_budget(
+    pane: f32,
+    rem: f32,
+    path_len: usize,
+    backlog_len: usize,
+) -> usize {
+    let scale = rem / 16.;
+    let name = QUIET_NAME.max(QUIET_NAME / 16. * rem);
+    let fixed = 2. * rem + 1.5 * rem + name + 1.5 * rem;
+    let meta_advance = 7. * scale;
+    let visible = ((pane - fixed - backlog_len as f32 * meta_advance).max(0.) / meta_advance)
+        .floor() as usize;
+    before_ellipsis(path_len, visible)
+}
+
+/// The chars before an ellipsis in a track head's flow name: the room past
+/// the panel's and the card's padding, the row's gaps, the chip and the
+/// meta, which stand whole — the head holds one line, and the name is what
+/// clips. `chip_len` is 0 where the head draws no chip, and counts no box
+/// then. The row's `truncate()` cuts what is left where the pane is
+/// narrower still.
+pub(crate) fn panel_head_name_budget(
+    pane: f32,
+    rem: f32,
+    name_len: usize,
+    chip_len: usize,
+    status_len: usize,
+    backlog_len: usize,
+) -> usize {
+    let scale = rem / 16.;
+    // The panel's padding either side, the card's padding and border, and
+    // the row's gaps: three where the chip stands, two where it does not.
+    let gaps = match chip_len {
+        0 => 2.,
+        _ => 3.,
+    } * 0.5
+        * rem;
+    let fixed = 2. * rem + 1.5 * rem + 2. + gaps;
+    // The chip's border and padding with its words, which stand in mono
+    // where the window has one: Menlo and DejaVu Sans Mono advance a hair
+    // past 7 pixels a char at the code size, and 7.5 covers them.
+    let chip = match chip_len {
+        0 => 0.,
+        _ => 2. + 0.5 * rem + chip_len as f32 * 7.5 * scale,
+    };
+    let meta = (status_len + backlog_len) as f32 * 7. * scale;
+    let visible = ((pane - fixed - chip - meta).max(0.) / (8.5 * scale)).floor() as usize;
+    before_ellipsis(name_len, visible)
+}
+
+/// Whether the flow strip's stations run past the pane's edge: their knots
+/// and ties with their labels' chars, against the strip's inner width. The
+/// labels' advance runs under typical text, with a margin past the edge, so
+/// the overflow mark stands only where the track plainly runs on: a strip
+/// past the edge by a few pixels shows no mark, and a fitting one never
+/// grows one.
+pub(crate) fn flow_strip_overflows(pane: f32, rem: f32, labels: &[usize]) -> bool {
+    if labels.is_empty() {
+        return false;
+    }
+    let scale = rem / 16.;
+    let stations: f32 = labels
+        .iter()
+        .map(|chars| 10. + 0.375 * rem + *chars as f32 * 6. * scale)
+        .sum();
+    let ties = (labels.len() - 1) as f32 * (20. + 0.75 * rem);
+    stations + ties > pane - 2. * rem + 16. * scale
+}
+
 fn before_ellipsis(length: usize, visible: usize) -> usize {
     if length > visible {
         visible.saturating_sub(1)
@@ -481,6 +556,69 @@ mod tests {
             shorten(stage, flow_empty_stage_budget(290., 16., stage.len())),
             stage
         );
+    }
+
+    #[test]
+    fn narrow_panes_cut_the_quiet_path_and_the_head_and_mark_the_strip() {
+        // Arrivals at 960: the quiet release path ends with an ellipsis,
+        // and stands whole where the pane holds it.
+        let path = "build › sign › decide › verify › publish › published";
+        let budget = flow_quiet_path_budget(
+            pane_width(px(960.), 16.),
+            16.,
+            path.chars().count(),
+            "3 backlog".len(),
+        );
+        assert_eq!(shorten(path, budget), "build › sign › decide › verify › p…");
+        let budget = flow_quiet_path_budget(
+            pane_width(px(1440.), 16.),
+            16.,
+            path.chars().count(),
+            "3 backlog".len(),
+        );
+        assert_eq!(shorten(path, budget), path);
+        // Arrivals at 624: the head's name gives its room to the meta,
+        // which stands whole, and stands whole where the pane holds it.
+        let budget = panel_head_name_budget(
+            pane_width(px(624.), 16.),
+            16.,
+            "default".len(),
+            "store".len(),
+            "2 wait on you".len(),
+            "· 2 backlog".chars().count(),
+        );
+        assert_eq!(shorten("default", budget), "…");
+        let budget = panel_head_name_budget(
+            pane_width(px(960.), 16.),
+            16.,
+            "default".len(),
+            "store".len(),
+            "2 wait on you".len(),
+            "· 2 backlog".chars().count(),
+        );
+        assert_eq!(shorten("default", budget), "default");
+        // The flow list: the nine-stage track runs past the narrow pane
+        // and the one-stage one stands whole; at 960 the five-stage track
+        // fits, and at 624 it runs past.
+        let release = [8, 4, 6, 6, 7, 9, 4, 4, 6];
+        assert!(flow_strip_overflows(
+            pane_width(px(624.), 16.),
+            16.,
+            &release
+        ));
+        assert!(!flow_strip_overflows(pane_width(px(624.), 16.), 16., &[7]));
+        let default = [7, 6, 10, 19, 8];
+        assert!(!flow_strip_overflows(
+            pane_width(px(960.), 16.),
+            16.,
+            &default
+        ));
+        assert!(flow_strip_overflows(
+            pane_width(px(624.), 16.),
+            16.,
+            &default
+        ));
+        assert!(!flow_strip_overflows(pane_width(px(624.), 16.), 16., &[]));
     }
 
     #[test]
