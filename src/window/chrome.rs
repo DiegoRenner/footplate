@@ -926,6 +926,8 @@ impl Footplate {
         self.line_edit = None;
         self.line_sent = None;
         self.line_filing = false;
+        self.line_served_marks.clear();
+        self.line_served_sending = None;
         self.line_filed = None;
         self.line_refused = None;
         self.line_new_stage = None;
@@ -1413,6 +1415,31 @@ impl Footplate {
                             prompt_whole: false,
                         });
                         effects.extend(model.open_context("footplate", "default", "task", "new"));
+                    }
+                    // The served shot opens the drawer on yardr's
+                    // default flow at new, as above, on its Group tab
+                    // with the serving picker open and a group marked,
+                    // as a pick leaves it. The mark is posed blind, from
+                    // the data the state is served; the coverage test
+                    // pins the rule it stands under. A debug build's
+                    // alone, as above.
+                    #[cfg(debug_assertions)]
+                    if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("lines-served") {
+                        self.context = Some(super::context::ContextOpen {
+                            depot: "yardr".into(),
+                            flow: "default".into(),
+                            flow_type: "".into(),
+                            stage: "new".into(),
+                            tab: super::context::ContextTab::Group,
+                            served_open: true,
+                            stage_whole: false,
+                            prompt_whole: false,
+                        });
+                        self.line_served_marks.insert(
+                            ("yardr".to_string(), "new".to_string(), "r-1".to_string()),
+                            "reviewers".to_string(),
+                        );
+                        effects.extend(model.open_context("yardr", "default", "", "new"));
                     }
                     // The waiting-folded shot stands with its section folded
                     // to the head, and its card still open. A debug build's
@@ -7380,7 +7407,8 @@ fn shot_selected() -> Option<Selected> {
         | Ok("lines-panel")
         | Ok("lines-departures")
         | Ok("lines-arrivals")
-        | Ok("lines-context") => return Some(Selected::Arrivals),
+        | Ok("lines-context")
+        | Ok("lines-served") => return Some(Selected::Arrivals),
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
         Ok("lines-board") => return Some(Selected::Line("footplate".into())),

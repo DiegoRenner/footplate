@@ -562,9 +562,12 @@ them, each with who it is (agents, script, people, another yard), the
 group that serves now marked. No pick is ambiguous about which rule
 it moves.
 
-Picking a group mails the yardmaster to file its card, once, and the
-window then says so under the stage, with the yardmaster's answer
-where one comes and Clear. The card stands in Decide, and this window
+Picking a group only marks it, and Send mails the yardmaster to file
+its card, once; the window then says so under the stage, with the
+yardmaster's answer where one comes and Clear. Looking through the
+groups, or changing one's mind, sends nothing: a second pick replaces
+the mark, and picking the group that serves now marks nothing, with
+Send standing dim. The card stands in Decide, and this window
 approves nothing. Under a rule that is this depot's own the card is
 its route card (`route set`). Under a yard-wide rule the card is the
 set-aside for this depot alone (`route add --depot`): it names that

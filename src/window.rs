@@ -420,6 +420,18 @@ pub struct Footplate {
     /// The New group form of the Line window, while it stands open:
     /// its name field and the runner chosen for its card.
     line_new_group: Option<line::LineNewGroup>,
+    /// The groups marked in the Served-by pickers, by depot, stage and
+    /// rule token: a pick marks, and the picker's Send mails the marked
+    /// group. The Line window and the context drawer draw the same marks
+    /// through the one picker, and a pick for one rule leaves every
+    /// other rule's mark alone. A mark is kept until its mail goes, or
+    /// the group that serves now is picked.
+    line_served_marks: HashMap<(String, String, String), String>,
+    /// The served pick whose mail is on its way, if one is: its mark is
+    /// taken only once the mail has gone, and only where it still names
+    /// the group the mail names, so a send that did not go, and a pick
+    /// made while one was on its way, keep the mark for another try.
+    line_served_sending: Option<line::LineServedSending>,
     /// How the web view answers at the setting's address (up, behind a
     /// login the browser cannot pass, or not at all): what a note's page is
     /// drawn with.
@@ -1020,6 +1032,8 @@ impl Footplate {
             line_refused: None,
             line_new_stage: None,
             line_new_group: None,
+            line_served_marks: HashMap::new(),
+            line_served_sending: None,
             view_up: ViewUp::Unknown,
             run_up: ViewUp::Unknown,
             rows_shown: Cell::new(false),
@@ -16340,6 +16354,7 @@ yardr.dev
               "crew": []}}"#,
         );
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
         to_timetable(&view, cx);
         view.update_in(cx, |v, window, cx| {
             v.select(Selected::Line("yardr".into()), window, cx)
@@ -17159,8 +17174,10 @@ yardr.dev
     }
 
     /// Served by… in the drawer's Group tab picks a group for the
-    /// stage: under the route it mails the route card, where no route
-    /// serves it the new rule's. The window approves nothing.
+    /// stage: the pick only marks it, and Send mails the card — under
+    /// the route the route card, where no route serves it the new
+    /// rule's. Picking the group that serves now marks nothing. The
+    /// window approves nothing.
     #[gpui::test]
     fn the_context_drawer_s_served_pick_files_a_route_card(cx: &mut TestAppContext) {
         let yard = Yard::start();
@@ -17208,14 +17225,32 @@ yardr.dev
         click_on(cx, "context tab group");
         wait(cx, "the facts", |cx| drawn(cx, "context facts runner"));
 
-        // Served by… stands the picker, shut until tapped; picking a
-        // group mails the route card, and the filing stands under it.
+        // Served by… stands the picker, shut until tapped; Send stands
+        // dim with nothing marked, and files nothing.
         assert!(!drawn(cx, "line served new r-1"));
         click_on(cx, "context served");
         wait(cx, "the picker", |cx| {
             drawn(cx, "line serve new r-1 reviewers")
         });
+        click_on(cx, "line served new r-1 send");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
+        // Picking a group only marks it; Send mails the route card,
+        // and the filing stands under it with the mark taken.
         click_on(cx, "line serve new r-1 reviewers");
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.line_served_marks.get(&(
+                    "yardr".to_string(),
+                    "new".to_string(),
+                    "r-1".to_string()
+                )),
+                Some(&"reviewers".to_string())
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
+        click_on(cx, "line served new r-1 send");
         wait(cx, "the route mail", |_| yard.asked("Mail").len() == 1);
         assert_eq!(
             yard.asked("Mail")[0],
@@ -17223,9 +17258,17 @@ yardr.dev
                 "depot: yardr\nstage: new\nrule: r-1\nscope: this depot's own\nfilters: type any · labels none · priority any · for the operator\ngroup: reviewers\n\nFile the route card route set r-1 --group reviewers for this depot's own rule. The card will stand in Decide; nothing changes until it is approved there."})
         );
         wait(cx, "the filing", |cx| drawn(cx, "line filed"));
+        view.read_with(cx, |v, _| assert!(v.line_served_marks.is_empty()));
+        // Picking the group that serves now marks nothing: Send stands
+        // dim, and files nothing.
+        click_on(cx, "line serve new r-1 builders");
+        view.read_with(cx, |v, _| assert!(v.line_served_marks.is_empty()));
+        click_on(cx, "line served new r-1 send");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail").len(), 1);
 
         // Where no route serves the stage, the warn stands with Served
-        // by…, and the pick mails the new rule's card.
+        // by…; the pick marks, and Send mails the new rule's card.
         click_on(cx, "panel station yardr default review open");
         wait(cx, "the review drawer", |cx| drawn(cx, "context tab group"));
         click_on(cx, "context tab group");
@@ -17236,6 +17279,9 @@ yardr.dev
             drawn(cx, "line serve review none reviewers")
         });
         click_on(cx, "line serve review none reviewers");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail").len(), 1);
+        click_on(cx, "line served review none send");
         wait(cx, "the new rule's mail", |_| yard.asked("Mail").len() == 2);
         assert_eq!(
             yard.asked("Mail")[1],
@@ -17245,12 +17291,13 @@ yardr.dev
         assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
     }
 
-    /// A serving pick from the Line window: under a depot's own rule
-    /// it mails the route card, under a yard-wide rule the set-aside
-    /// naming that rule and never it as changed, and New group… mails
-    /// its group card with the runner chosen first; the window
-    /// approves nothing, and the Last change follows the
-    /// representative rule alone.
+    /// A serving pick from the Line window: the pick only marks, one
+    /// mark per rule with a second pick replacing the first, and Send
+    /// mails the card — under a depot's own rule the route card, under
+    /// a yard-wide rule the set-aside naming that rule and never it as
+    /// changed; New group… mails its group card with the runner chosen
+    /// first. The window approves nothing, and the Last change follows
+    /// the representative rule alone.
     #[gpui::test]
     fn a_serving_pick_is_mailed_as_its_card_and_stands_in_decide(cx: &mut TestAppContext) {
         let yard = Yard::start();
@@ -17299,29 +17346,60 @@ yardr.dev
         click_on(cx, "line window open yardr");
         wait(cx, "the line window", |cx| drawn(cx, "line rule new"));
         // A picker stands under the Rule line it edits and under each
-        // Other rule, naming its rule first.
+        // Other rule, naming its rule first, each with its Send.
         for selector in [
             "line served new r-1",
             "line serve new r-1 reviewers",
             "line serve new r-1 assembly",
+            "line served new r-1 send",
             "line served new r-2",
             "line serve new r-2 builders",
+            "line served new r-2 send",
             "line newgroup open",
         ] {
             assert!(drawn(cx, selector), "{selector}");
         }
-        // Under the depot's own rule, the route card.
+        // Clicking through the groups only marks, one mark standing per
+        // rule: the second pick for the rule replaces the first, and
+        // nothing is mailed.
         click_on(cx, "line serve new r-1 reviewers");
+        click_on(cx, "line serve new r-1 assembly");
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.line_served_marks.get(&(
+                    "yardr".to_string(),
+                    "new".to_string(),
+                    "r-1".to_string()
+                )),
+                Some(&"assembly".to_string())
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
+        // Under the depot's own rule, Send mails the route card for the
+        // marked group, and the hand-off stands with the mark taken.
+        click_on(cx, "line served new r-1 send");
         wait(cx, "the route mail", |_| yard.asked("Mail").len() == 1);
         assert_eq!(
             yard.asked("Mail")[0],
             json!({"to": "yardmaster", "actor": "jo", "text":
-                "depot: yardr\nstage: new\nrule: r-1\nscope: this depot's own\nfilters: type any · labels none · priority any · for the operator\ngroup: reviewers\n\nFile the route card route set r-1 --group reviewers for this depot's own rule. The card will stand in Decide; nothing changes until it is approved there."})
+                "depot: yardr\nstage: new\nrule: r-1\nscope: this depot's own\nfilters: type any · labels none · priority any · for the operator\ngroup: assembly\n\nFile the route card route set r-1 --group assembly for this depot's own rule. The card will stand in Decide; nothing changes until it is approved there."})
         );
         wait(cx, "the hand-off", |cx| drawn(cx, "line filed"));
+        view.read_with(cx, |v, _| assert!(v.line_served_marks.is_empty()));
+        // Picking the group that serves now marks nothing: its Send
+        // files nothing.
+        click_on(cx, "line serve new r-1 builders");
+        view.read_with(cx, |v, _| assert!(v.line_served_marks.is_empty()));
+        click_on(cx, "line served new r-1 send");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail").len(), 1);
         // Under a yard-wide rule, the set-aside for this depot alone:
         // the rule itself is never named as changed.
         click_on(cx, "line serve new r-2 builders");
+        cx.run_until_parked();
+        assert_eq!(yard.asked("Mail").len(), 1);
+        click_on(cx, "line served new r-2 send");
         wait(cx, "the set-aside mail", |_| yard.asked("Mail").len() == 2);
         let aside = yard.asked("Mail")[1]["text"].as_str().unwrap().to_string();
         assert!(
@@ -25624,9 +25702,17 @@ yardr.dev
             v.secret
                 .update(cx, |field, cx| field.set_text("hunter2", cx));
             v.secret_typed.push("first of two".into());
-            // A Line filing belongs to this yard too; a stale response
-            // cannot clear the in-flight state after another yard opens.
+            // A Line filing and its marked served pick belong to this
+            // yard too; a stale response cannot clear the in-flight state
+            // after another yard opens.
             v.line_filing = true;
+            let key = ("yardr".to_string(), "new".to_string(), "r-1".to_string());
+            v.line_served_marks
+                .insert(key.clone(), "builders".to_string());
+            v.line_served_sending = Some(line::LineServedSending {
+                key,
+                group: "builders".to_string(),
+            });
         });
 
         // The second home's yard: its line is empty, nothing is attached,
@@ -25639,6 +25725,8 @@ yardr.dev
         assert_eq!(attached(&view, cx), []);
         view.read_with(cx, |v, cx| {
             assert!(!v.line_filing);
+            assert!(v.line_served_marks.is_empty());
+            assert!(v.line_served_sending.is_none());
             assert!(v.ask_words.is_empty());
             assert_eq!(v.secret.read(cx).text(), "");
             assert!(v.secret_typed.is_empty());

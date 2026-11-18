@@ -273,8 +273,9 @@ serves neither), further members, and the prompt's path in code (or
 why the group reads none). The chain past its first group stands one
 meta line per group (`then …`, `where …` past it). Served by… stands
 as a link word past the serving line where a group serves the stage,
-and as a button with its note where none does; the pick mails the
-route card, as the Line window's picker does. No route reads as a warn
+and as a button with its note where none does; the pick marks the
+group and Send mails its route card, or the depot's set-aside card for
+a yard-wide rule, as the Line window's picker does. No route reads as a warn
 with the accent edge, and a stage that closes the bead as the same
 shape muted, with no pick. The foot holds Copy path as a link word
 that returns the path whole; on a prompt, Propose an edit stands

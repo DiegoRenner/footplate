@@ -790,7 +790,7 @@ impl Footplate {
                         .text_color(palette.faint)
                         .debug_selector(|| "context served note".to_string())
                         .child(
-                            "Picks a group for the stage; the route change goes to the yardmaster, and comes back as a card in Decide.",
+                            "Pick a group to mark it; Send mails the yardmaster the route card, which comes back as a card in Decide.",
                         ),
                 ),
         );

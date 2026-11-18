@@ -394,7 +394,7 @@ its flows named by their source and its first stage's detail),
 prompt, a file the yard wrote named by its digest, and a change typed in
 it), `line-sent` (that window with the hand-off of an edit written over
 that prompt before it changed: the yardmaster's answer and Read again), `line-picker` (that window on a yard-wide rule's stage, with
-its serving picker under the Rule line and the route change the stream
+its serving picker under the Rule line, a group marked with Send live, and the route change the stream
 gave its Last change line), `line-refused` (that window
 with a stage removal refused where a bead stands in the stage), `line-pack` (that window on a pack's flow, at its
 middle stage: the Stages row's controls with the flow card's own words for a pack's flow under them), `old-lines` (the Lines pane against a yard too old to
@@ -455,6 +455,8 @@ stage, the empty stages folded), `lines-board` (footplate's board over its
 pull-request flow: one bead past triage, two terminals, two landings under
 merged alone), `lines-context` (that pane with a stage's
 context drawer open on footplate's default flow at new, over the pane),
+`lines-served` (that pane with the drawer's Group tab open on yardr's
+default flow at new, its serving picker open with a group marked),
 `keys` (the cheatsheet open over an open card),
 `about` (the About card open over the yardmaster's conversation,
 naming footplate's version and the yardr's, with its path), `about-missing`

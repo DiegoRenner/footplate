@@ -85,7 +85,7 @@ use crate::yard::Env;
 /// station, the Line window open on yardr's depot with its flows
 /// named by their source, its first stage's detail and the crew
 /// below, that window on a yard-wide rule's stage with its serving
-/// picker, with a removal refused where a bead stands in the
+/// picker and a group marked, with a removal refused where a bead stands in the
 /// stage, and on a pack's flow, its Stages row's controls under the
 /// card's own words for it, the Lines pane against a yard too old
 /// to serve it, saying so in plain words, the grants view open on its
@@ -134,7 +134,8 @@ use crate::yard::Env;
 /// from before the call, which say in one line who moves the stage, the
 /// arrivals pane over the rich yard with the depot tree, the head's stats
 /// and the tracks, and yardr's default flow open from that tree as its
-/// list, and one
+/// list, a stage's context drawer open on its Group tab with a serving
+/// group marked, and one
 /// bead served ten plain moves, open on its card stood at its end, folded
 /// behind the one control and unfolded, and the Decide list on a yard whose
 /// yardr refuses the call that names its arguments, with the words that the
@@ -275,6 +276,7 @@ pub const STATES: &[&str] = &[
     "lines-flow",
     "lines-board",
     "lines-context",
+    "lines-served",
     "keys",
     "about",
     "about-missing",
@@ -1398,6 +1400,7 @@ fn populate(yard: &Yard, state: &str) {
                 | "line-picker"
                 | "line-refused"
                 | "line-pack"
+                | "lines-served"
         ) {
             yard.answer_for(
                 "Line",
@@ -1531,6 +1534,7 @@ fn populate(yard: &Yard, state: &str) {
         | "lines-flow"
         | "lines-board"
         | "lines-context"
+        | "lines-served"
         | "line-window"
         | "line-edit"
         | "line-sent"
@@ -3038,6 +3042,7 @@ fn populate(yard: &Yard, state: &str) {
         || state == "lines-arrivals"
         || state == "lines-flow"
         || state == "lines-context"
+        || state == "lines-served"
     {
         // The board these states shoot answers over the shared one: a
         // late bead with the overrun the yard will print, a bead that
@@ -3087,6 +3092,7 @@ fn populate(yard: &Yard, state: &str) {
         || state == "lines-arrivals"
         || state == "lines-flow"
         || state == "lines-context"
+        || state == "lines-served"
     {
         // The flows these states shoot answer over the shared ones:
         // five tracks with a backlog to count, a bead jo holds, one
@@ -3251,7 +3257,11 @@ fn populate(yard: &Yard, state: &str) {
             .to_string(),
         );
     }
-    if state == "lines-arrivals" || state == "lines-flow" || state == "lines-context" {
+    if state == "lines-arrivals"
+        || state == "lines-flow"
+        || state == "lines-context"
+        || state == "lines-served"
+    {
         // The asks the head's pills count: two open on beads of
         // yardr's default flow, and two beads parked for jo's move on
         // yardr's design flow and signalbox's, so the tree reads rust
@@ -5314,13 +5324,25 @@ mod tests {
                     assert!(!crate::model::screen_over_the_link(&err), "{state}");
                 }
                 "line-window" | "line-edit" | "line-sent" | "line-picker" | "line-refused"
-                | "line-pack" => {
+                | "line-pack" | "lines-served" => {
                     // The window's read of yardr's depot: its flows
                     // named by their source, an exec stage's cmd
                     // whole, a prompt's text and a labelled yard-wide
                     // rule under the first stage's Other rules.
                     let line = yard.client().line("yardr").unwrap();
                     assert_eq!(line.depot, "yardr", "{state}");
+                    // The first stage's rule serves builders, with
+                    // reviewers past it: the served shot's posed mark
+                    // stands under this rule for that group.
+                    let route = line.flows[0].stages[0].route.as_ref().unwrap();
+                    assert_eq!(route.id, "r-1", "{state}");
+                    assert_eq!(route.chain[0].name, "builders", "{state}");
+                    assert!(
+                        crate::model::line_groups(&line)
+                            .iter()
+                            .any(|(name, _)| name == "reviewers"),
+                        "{state}"
+                    );
                     let sources: Vec<&str> =
                         line.flows.iter().map(|flow| flow.source.as_str()).collect();
                     assert_eq!(

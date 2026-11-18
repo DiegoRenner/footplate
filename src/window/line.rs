@@ -107,6 +107,36 @@ pub(crate) struct LineNewGroup {
     pub(crate) runner: String,
 }
 
+/// A served pick whose mail is on its way: the key its mark stood
+/// under, and the group the mail names.
+#[derive(Clone)]
+pub(crate) struct LineServedSending {
+    pub(crate) key: (String, String, String),
+    pub(crate) group: String,
+}
+
+/// The key a Served-by picker's mark stands under: its depot, stage
+/// and rule token, the rule's id or `none` where no rule serves yet.
+fn served_key(
+    depot: &str,
+    stage: &str,
+    rule: Option<(&str, &str, &crate::api::LineFilters)>,
+) -> (String, String, String) {
+    let token = rule.map(|(id, _, _)| id).unwrap_or("none");
+    (depot.to_string(), stage.to_string(), token.to_string())
+}
+
+/// The card a served pick goes by, in the picker's words: a depot's
+/// own rule by its route card, a yard-wide rule by the set-aside for
+/// this depot alone, and a stage with no rule by a new route card.
+fn served_card_words(rule: Option<(&str, &str, &crate::api::LineFilters)>) -> &'static str {
+    match rule {
+        Some((_, "this depot's own", _)) => "route card",
+        Some(_) => "set-aside card",
+        None => "route card",
+    }
+}
+
 /// The runners a new group's card offers, as the card names them:
 /// the runner is the choice, chosen before the card is filed.
 const GROUP_RUNNERS: [&str; 3] = ["herdr", "exec", "manual"];
@@ -314,12 +344,18 @@ impl Footplate {
     /// reconnecting, so a mail sent as the connection broke cannot go
     /// twice. A mail that went leaves the hand-off under its stage;
     /// one that did not is said in the notice, with nothing filed.
+    /// Where the filing is a served pick, `served` names its mark, which
+    /// is taken only once the mail has gone, and only where it still
+    /// names the group the mail names: a send that did not go, and a
+    /// pick made while one was on its way, keep the mark for another
+    /// try.
     pub(crate) fn file_line_mail(
         &mut self,
         depot: String,
         stage: String,
         mail: String,
         words: String,
+        served: Option<LineServedSending>,
         cx: &mut Context<Self>,
     ) {
         if self.reconnecting() || self.line_filing {
@@ -333,6 +369,7 @@ impl Footplate {
             return self.notice(format!("not sent: {why}"), cx);
         }
         self.line_filing = true;
+        self.line_served_sending = served.clone();
         self.line_refused = None;
         cx.notify();
         let session = self.session;
@@ -344,6 +381,7 @@ impl Footplate {
                     return;
                 }
                 this.line_filing = false;
+                this.line_served_sending = None;
                 match sent {
                     Ok(()) => {
                         let after = this.model.as_ref().map_or(0, Model::events_seen);
@@ -356,6 +394,14 @@ impl Footplate {
                         });
                         this.line_new_stage = None;
                         this.line_new_group = None;
+                        if let Some(sent) = served
+                            && this
+                                .line_served_marks
+                                .get(&sent.key)
+                                .is_some_and(|marked| marked.as_str() == sent.group.as_str())
+                        {
+                            this.line_served_marks.remove(&sent.key);
+                        }
                         this.change_in(session, cx, |m| m.sent(model::YARDMASTER));
                     }
                     Err(err) => this.notice(format!("not sent: {err}"), cx),
@@ -364,10 +410,12 @@ impl Footplate {
         );
     }
 
-    /// Files the serving pick of one rule: a depot's own rule by its
-    /// route card, a yard-wide rule by the set-aside card for this
-    /// depot alone, and a stage with no rule by a new rule. No pick
-    /// names a yard-wide rule itself as the thing changed.
+    /// Files the serving pick of one rule, from its picker's Send: a
+    /// depot's own rule by its route card, a yard-wide rule by the
+    /// set-aside card for this depot alone, and a stage with no rule by
+    /// a new rule. No pick names a yard-wide rule itself as the thing
+    /// changed. Only the marked group goes: a Send for no mark, or for
+    /// another mark, files nothing.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn file_served_pick(
         &mut self,
@@ -377,6 +425,14 @@ impl Footplate {
         group: &str,
         cx: &mut Context<Self>,
     ) {
+        let key = served_key(depot, stage, rule);
+        if self
+            .line_served_marks
+            .get(&key)
+            .is_none_or(|marked| marked.as_str() != group)
+        {
+            return;
+        }
         let (mail, words) = match rule {
             Some((id, scope, filters)) if scope == "this depot's own" => (
                 model::line_route_mail(depot, stage, id, scope, filters, group),
@@ -397,7 +453,18 @@ impl Footplate {
                 ),
             ),
         };
-        self.file_line_mail(depot.to_string(), stage.to_string(), mail, words, cx);
+        let sending = LineServedSending {
+            key,
+            group: group.to_string(),
+        };
+        self.file_line_mail(
+            depot.to_string(),
+            stage.to_string(),
+            mail,
+            words,
+            Some(sending),
+            cx,
+        );
     }
 
     /// Files the stage change `proposed` of `flow`: a store flow by
@@ -420,7 +487,7 @@ impl Footplate {
                 "Mailed the yardmaster to file the flow card for flow {}. The card will stand in Decide; this window approves nothing.",
                 flow.name
             );
-            return self.file_line_mail(depot.to_string(), String::new(), mail, words, cx);
+            return self.file_line_mail(depot.to_string(), String::new(), mail, words, None, cx);
         }
         let flow_file = format!(".yardr/flows/{}.flow", flow.name);
         let mut text = model::line_flow_text(proposed);
@@ -451,7 +518,7 @@ impl Footplate {
             "Mailed the yardmaster to file a bead in depot {depot} for flow {}. It travels the depot's own flow and lands through its review; this window approves nothing.",
             flow.name
         );
-        self.file_line_mail(depot.to_string(), String::new(), mail, words, cx);
+        self.file_line_mail(depot.to_string(), String::new(), mail, words, None, cx);
     }
 
     /// The Line window for `depot`: the pickers over the depots
@@ -1019,10 +1086,14 @@ impl Footplate {
     /// One rule's Served-by picker, standing under the Rule line it
     /// edits: it names the rule's id, scope and filters first, then a
     /// button for each group the line names, with its runner's words,
-    /// the group that serves now marked. Picking one files that
-    /// scope's card by mail at once. The representative rule's picker
-    /// also carries New group…, whose form stands under it. The context
-    /// drawer draws the same picker on its Group tab, with no New group.
+    /// the group that serves now filled. Picking one only marks it, for
+    /// Send to mail that scope's card: looking through the groups, or
+    /// changing one's mind, sends nothing. The marked button carries
+    /// the accent edge, and Send stands dim until a group is marked;
+    /// picking the group that serves now marks nothing. The
+    /// representative rule's picker also carries New group…, whose form
+    /// stands under it. The context drawer draws the same picker on its
+    /// Group tab, with no New group, over the same marks.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn line_served(
         &self,
@@ -1035,12 +1106,19 @@ impl Footplate {
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> Div {
-        let (token, head) = match rule {
-            Some((id, scope, filters)) => (
-                id.to_string(),
-                format!("Served by · {}", model::line_rule_words(id, scope, filters)),
-            ),
-            None => ("none".to_string(), "Served by · no rule yet".to_string()),
+        let key = served_key(depot, stage, rule);
+        let token = key.2.clone();
+        let head = match rule {
+            Some((id, scope, filters)) => {
+                format!("Served by · {}", model::line_rule_words(id, scope, filters))
+            }
+            None => "Served by · no rule yet".to_string(),
+        };
+        // A mark the line has caught up with files nothing: the group
+        // it names serves now, so the picker stands as with no mark.
+        let marked = match self.line_served_marks.get(&key) {
+            Some(marked) if marked.as_str() != current => Some(marked.clone()),
+            _ => None,
         };
         let mut picker = div().flex().flex_col().gap_1();
         let mut row = div()
@@ -1064,10 +1142,10 @@ impl Footplate {
                 true => name.clone(),
                 false => format!("{name} ({runner})"),
             };
-            let (depot, stage, name) = (depot.to_string(), stage.to_string(), name.clone());
-            let rule = rule
-                .map(|(id, scope, filters)| (id.to_string(), scope.to_string(), filters.clone()));
+            let (key, current, name) = (key.clone(), current.to_string(), name.clone());
+            let (stage, token) = (stage.to_string(), token.clone());
             let picked = name == current;
+            let is_marked = marked.as_deref() == Some(name.as_str());
             row = row.child(
                 small_button(label, palette)
                     .id(SharedString::from(format!(
@@ -1078,11 +1156,14 @@ impl Footplate {
                         move || format!("line serve {stage} {token} {name}")
                     })
                     .when(picked, |el| el.bg(palette.open))
+                    .when(is_marked, |el| el.border_color(palette.accent))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let rule = rule
-                            .as_ref()
-                            .map(|(id, scope, f)| (id.as_str(), scope.as_str(), f));
-                        this.file_served_pick(&depot, &stage, rule, &name, cx);
+                        if name == current {
+                            this.line_served_marks.remove(&key);
+                        } else {
+                            this.line_served_marks.insert(key.clone(), name.clone());
+                        }
+                        cx.notify();
                     })),
             );
         }
@@ -1105,6 +1186,61 @@ impl Footplate {
             );
         }
         picker = picker.child(row);
+        // Send mails the marked group, and stands dim while none is
+        // marked or a filing is on its way; the words name the marked
+        // group and the card it goes by.
+        let card = served_card_words(rule);
+        let words = match marked.as_deref() {
+            Some(marked) => format!("Marked {marked}; Send mails the yardmaster the {card}."),
+            None => format!("Pick a group to mark it; Send mails the yardmaster the {card}."),
+        };
+        let sending = self
+            .line_served_sending
+            .as_ref()
+            .is_some_and(|sending| sending.key == key);
+        let send = match sending {
+            true => "Sending…",
+            false => "Send",
+        };
+        let (owned_depot, owned_stage) = (depot.to_string(), stage.to_string());
+        let owned_rule =
+            rule.map(|(id, scope, filters)| (id.to_string(), scope.to_string(), filters.clone()));
+        let click = (marked.is_some() && !self.line_filing).then(|| {
+            cx.listener(move |this, _, _, cx| {
+                let rule = owned_rule
+                    .as_ref()
+                    .map(|(id, scope, f)| (id.as_str(), scope.as_str(), f));
+                let Some(marked) = marked.as_deref() else {
+                    return;
+                };
+                this.file_served_pick(&owned_depot, &owned_stage, rule, marked, cx);
+            })
+        });
+        picker = picker.child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .text_color(palette.faint)
+                        .debug_selector({
+                            let (stage, token) = (stage.to_string(), token.clone());
+                            move || format!("line served {stage} {token} words")
+                        })
+                        .child(words),
+                )
+                .child(card_button(
+                    format!("line served {stage} {token} send"),
+                    send.to_string(),
+                    palette,
+                    click,
+                )),
+        );
         if new_group && let Some(form) = &self.line_new_group {
             picker = picker.child(self.line_new_group_form(depot, stage, form, palette, cx));
         }
@@ -1199,6 +1335,7 @@ impl Footplate {
                                     stage.clone(),
                                     mail,
                                     words,
+                                    None,
                                     cx,
                                 );
                             })),
@@ -2040,6 +2177,34 @@ impl Footplate {
             }
             "line-picker" => {
                 self.line_stage = "review".to_string();
+                // The serving picker stands with a group marked and Send
+                // live, as a pick leaves it: the first group the line
+                // names past the one that serves now. Read live, so the
+                // shot follows the data it is served.
+                if let Some(line) = self.model.as_ref().and_then(|m| m.line_read_for("yardr")) {
+                    let stage = line
+                        .flows
+                        .iter()
+                        .flat_map(|flow| &flow.stages)
+                        .find(|stage| stage.stage == "review");
+                    if let Some(stage) = stage {
+                        let route = stage.route.as_ref();
+                        let current = route
+                            .and_then(|route| route.chain.first())
+                            .map(|group| group.name.as_str())
+                            .unwrap_or("");
+                        let rule = route
+                            .map(|route| (route.id.as_str(), route.scope.as_str(), &route.filters));
+                        if let Some(marked) = model::line_groups(line)
+                            .into_iter()
+                            .map(|(name, _)| name)
+                            .find(|name| name != current)
+                        {
+                            self.line_served_marks
+                                .insert(served_key("yardr", "review", rule), marked);
+                        }
+                    }
+                }
                 cx.notify();
                 return;
             }
