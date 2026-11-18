@@ -3656,43 +3656,70 @@ impl Footplate {
                 .text_color(palette.faint)
                 .child("Its questions are answered.");
         };
+        // The head: the yard, the bead and the topic, small, over the bead's
+        // title, as the pick's breadcrumb stands over it.
+        let title = match detail.title.is_empty() {
+            true => detail.bead.clone(),
+            false => detail.title.clone(),
+        };
         let head = div()
-            .p_3()
+            .px_4()
+            .py_2()
             .border_b_1()
             .border_color(palette.line)
-            .debug_selector(|| format!("in {} {}", self.yard, detail.bead))
             .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
+            .flex_col()
+            .gap_0p5()
             .child(
                 div()
-                    .debug_selector(|| format!("in {} {} dot", self.yard, detail.bead))
-                    .flex_none()
-                    .size(px(8.))
-                    .rounded_full()
-                    .bg(yard_color(&self.yard, palette.dark)),
+                    .debug_selector(|| format!("in {} {}", self.yard, detail.bead))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .text_size(rems(TYPE_META))
+                    .text_color(palette.faint)
+                    .child(
+                        div()
+                            .debug_selector(|| format!("in {} {} dot", self.yard, detail.bead))
+                            .flex_none()
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(yard_color(&self.yard, palette.dark)),
+                    )
+                    .child(decision_head(&self.yard, &detail.bead, &detail.topic)),
             )
-            .child(decision_head(&self.yard, &detail.bead, &detail.topic));
+            .child(
+                div()
+                    .debug_selector(|| format!("title {}", detail.bead))
+                    .truncate()
+                    .text_size(rems(TYPE_LABEL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title),
+            );
         let list = div()
             .id("decision")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.decision)
-            .p_4()
+            .px_4()
+            .py_3()
             .flex()
-            .flex_col()
-            .gap_4();
+            .flex_col();
         let list = if !model.has_bead(bead) {
             list.child(div().text_color(palette.faint).child("Reading the bead."))
         } else {
-            let mut list = list.children(
-                detail
-                    .asks
-                    .iter()
-                    .map(|ask| self.decision_card(&detail, ask, palette, cx)),
-            );
+            // The cards flat on the pane, each after the first ruled off
+            // from the one above with a thin line.
+            let mut list = list.children(detail.asks.iter().enumerate().map(|(ix, ask)| {
+                div()
+                    .pb_4()
+                    .when(ix > 0, |el| {
+                        el.pt_4().border_t_1().border_color(palette.line)
+                    })
+                    .child(self.decision_card(&detail, ask, palette, cx))
+            }));
             // The bead's thread under the asks, as the pick draws it:
             // its notes in order, each with its files, the images
             // compact, so a short card and its thread stand together
@@ -3917,18 +3944,14 @@ impl Footplate {
         } else {
             ask.chosen
         };
-        // The Ask card's frame: raised and bordered, at the reading pane's
-        // measures. Everything the card says stands inside it.
+        // The Ask card's frame: flat on the pane, as the pick draws it. The
+        // pane rules one card off from the next; everything the card says
+        // stands inside it.
         let mut card = div()
             .debug_selector(|| format!("card {bead_id} {ask_seq}"))
             .flex()
             .flex_col()
-            .gap_2p5()
-            .p_4()
-            .rounded(px(RADIUS_CARD))
-            .border_1()
-            .border_color(palette.line)
-            .bg(palette.raised);
+            .gap_2p5();
         // How the card approves: nowhere where the yard takes no approval
         // from this window, after the ask's number is typed back where a
         // weighty card has no gate.
@@ -3976,6 +3999,7 @@ impl Footplate {
                 format!("run question {bead_id} {ask_seq}"),
                 &ask.question,
                 &ask.asker,
+                palette,
             )
             .into_any_element()
         } else {
@@ -3986,41 +4010,75 @@ impl Footplate {
             )
             .into_any_element()
         };
-        // The asker's label and the age both need room beside the question.
-        // At a narrow window let the age wrap before the label squeezes the
-        // words down to a few pixels. The current ask's question stands at
-        // the question size, the card the pane is for; the rest at the
-        // title size, as the pick's second question does.
+        // Over the question, what waits and on whom: that it waits on the
+        // person, what it wants and its number in the accent, then how long
+        // and who asks, quiet. At the row's right the bead's id with the
+        // ask's number, to select and copy, so a decision named by number
+        // is found on its card, and the bead whole one disclosure away.
+        // The line is no part of the disclosure: pressing to select it
+        // opens nothing. The row wraps, so a card too narrow for both puts
+        // them under the words and squeezes neither.
+        let mark = if ask.expanded { "▾" } else { "▸" };
+        let bead_click = bead_id.clone();
+        let line = ask_line(&bead_id, ask_seq);
+        let line_key = expanded_text_key(card_key, "ask", 0, &line);
+        let asked = [asked_age(&ask.waits), ask.asker.clone()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
         card = card.child(
             div()
                 .flex()
                 .flex_wrap()
-                .justify_between()
-                .gap_2()
+                .items_baseline()
+                .gap_x_2()
+                .text_size(rems(TYPE_META))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w(px(ASK_QUESTION_MIN))
-                        .debug_selector(|| format!("question {bead_id} {ask_seq}"))
-                        .text_size(rems(if current { TYPE_QUESTION } else { TYPE_TITLE }))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(question),
+                        .debug_selector(|| format!("waits on {bead_id} {ask_seq}"))
+                        .text_color(palette.text_accent)
+                        .child(format!("Waiting on you · {} {ask_seq}", ask.kind)),
                 )
                 .child(
                     div()
-                        .flex_none()
-                        .ml_auto()
-                        .text_xs()
+                        .debug_selector(|| format!("asked {bead_id} {ask_seq}"))
+                        .flex_grow()
                         .text_color(palette.faint)
-                        .child(asked_age(&ask.waits)),
+                        .child(asked),
+                )
+                // One line to select and copy whole, so the bead's id keeps
+                // the line's quiet colour rather than the link's.
+                .child(
+                    div()
+                        .debug_selector(|| format!("ask line {bead_id} {ask_seq}"))
+                        .min_w_0()
+                        .text_color(palette.faint)
+                        .child(select::verbatim(line_key, line, &self.selection)),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("expand {bead_id} {ask_seq}")))
+                        .debug_selector(|| format!("expand {bead_id} {ask_seq}"))
+                        .text_color(palette.faint)
+                        .cursor_pointer()
+                        .hover(|style| style.text_color(palette.text))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.expand_for(bead_click.clone(), ask_seq, cx)
+                        }))
+                        .child(format!("{mark} details (e)")),
                 ),
         );
-        // The asker. The recommendation stands on its own option, below.
+        // The question. The current ask's stands at the question size, the
+        // card the pane is for; the rest at the title size, as the pick's
+        // second question does.
         card = card.child(
             div()
-                .text_xs()
-                .text_color(palette.faint)
-                .child(format!("asked by {}", ask.asker)),
+                .min_w(px(ASK_QUESTION_MIN))
+                .debug_selector(|| format!("question {bead_id} {ask_seq}"))
+                .text_size(rems(if current { TYPE_QUESTION } else { TYPE_TITLE }))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(question),
         );
         // The context lines: text as it was written, and no block in it.
         // A run or setup ask's each begin with who says them, and wrap
@@ -4037,6 +4095,7 @@ impl Footplate {
                             format!("run context {bead_id} {ask_seq} {line}"),
                             text,
                             &ask.asker,
+                            palette,
                         )),
                 );
             } else {
@@ -4052,47 +4111,8 @@ impl Footplate {
                 );
             }
         }
-        // The bead whole, one disclosure away: beside the context it opens
-        // from, not at the card's end. On its row stands the bead's id and
-        // the ask's number, to select and copy, so a decision named by
-        // number is found on its card. The line is no part of the
-        // disclosure: pressing to select it opens nothing. The row wraps,
-        // so a card too narrow for both puts the line under the disclosure
-        // and squeezes neither.
-        let mark = if ask.expanded { "▾" } else { "▸" };
-        let bead_click = bead_id.clone();
-        let line = ask_line(&bead_id, ask_seq);
-        let line_key = expanded_text_key(card_key, "ask", 0, &line);
-        card = card.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .child(
-                    div()
-                        .id(SharedString::from(format!("expand {bead_id} {ask_seq}")))
-                        .debug_selector(|| format!("expand {bead_id} {ask_seq}"))
-                        .flex_grow()
-                        .text_sm()
-                        .text_color(palette.faint)
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(palette.text))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.expand_for(bead_click.clone(), ask_seq, cx)
-                        }))
-                        .child(format!("{mark} bead details (e)")),
-                )
-                // One line to select and copy whole, so the bead's id keeps
-                // the line's quiet colour rather than the link's.
-                .child(
-                    div()
-                        .debug_selector(|| format!("ask line {bead_id} {ask_seq}"))
-                        .min_w_0()
-                        .text_xs()
-                        .text_color(palette.faint)
-                        .child(select::verbatim(line_key, line, &self.selection)),
-                ),
-        );
+        // The bead whole, opened from the row over the question, under
+        // the context it adds to.
         if ask.expanded {
             card = card.child(self.expanded_body(
                 card_key,
@@ -4609,6 +4629,7 @@ impl Footplate {
         id: String,
         question: &str,
         asker: &str,
+        palette: Palette,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -4621,6 +4642,7 @@ impl Footplate {
                     format!("{id} {line}"),
                     text,
                     asker,
+                    palette,
                 )
             }))
     }
@@ -4628,7 +4650,11 @@ impl Footplate {
     /// One run asker's line with the trusted label beside its words where
     /// they fit, and above them where they do not. The words select and
     /// copy, drawn as they were written with no block in them; the label
-    /// stays plain, so a copy of the words does not carry it.
+    /// stays plain, so a copy of the words does not carry it. The label is
+    /// quiet, in the faint colour at the regular weight, so that it marks
+    /// every line without reading as a second question: it stands on each
+    /// line all the same.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn marked_asker_line(
         &self,
         card_key: u64,
@@ -4637,6 +4663,7 @@ impl Footplate {
         id: String,
         line: &str,
         asker: &str,
+        palette: Palette,
     ) -> impl IntoElement + use<> {
         let prefix = format!("{asker} says: ");
         let words = line.strip_prefix(&prefix).unwrap_or(line).to_string();
@@ -4652,6 +4679,8 @@ impl Footplate {
             .child(
                 div()
                     .flex_none()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(palette.faint)
                     .debug_selector(move || label_id.clone())
                     .child(label),
             )
@@ -5221,6 +5250,7 @@ impl Footplate {
                 format!("run decided question {bead} {ask}"),
                 &detail.question,
                 &detail.asker,
+                palette,
             )
             .into_any_element()
         } else {
@@ -5310,6 +5340,7 @@ impl Footplate {
                             format!("run decided context {bead} {ask} {line}"),
                             text,
                             &detail.asker,
+                            palette,
                         ),
                     ));
                 } else {

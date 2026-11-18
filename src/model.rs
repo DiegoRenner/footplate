@@ -1018,6 +1018,9 @@ pub struct CardNote {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionAsk {
     pub ask: u64,
+    /// What the ask wants, in one word, as its list row names it: `pick`,
+    /// `run`, `setup`, `secret` or `words`.
+    pub kind: &'static str,
     pub question: String,
     pub asker: String,
     pub waits: String,
@@ -4191,6 +4194,7 @@ impl Model {
                     let full = self.bead_ask(bead, ask.ask);
                     DecisionAsk {
                         ask: ask.ask,
+                        kind: ask_kind(ask, full.map_or(0, |f| f.options.len())),
                         question: card_question(
                             &ask.question,
                             &ask.asker,

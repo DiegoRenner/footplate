@@ -1768,6 +1768,7 @@ mod tests {
     fn ordinary(options: usize, chosen: u64, recommend: u64) -> DecisionAsk {
         DecisionAsk {
             ask: 3,
+            kind: "pick",
             question: "Move them now?".to_string(),
             asker: "yardmaster".to_string(),
             waits: "2h".to_string(),
@@ -11389,9 +11390,9 @@ yardr.dev
         );
 
         // Each open card names its bead and its ask's number, on the
-        // disclosure's row and to the right of it. A drag over the line
-        // selects them, the key copies them, and the press that selected
-        // opened no details.
+        // disclosure's row over the question and to the left of it. A drag
+        // over the line selects them, the key copies them, and the press
+        // that selected opened no details.
         for ask in [3, 4, 5] {
             assert!(drawn(cx, &format!("ask line bead-a {ask}")), "ask {ask}");
         }
@@ -11399,8 +11400,8 @@ yardr.dev
         let disclosure = bounds_of(cx, "expand bead-a 3");
         assert_eq!(line.top(), disclosure.top());
         assert!(
-            disclosure.right() <= line.left(),
-            "the line is not to the right of the disclosure: {line:?} {disclosure:?}"
+            line.right() <= disclosure.left(),
+            "the line is not to the left of the disclosure: {line:?} {disclosure:?}"
         );
         drag(
             cx,
@@ -11435,14 +11436,14 @@ yardr.dev
 
         // The same card path at the narrowest window keeps a long bead id
         // and ask number inside the card.
-        a_long_bead_id_s_line_drops_under_the_disclosure_at_the_narrowest_window(cx);
+        a_long_bead_id_s_line_wraps_over_the_disclosure_at_the_narrowest_window(cx);
     }
 
     /// The line of a card that names the bead of another yard and an ask
     /// number as long as the yard counts them is too wide for the narrowest
-    /// window beside the disclosure: it drops under it, and wraps inside
-    /// the card instead of running past the pane.
-    fn a_long_bead_id_s_line_drops_under_the_disclosure_at_the_narrowest_window(
+    /// window beside the disclosure: the disclosure drops under it, and the
+    /// line wraps inside the card instead of running past the pane.
+    fn a_long_bead_id_s_line_wraps_over_the_disclosure_at_the_narrowest_window(
         cx: &mut VisualTestContext,
     ) {
         let yard = Yard::start();
@@ -11500,8 +11501,8 @@ yardr.dev
             "the line runs past the pane: {line:?}"
         );
         assert!(
-            disclosure.bottom() <= line.top(),
-            "the line is not under the disclosure: {line:?} {disclosure:?}"
+            line.bottom() <= disclosure.top(),
+            "the disclosure is not under the line: {line:?} {disclosure:?}"
         );
         // Wrapped in the card, it still selects and copies whole.
         drag(
