@@ -247,3 +247,37 @@ right who works it with how long it has stood. The board under the
 toggle is the depot board's columns for the one flow. In a narrow pane,
 long titles, stage names, group words and metadata end with an ellipsis;
 their character budgets grow with the pane so the text stays inside it.
+
+A press on a station opens the stage's context drawer at the window's
+right, over the Lines views. It is 440 wide (`CONTEXT_WIDTH`), grown
+with the text: beside the pane where the pane keeps 440 past it (at
+1440), over the pane's right where it does not (at 960), the list
+staying in reach either way. Its head is 52 high: the `stage` kicker
+chip in the code role, the depot, the flow and the stage in the label
+role semibold (the type standing between depot and flow where the flow
+is typed), and the drawers' ×. Under it the three tabs stand 34 high
+in the meta role medium and quiet; the open one reads in the text
+colour over a 2px accent edge.
+
+Each tab opens with the file line: the path in the code role over one
+meta line and quiet — the depot and the flow's source for a stage
+file, the source, the lines counted and whose sessions for a prompt —
+ruled off below. The file renders as the window's Markdown in the
+body role, folded past 30 lines (`FOLDED_LINES`) behind `N more lines
+· Show the whole file`, the link word in `link`. The Group tab's facts
+stand under 96-wide quiet labels: the runner with its flow-map word
+(`herdr · agents`), the harness with its model, a script's command, a
+manual group's members or another yard's name, the seats (`1 · 0
+taken`, from the pressed station's own stage, left out where the yard
+serves neither), further members, and the prompt's path in code (or
+why the group reads none). The chain past its first group stands one
+meta line per group (`then …`, `where …` past it). Served by… stands
+as a link word past the serving line where a group serves the stage,
+and as a button with its note where none does; the pick mails the
+route card, as the Line window's picker does. No route reads as a warn
+with the accent edge, and a stage that closes the bead as the same
+shape muted, with no pick. The foot holds Copy path as a link word
+that returns the path whole; on a prompt, Propose an edit stands
+before it with the note of what an edit does, and the Line window's
+editor and hand-off stand under the prompt, the foot going while the
+editor stands.

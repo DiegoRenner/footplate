@@ -33,6 +33,7 @@ mod ask;
 mod asks;
 mod bead;
 mod chrome;
+mod context;
 mod feedback;
 mod firstrun;
 mod keys;
@@ -47,6 +48,7 @@ mod waiting;
 mod words;
 mod yards;
 
+use context::ContextOpen;
 use feedback::Feedback;
 use firstrun::{FirstRun, Means};
 use keys::{APPROVE_KEY, CONTEXT, NO_LINE_CONTEXT, SETUP_SECRET_CONTEXT, SWITCH_CONTEXT};
@@ -353,6 +355,13 @@ pub struct Footplate {
     drawer: Option<String>,
     /// The drawer's own scroll: the reading pane's never moves it.
     drawer_scroll: ScrollHandle,
+    /// The stage the context drawer at the window's right stands open
+    /// on, if one does: a station's stage, beside or over the Lines
+    /// views. One right-side panel shows: the bead drawer shuts with it.
+    context: Option<ContextOpen>,
+    /// The context drawer's own scroll: the reading pane's never moves
+    /// it, and the bead drawer's neither.
+    context_scroll: ScrollHandle,
     /// The left list's own scroll: the window never moves it, but the
     /// arrivals shots stand at its end, where the arrivals row is.
     rows: ScrollHandle,
@@ -991,6 +1000,8 @@ impl Footplate {
             decision: ScrollHandle::new(),
             drawer: None,
             drawer_scroll: ScrollHandle::new(),
+            context: None,
+            context_scroll: ScrollHandle::new(),
             rows: ScrollHandle::new(),
             selection,
             images: HashMap::new(),
@@ -1381,7 +1392,8 @@ impl Render for Footplate {
             (Some(_), Some(model)) if self.reconnecting() => root
                 .child(self.list(model, palette, top, window, cx))
                 .child(self.talk(model, palette, window, cx))
-                .children(self.talk_drawer(model, palette, cx)),
+                .children(self.talk_drawer(model, palette, cx))
+                .children(self.context_drawer(model, palette, window, cx)),
             (Some(why), _) => match &self.first_run {
                 Some(first_run) => root.child(first_run.clone()),
                 None => root.child(self.away(why, palette, cx)),
@@ -1412,7 +1424,8 @@ impl Render for Footplate {
             (None, Some(model)) => root
                 .child(self.list(model, palette, top, window, cx))
                 .child(self.talk(model, palette, window, cx))
-                .children(self.talk_drawer(model, palette, cx)),
+                .children(self.talk_drawer(model, palette, cx))
+                .children(self.context_drawer(model, palette, window, cx)),
             (None, None) => root,
         };
         // The switcher's list stands over whatever shows, to the right
@@ -16788,6 +16801,448 @@ yardr.dev
             "{:?}",
             yard.calls()
         );
+    }
+
+    /// A press on a station opens the stage's context drawer: its file,
+    /// its serving group and the group's prompt under three tabs. The
+    /// depot's line is read once, whatever station of it is pressed;
+    /// another depot reads its own. At 960 the drawer stands over the
+    /// pane's right, at 1440 beside it. Esc, its × and leaving the
+    /// Lines views shut it; moving among them keeps it.
+    #[gpui::test]
+    fn a_station_press_opens_the_stage_s_context_drawer(cx: &mut TestAppContext) {
+        let stage_file: String = (0..35).map(|n| format!("line {n}\n")).collect();
+        let flows = || {
+            json!({"result": {"travelling": 2, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "limit": 3, "taken": 1,
+                         "beads": [{"bead": "yd-a", "title": "A", "expected": "1h",
+                                    "remark": "", "tone": "none", "working": false}]},
+                        {"stage": "review", "group": "", "human": false, "lamp": "none",
+                         "beads": []},
+                        {"stage": "merged", "group": "", "human": false, "lamp": "none",
+                         "terminal": true, "beads": []}]}],
+                 "elsewhere": []},
+                {"name": "notes", "kind": "dir", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "inbox", "group": "people", "human": true, "lamp": "none",
+                         "beads": [{"bead": "nt-1", "title": "Note", "expected": "—",
+                                    "remark": "", "tone": "none", "working": false}]}]}],
+                 "elsewhere": []}],
+             "unassigned": []}})
+            .to_string()
+        };
+        let line_yardr = || {
+            json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "new", "next": ["review"], "outcomes": [{"name": "done", "to": "review"}],
+                     "route": {"id": "r-1", "scope": "this depot's own",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "builders", "runner": "herdr", "kind": "claude", "model": "opus",
+                         "prompt": {"path": "/home/jo/.yardr/roles/builder.md", "source": "home",
+                                    "found": "/home/jo/.yardr/roles/builder.md", "text": "Build the thing.\n",
+                                    "carriable": true}},
+                                {"name": "nightly", "when": "Nightly<50", "runner": "herdr", "kind": "claude"}],
+                       "limit": 3},
+                     "other_routes": [], "open": 1,
+                     "stage_file": {"path": ".yardr/flows/default/new.md", "text": stage_file}},
+                    {"stage": "review", "next": ["merged"], "terminal": false,
+                     "other_routes": [], "open": 0},
+                    {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]}],
+              "crew": []}})
+            .to_string()
+        };
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer("Flows", &flows());
+        yard.answer_for("Line", "depot", "yardr", &line_yardr());
+        yard.answer_for(
+            "Line",
+            "depot",
+            "notes",
+            r#"{"result": {"depot": "notes", "kind": "dir", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "inbox", "next": [], "terminal": false,
+                     "route": {"id": "r-9", "scope": "this depot's own",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "people", "runner": "manual", "members": ["jo"]}],
+                       "limit": 1},
+                     "other_routes": [], "open": 1}]}],
+              "crew": []}}"#,
+        );
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+        wait(cx, "the panel", |cx| drawn(cx, "panel track yardr default"));
+        assert_eq!(yard.asked("Line"), Vec::<Value>::new());
+
+        // A press on the station opens the drawer on its Stage tab: the
+        // stage file with its path, and the depot's line read once.
+        click_on(cx, "panel station yardr default new open");
+        wait(cx, "the drawer", |cx| drawn(cx, "context drawer"));
+        assert_eq!(yard.asked("Line"), vec![json!({"depot": "yardr"})]);
+        wait(cx, "the stage file", |cx| drawn(cx, "context stage file"));
+        for selector in [
+            "context kind",
+            "context head",
+            "context tab stage",
+            "context tab group",
+            "context tab prompt",
+            "context copy path",
+        ] {
+            assert!(drawn(cx, selector), "{selector}");
+        }
+        // The tab's rows stand inside the drawer, nothing past its
+        // edge.
+        let drawer = bounds_of(cx, "context drawer");
+        for selector in ["context stage file", "context copy path"] {
+            let row = bounds_of(cx, selector);
+            assert!(
+                row.right() <= drawer.right(),
+                "{selector} ends at {:?}, past the drawer's {:?}",
+                row.right(),
+                drawer.right()
+            );
+        }
+        // The long file folds past its shown lines, with the whole
+        // behind one tap; the short prompt never folds.
+        assert!(drawn(cx, "context stage whole"));
+        assert!(!drawn(cx, "context prompt whole"));
+        click_on(cx, "context stage whole");
+        view.read_with(cx, |v, _| {
+            assert!(v.context.as_ref().unwrap().stage_whole);
+        });
+
+        // The Group tab names the serving group: its runner and
+        // harness, its seats from the station's own stage, its prompt,
+        // and the chain past it.
+        click_on(cx, "context tab group");
+        wait(cx, "the facts", |cx| drawn(cx, "context facts runner"));
+        for selector in [
+            "context facts runner detail",
+            "context facts seats",
+            "context facts prompt",
+            "context chain nightly",
+            "context served",
+        ] {
+            assert!(drawn(cx, selector), "{selector}");
+        }
+        let drawer = bounds_of(cx, "context drawer");
+        for selector in [
+            "context group name",
+            "context facts runner",
+            "context facts runner detail",
+            "context facts seats",
+            "context facts prompt",
+            "context served",
+        ] {
+            let row = bounds_of(cx, selector);
+            assert!(
+                row.right() <= drawer.right(),
+                "{selector} ends at {:?}, past the drawer's {:?}",
+                row.right(),
+                drawer.right()
+            );
+        }
+
+        // The Prompt tab stands the prompt with its file line, Propose
+        // an edit and Copy path, and Copy path returns the path whole.
+        click_on(cx, "context tab prompt");
+        wait(cx, "the prompt", |cx| drawn(cx, "context prompt file"));
+        assert!(drawn(cx, "context propose"));
+        assert!(drawn(cx, "context foot note"));
+        let drawer = bounds_of(cx, "context drawer");
+        for selector in [
+            "context prompt file",
+            "context propose",
+            "context copy path",
+            "context foot note",
+        ] {
+            let row = bounds_of(cx, selector);
+            assert!(
+                row.right() <= drawer.right(),
+                "{selector} ends at {:?}, past the drawer's {:?}",
+                row.right(),
+                drawer.right()
+            );
+        }
+        click_on(cx, "context copy path");
+        assert_eq!(
+            clipboard(cx).as_deref(),
+            Some("/home/jo/.yardr/roles/builder.md")
+        );
+
+        // Another station of the same depot reads nothing again; a
+        // stage with no file and no route says both.
+        click_on(cx, "panel station yardr default review open");
+        wait(cx, "the review drawer", |cx| {
+            drawn(cx, "context stage none")
+        });
+        assert_eq!(yard.asked("Line").len(), 1);
+        view.read_with(cx, |v, _| {
+            let open = v.context.as_ref().unwrap();
+            assert_eq!(open.stage, "review");
+            assert_eq!(open.tab, super::context::ContextTab::Stage);
+        });
+        click_on(cx, "context tab group");
+        wait(cx, "the unserved warn", |cx| drawn(cx, "context unserved"));
+
+        // Another depot reads its own line; a manual group has no
+        // prompt to stand.
+        click_on(cx, "panel station notes default inbox open");
+        wait(cx, "the notes line", |_| yard.asked("Line").len() == 2);
+        assert_eq!(yard.asked("Line")[1], json!({"depot": "notes"}));
+        click_on(cx, "context tab prompt");
+        wait(cx, "no prompt", |cx| drawn(cx, "context prompt none"));
+        click_on(cx, "panel station yardr default new open");
+        wait(cx, "the yardr drawer", |cx| drawn(cx, "context stage file"));
+
+        // At 960 the drawer stands over the pane's right, covering the
+        // track's end; at 1440 it stands beside the pane, clear of it.
+        cx.simulate_resize(gpui::size(px(960.), px(640.)));
+        drawn(cx, "context drawer");
+        let drawer = bounds_of(cx, "context drawer");
+        assert_eq!(drawer.origin.x, px(520.));
+        assert_eq!(drawer.right(), px(960.));
+        let track = bounds_of(cx, "panel track yardr default");
+        assert!(
+            track.right() > drawer.origin.x,
+            "the track ends at {:?}, past the drawer's {:?}",
+            track.right(),
+            drawer.origin.x
+        );
+        cx.simulate_resize(gpui::size(px(1440.), px(900.)));
+        drawn(cx, "context drawer");
+        let drawer = bounds_of(cx, "context drawer");
+        assert_eq!(drawer.size.width, px(440.));
+        assert_eq!(drawer.right(), px(1440.));
+        let track = bounds_of(cx, "panel track yardr default");
+        assert!(
+            track.right() <= drawer.origin.x,
+            "the track ends at {:?}, past the drawer's {:?}",
+            track.right(),
+            drawer.origin.x
+        );
+
+        // Esc shuts it, and the rows stay; so does its ×.
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| assert!(v.context.is_none()));
+        assert_eq!(open_row(&view, cx), Some(Selected::Arrivals));
+        click_on(cx, "panel station yardr default new open");
+        wait(cx, "the drawer again", |cx| drawn(cx, "context drawer"));
+        click_on(cx, "context close");
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| assert!(v.context.is_none()));
+
+        // Moving among the Lines views keeps it; leaving them shuts
+        // it, here and in the model.
+        click_on(cx, "panel station yardr default new open");
+        wait(cx, "the drawer once more", |cx| drawn(cx, "context drawer"));
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| assert!(v.context.is_some()));
+        assert!(drawn(cx, "context drawer"));
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Conversation("yardmaster".into()), window, cx)
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert!(v.context.is_none());
+            assert!(v.model.as_ref().unwrap().context().is_none());
+        });
+    }
+
+    /// Propose an edit in the drawer's Prompt tab mails the yardmaster
+    /// the Line window's mail — the depot, the group and the prompt
+    /// file and digest as read, then the text whole — and the hand-off
+    /// stands under the prompt, with Read again and Clear. Nothing is
+    /// approved.
+    #[gpui::test]
+    fn the_context_drawer_s_prompt_tab_mails_an_edit(cx: &mut TestAppContext) {
+        let digest = "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1";
+        let prompt = format!("/home/jo/.yardr/roles/builders.{digest}.md");
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "limit": 3, "taken": 1,
+                         "beads": [{"bead": "yd-a", "title": "A", "expected": "1h",
+                                    "remark": "", "tone": "none", "working": false}]}]}],
+                 "elsewhere": []}], "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "new", "next": ["review"], "terminal": false,
+                     "route": {"id": "r-1", "scope": "this depot's own",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "builders", "runner": "herdr", "kind": "claude",
+                         "prompt": {"path": prompt, "source": "file", "found": prompt,
+                                    "text": "Build the thing.\n", "digest": digest,
+                                    "carriable": true}}], "limit": 3},
+                     "other_routes": [], "open": 1,
+                     "stage_file": {"path": ".yardr/flows/default/new.md", "text": "Start here.\n"}}]}],
+              "crew": []}})
+            .to_string(),
+        );
+        yard.answer("Mail", "{}");
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+        wait(cx, "the panel", |cx| drawn(cx, "panel track yardr default"));
+        click_on(cx, "panel station yardr default new open");
+        wait(cx, "the drawer", |cx| drawn(cx, "context stage file"));
+        click_on(cx, "context tab prompt");
+        wait(cx, "the prompt", |cx| drawn(cx, "context prompt file"));
+        let typed = |view: &Entity<Footplate>, cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, cx| {
+                v.line_edit
+                    .as_ref()
+                    .map(|edit| edit.field.read(cx).text().to_string())
+            })
+        };
+
+        // Propose an edit opens the editor over the text that stands;
+        // Send is held while nothing is changed.
+        click_on(cx, "context propose");
+        wait(cx, "the editor", |cx| drawn(cx, "context prompt editor"));
+        assert!(drawn(cx, "context prompt editor words"));
+        assert_eq!(typed(&view, cx).as_deref(), Some("Build the thing.\n"));
+        click_on(cx, "context prompt editor send");
+        assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
+
+        // Send mails the yardmaster once, and the hand-off stands under
+        // the prompt, approving nothing.
+        click_on(cx, "context prompt editor");
+        cx.simulate_keystrokes("secondary-a");
+        cx.simulate_input("Build it well.");
+        assert_eq!(typed(&view, cx).as_deref(), Some("Build it well."));
+        click_on(cx, "context prompt editor send");
+        wait(cx, "the mail", |_| yard.asked("Mail").len() == 1);
+        assert_eq!(
+            yard.asked("Mail")[0],
+            json!({"to": "yardmaster", "actor": "jo", "text": format!(
+                "depot: yardr\ngroup: builders\nprompt file: {prompt}\nprompt digest: {digest}\n\nBuild it well.")})
+        );
+        wait(cx, "the hand-off", |cx| {
+            drawn(cx, "context prompt sent waiting")
+        });
+        view.read_with(cx, |v, _| assert!(v.line_edit.is_none()));
+        assert!(drawn(cx, "context prompt sent read"));
+        assert!(drawn(cx, "context prompt sent clear"));
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
+
+        // Read again reads the drawer's depot again, and the drawer
+        // stands on; Clear takes the hand-off away.
+        click_on(cx, "context prompt sent read");
+        wait(cx, "the second read", |_| yard.asked("Line").len() == 2);
+        wait(cx, "the prompt again", |cx| {
+            drawn(cx, "context prompt file")
+        });
+        click_on(cx, "context prompt sent clear");
+        view.read_with(cx, |v, _| assert!(v.line_sent.is_none()));
+    }
+
+    /// Served by… in the drawer's Group tab picks a group for the
+    /// stage: under the route it mails the route card, where no route
+    /// serves it the new rule's. The window approves nothing.
+    #[gpui::test]
+    fn the_context_drawer_s_served_pick_files_a_route_card(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": [{"bead": "yd-a", "title": "A", "expected": "1h",
+                                    "remark": "", "tone": "none", "working": false}]},
+                        {"stage": "review", "group": "", "human": false, "lamp": "none",
+                         "beads": []}]}],
+                 "elsewhere": []}], "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "new", "next": ["review"], "terminal": false,
+                     "route": {"id": "r-1", "scope": "this depot's own",
+                       "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                       "chain": [{"name": "builders", "runner": "herdr", "kind": "claude"}], "limit": 3},
+                     "other_routes": [{"id": "r-2", "scope": "yard-wide",
+                       "filters": {"type": "task", "labels": ["eyes"], "priority": "P0-P1", "originator": "any"},
+                       "group": "reviewers"}],
+                     "open": 1},
+                    {"stage": "review", "next": ["merged"], "terminal": false,
+                     "other_routes": [], "open": 0}]}],
+              "crew": []}})
+            .to_string(),
+        );
+        yard.answer("Mail", "{}");
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+        wait(cx, "the panel", |cx| drawn(cx, "panel track yardr default"));
+        click_on(cx, "panel station yardr default new open");
+        wait(cx, "the drawer", |cx| drawn(cx, "context stage none"));
+        click_on(cx, "context tab group");
+        wait(cx, "the facts", |cx| drawn(cx, "context facts runner"));
+
+        // Served by… stands the picker, shut until tapped; picking a
+        // group mails the route card, and the filing stands under it.
+        assert!(!drawn(cx, "line served new r-1"));
+        click_on(cx, "context served");
+        wait(cx, "the picker", |cx| {
+            drawn(cx, "line serve new r-1 reviewers")
+        });
+        click_on(cx, "line serve new r-1 reviewers");
+        wait(cx, "the route mail", |_| yard.asked("Mail").len() == 1);
+        assert_eq!(
+            yard.asked("Mail")[0],
+            json!({"to": "yardmaster", "actor": "jo", "text":
+                "depot: yardr\nstage: new\nrule: r-1\nscope: this depot's own\nfilters: type any · labels none · priority any · for the operator\ngroup: reviewers\n\nFile the route card route set r-1 --group reviewers for this depot's own rule. The card will stand in Decide; nothing changes until it is approved there."})
+        );
+        wait(cx, "the filing", |cx| drawn(cx, "line filed"));
+
+        // Where no route serves the stage, the warn stands with Served
+        // by…, and the pick mails the new rule's card.
+        click_on(cx, "panel station yardr default review open");
+        wait(cx, "the review drawer", |cx| drawn(cx, "context tab group"));
+        click_on(cx, "context tab group");
+        wait(cx, "the unserved warn", |cx| drawn(cx, "context unserved"));
+        assert!(drawn(cx, "context served note"));
+        click_on(cx, "context served");
+        wait(cx, "the new rule's picker", |cx| {
+            drawn(cx, "line serve review none reviewers")
+        });
+        click_on(cx, "line serve review none reviewers");
+        wait(cx, "the new rule's mail", |_| yard.asked("Mail").len() == 2);
+        assert_eq!(
+            yard.asked("Mail")[1],
+            json!({"to": "yardmaster", "actor": "jo", "text":
+                "depot: yardr\nstage: review\ngroup: reviewers\n\nFile the route card route add --stage review --group reviewers for depot yardr, where no rule serves the stage. The card will stand in Decide; nothing changes until it is approved there."})
+        );
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
     }
 
     /// A serving pick from the Line window: under a depot's own rule

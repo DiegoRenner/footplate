@@ -1064,12 +1064,17 @@ impl Footplate {
             return self.select(Selected::Bead(bead), window, cx);
         }
         // Another bead than the one the drawer shows starts at its top;
-        // the same one stays where it stood.
+        // the same one stays where it stood. One right-side panel shows:
+        // the context drawer shuts with it.
         if self.drawer.as_ref() != Some(&bead) {
             self.drawer_scroll.scroll_to_item(0);
         }
         self.drawer = Some(bead.clone());
-        self.change(cx, |m| m.read_bead(&bead));
+        self.context = None;
+        self.change(cx, |m| {
+            m.shut_context();
+            m.read_bead(&bead)
+        });
     }
 
     /// Shows the run ask's carried texts behind the yard's sentences, or

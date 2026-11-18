@@ -1421,7 +1421,8 @@ impl Footplate {
     /// with its name under it, and the beads' chips under that. The
     /// line runs through the node row, stopping at the track's ends;
     /// the stations share the card's width down to their narrowest,
-    /// past which the track scrolls.
+    /// past which the track scrolls. A press on the node or the name
+    /// opens the stage's context drawer; the chips keep their own taps.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn panel_station(
         &self,
@@ -1437,21 +1438,43 @@ impl Footplate {
     ) -> impl IntoElement + use<> {
         let lit = !stage.beads.is_empty();
         let selector = format!("{} {}", depot.name, Self::flow_label(depot, flow));
-        // The stations share the card's width down to their narrowest,
-        // past which the track scrolls: `grown`'s width, inlined, since
-        // a station is no column of its own.
-        let station = div()
+        let open = self.context.as_ref().is_some_and(|open| {
+            open.depot == depot.name
+                && open.flow == flow.name
+                && open.flow_type == flow.flow_type
+                && open.stage == stage.stage
+        });
+        let (press_depot, press_flow, press_type, press_stage) = (
+            depot.name.clone(),
+            flow.name.clone(),
+            flow.flow_type.clone(),
+            stage.stage.clone(),
+        );
+        let press_selector = format!("panel station {selector} {}", stage.stage);
+        // The node and the name stand in the press that opens the
+        // stage's context drawer; the chips stand past it, with their
+        // own taps.
+        let press = div()
+            .id(SharedString::from(format!("{press_selector} open")))
             .debug_selector({
-                let (selector, stage) = (selector.clone(), stage.stage.clone());
-                move || format!("panel station {selector} {stage}")
+                let press_selector = press_selector.clone();
+                move || format!("{press_selector} open")
             })
-            .flex_1()
-            .w(rems(TRACK_STATION / 16.))
-            .min_w(px(TRACK_STATION))
+            .w_full()
             .flex()
             .flex_col()
             .items_center()
             .gap_1p5()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_context(
+                    press_depot.clone(),
+                    press_flow.clone(),
+                    press_type.clone(),
+                    press_stage.clone(),
+                    cx,
+                )
+            }))
             .child(
                 div()
                     .w_full()
@@ -1484,14 +1507,30 @@ impl Footplate {
                         move || format!("panel label {selector} {stage}")
                     })
                     .text_size(rems(TYPE_META))
-                    .text_color(match lit {
+                    .text_color(match lit || open {
                         true => palette.text,
                         false => palette.faint,
                     })
-                    .when(lit, |el| el.font_weight(FontWeight::MEDIUM))
+                    .when(lit || open, |el| el.font_weight(FontWeight::MEDIUM))
                     .text_center()
                     .child(panel_stage_name(&stage.stage, false)),
             );
+        // The stations share the card's width down to their narrowest,
+        // past which the track scrolls: `grown`'s width, inlined, since
+        // a station is no column of its own.
+        let station = div()
+            .debug_selector({
+                let (selector, stage) = (selector.clone(), stage.stage.clone());
+                move || format!("panel station {selector} {stage}")
+            })
+            .flex_1()
+            .w(rems(TRACK_STATION / 16.))
+            .min_w(px(TRACK_STATION))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1p5()
+            .child(press);
         // Full width, so the chips wrap where the station ends and
         // nowhere sooner: a row that hugs its content wraps early.
         let mut chips = div()
@@ -2072,7 +2111,7 @@ impl Footplate {
                 );
             }
             false => {
-                list = list.child(self.flow_strip(flow, palette)).child(
+                list = list.child(self.flow_strip(depot, flow, palette, cx)).child(
                     div()
                         .px_4()
                         .py_2()
@@ -2216,9 +2255,15 @@ impl Footplate {
     /// The flow's stages as a strip: each but the backlog's a knot on
     /// the track with its name, the stages with beads named with their
     /// count, the landed end with its served landing rows. It scrolls
-    /// sideways past the pane's edge, and stands still: the stations
-    /// open nothing until the context drawers.
-    pub(crate) fn flow_strip(&self, flow: &Flow, palette: Palette) -> impl IntoElement + use<> {
+    /// sideways past the pane's edge. A press on a knot opens the
+    /// stage's context drawer, as a press on a panel station does.
+    pub(crate) fn flow_strip(
+        &self,
+        depot: &str,
+        flow: &Flow,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let mut strip = div()
             .id("flow stations")
             .debug_selector({
@@ -2282,22 +2327,50 @@ impl Footplate {
                     .flex_none()
                     .bg(palette.strong),
             };
+            let knot_open = self.context.as_ref().is_some_and(|open| {
+                open.depot == depot
+                    && open.flow == flow.name
+                    && open.flow_type == flow.flow_type
+                    && open.stage == stage.stage
+            });
+            let (knot_depot, knot_flow, knot_type, knot_stage) = (
+                depot.to_string(),
+                flow.name.clone(),
+                flow.flow_type.clone(),
+                stage.stage.clone(),
+            );
+            let knot_selector = format!("flow knot {} {}", flow.name, stage.stage);
             strip = strip.child(
                 div()
+                    .id(SharedString::from(knot_selector.clone()))
+                    .debug_selector({
+                        let knot_selector = knot_selector.clone();
+                        move || knot_selector.clone()
+                    })
                     .flex()
                     .flex_row()
                     .flex_none()
                     .items_center()
                     .gap_1p5()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_context(
+                            knot_depot.clone(),
+                            knot_flow.clone(),
+                            knot_type.clone(),
+                            knot_stage.clone(),
+                            cx,
+                        )
+                    }))
                     .child(knot)
                     .child(
                         div()
                             .text_size(rems(TYPE_META))
-                            .text_color(match on {
+                            .text_color(match on || knot_open {
                                 true => palette.text,
                                 false => palette.faint,
                             })
-                            .when(on, |el| el.font_weight(FontWeight::MEDIUM))
+                            .when(on || knot_open, |el| el.font_weight(FontWeight::MEDIUM))
                             .child(label),
                     ),
             );

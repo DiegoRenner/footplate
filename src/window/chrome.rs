@@ -860,10 +860,13 @@ impl Footplate {
         // seq alone names a letter, so the yard shown next would have its
         // own mail of that number under the bar. Its emoji's mark goes
         // with it, as where the open row changes. The bead drawer shuts
-        // with them: its bead is a bead of the yard that is left.
+        // with them: its bead is a bead of the yard that is left. The
+        // context drawer shuts with it: its stage is a stage of the
+        // yard that is left.
         self.react_hover = None;
         self.emoji_hover = None;
         self.drawer = None;
+        self.context = None;
         let words = std::mem::take(&mut self.ask_words);
         if !words.is_empty() {
             self.kept_words.insert(self.yard.clone(), words);
@@ -1392,6 +1395,25 @@ impl Footplate {
                         self.drawer = Some("yd-zulu".into());
                         effects.extend(model.read_bead("yd-zulu"));
                     }
+                    // The context shot opens the drawer on footplate's
+                    // default flow at new, as a press on its station
+                    // does: the depot's line is read, and the drawer
+                    // shows it once the call answers. A debug build's
+                    // alone, as above.
+                    #[cfg(debug_assertions)]
+                    if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("lines-context") {
+                        self.context = Some(super::context::ContextOpen {
+                            depot: "footplate".into(),
+                            flow: "default".into(),
+                            flow_type: "task".into(),
+                            stage: "new".into(),
+                            tab: super::context::ContextTab::Stage,
+                            served_open: false,
+                            stage_whole: false,
+                            prompt_whole: false,
+                        });
+                        effects.extend(model.open_context("footplate", "default", "task", "new"));
+                    }
                     // The waiting-folded shot stands with its section folded
                     // to the head, and its card still open. A debug build's
                     // alone.
@@ -1683,6 +1705,21 @@ impl Footplate {
             // shows.
             if matches!(&after_sel, Some(Selected::Bead(_))) {
                 self.drawer = None;
+            }
+            // The context drawer follows the Lines views: leaving them
+            // shuts it, here and in the model, whose Line read belonged
+            // to the depot it stood on.
+            if !matches!(
+                &after_sel,
+                Some(
+                    Selected::Arrivals
+                        | Selected::Line(_)
+                        | Selected::Flow(_, _, _)
+                        | Selected::NoLine
+                )
+            ) {
+                self.context = None;
+                model.shut_context();
             }
             // The pointer's mark on a letter goes with the row. A letter
             // that is not drawn is told of no leave, so a pointer that
@@ -3787,6 +3824,12 @@ impl Footplate {
             cx.notify();
             return;
         }
+        // Esc shuts the context drawer, as it shuts the bead drawer
+        // above it: one right-side panel stands at a time.
+        if self.context.is_some() {
+            self.shut_context(cx);
+            return;
+        }
         // A parked bead's card leaves its line, then the pick, then the
         // words.
         if let Some(bead) = self.waiting_card() {
@@ -3852,10 +3895,12 @@ impl Footplate {
         // the sheet, or the bar would wait over that letter when the
         // conversation shows again. Its emoji's mark goes with it, as where
         // the open row changes. The bead drawer shuts with them: the sheet
-        // stands in place of the reading pane it stands beside.
+        // stands in place of the reading pane it stands beside. The
+        // context drawer shuts with it, here and in the model.
         self.react_hover = None;
         self.emoji_hover = None;
         self.drawer = None;
+        self.shut_context(cx);
         // A card under the settings is not in view, and neither is its
         // field: nothing typed of a secret waits there.
         self.forget_secret(cx);
@@ -7326,7 +7371,8 @@ fn shot_selected() -> Option<Selected> {
         | Ok("old-lines")
         | Ok("lines-panel")
         | Ok("lines-departures")
-        | Ok("lines-arrivals") => return Some(Selected::Arrivals),
+        | Ok("lines-arrivals")
+        | Ok("lines-context") => return Some(Selected::Arrivals),
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
         Ok("lines-flow") => {

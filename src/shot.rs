@@ -273,6 +273,7 @@ pub const STATES: &[&str] = &[
     "lines-departures",
     "lines-arrivals",
     "lines-flow",
+    "lines-context",
     "keys",
     "about",
     "about-missing",
@@ -1447,6 +1448,36 @@ fn populate(yard: &Yard, state: &str) {
                 .to_string(),
             );
         }
+        // The drawer's depot reads the same way: footplate's default
+        // flow at new, with its stage file, its serving group and the
+        // group's prompt, and review standing unserved.
+        if state == "lines-context" {
+            yard.answer_for(
+                "Line",
+                "depot",
+                "footplate",
+                &json!({"result": {"depot": "footplate", "kind": "git", "flows": [
+                    {"name": "default", "type": "task", "source": "store", "stages": [
+                        {"stage": "new", "next": ["review"], "outcomes": [{"name": "done", "to": "review"}],
+                         "route": {"id": "r-1", "scope": "this depot's own",
+                           "filters": {"type": "", "labels": [], "priority": "", "originator": ""},
+                           "chain": [{"name": "muse-builders", "runner": "herdr", "kind": "muse", "model": "opus",
+                             "prompt": {"path": "/home/jo/.yardr/roles/muse-builder.md",
+                                        "source": "file",
+                                        "found": "/home/jo/.yardr/roles/muse-builder.md",
+                                        "text": "# Builder (muse)\n\nYou implement one bead, in its own worktree on branch `yard/<bead>`.\n\n1. Read the bead first (`yardr prime --bead <id>`): its goal, notes and edges.\n2. Run the depot's test command on the untouched base before you change anything.\n3. Write a plan note on the bead, then start.\n",
+                                        "digest": "9d01c7a2e5f3b84610ad3c2f5e7b9a0c1d4e6f8a2b3c5d7e9f0a1b2c3d4e5f60",
+                                        "carriable": true}}], "limit": 2},
+                         "other_routes": [], "open": 1,
+                         "stage_file": {"path": ".yardr/flows/default/new.md",
+                           "text": "A builder implements the bead here, on branch `yard/<bead>` in the bead's own worktree.\n\nBefore the bead leaves as `done`:\n\n- the work is committed on the branch, and the depot's test command passes on the last commit;\n- a note on the bead says what changed and what was verified, and ends with the test line.\n\nOutcomes: `done` → review · `question` → decide · back to backlog\n"}},
+                        {"stage": "review", "next": ["merged"], "terminal": false,
+                         "other_routes": [], "open": 0},
+                        {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]},
+                ], "crew": []}})
+                .to_string(),
+            );
+        }
     }
     match state {
         // The yard at an address is opened from the settings, not from
@@ -1497,6 +1528,7 @@ fn populate(yard: &Yard, state: &str) {
         | "flow"
         | "lines-arrivals"
         | "lines-flow"
+        | "lines-context"
         | "line-window"
         | "line-edit"
         | "line-sent"
@@ -3003,6 +3035,7 @@ fn populate(yard: &Yard, state: &str) {
         || state == "departures"
         || state == "lines-arrivals"
         || state == "lines-flow"
+        || state == "lines-context"
     {
         // The board these states shoot answers over the shared one: a
         // late bead with the overrun the yard will print, a bead that
@@ -3051,6 +3084,7 @@ fn populate(yard: &Yard, state: &str) {
         || state == "flow"
         || state == "lines-arrivals"
         || state == "lines-flow"
+        || state == "lines-context"
     {
         // The flows these states shoot answer over the shared ones:
         // five tracks with a backlog to count, a bead jo holds, one
@@ -3178,7 +3212,7 @@ fn populate(yard: &Yard, state: &str) {
         };
         yard.answer("Flows", &served.to_string());
     }
-    if state == "lines-arrivals" || state == "lines-flow" {
+    if state == "lines-arrivals" || state == "lines-flow" || state == "lines-context" {
         // The asks the head's pills count: two open on beads of
         // yardr's default flow, and two beads parked for jo's move on
         // yardr's design flow and signalbox's, so the tree reads rust
@@ -4376,6 +4410,28 @@ mod tests {
                         Some(3),
                         "{state}"
                     );
+                }
+                "lines-context" => {
+                    // The drawer's depot reads the same line: footplate's
+                    // default flow at new, with its stage file, its
+                    // serving group and the group's prompt, and review
+                    // standing unserved.
+                    let line = yard.client().line("footplate").unwrap();
+                    assert_eq!(line.depot, "footplate", "{state}");
+                    let flow = &line.flows[0];
+                    assert_eq!(flow.name, "default", "{state}");
+                    let new = &flow.stages[0];
+                    assert_eq!(
+                        new.stage_file.as_ref().unwrap().path,
+                        ".yardr/flows/default/new.md",
+                        "{state}"
+                    );
+                    let group = &new.route.as_ref().unwrap().chain[0];
+                    assert_eq!(group.name, "muse-builders", "{state}");
+                    let prompt = group.prompt.as_ref().unwrap();
+                    assert!(prompt.carriable, "{state}");
+                    assert_eq!(prompt.digest.len(), 64, "{state}");
+                    assert!(flow.stages[1].route.is_none(), "{state}");
                 }
                 "crew" => {
                     // The sidebar's groups full: three crew with their

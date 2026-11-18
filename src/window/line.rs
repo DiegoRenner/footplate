@@ -1021,9 +1021,10 @@ impl Footplate {
     /// button for each group the line names, with its runner's words,
     /// the group that serves now marked. Picking one files that
     /// scope's card by mail at once. The representative rule's picker
-    /// also carries New group…, whose form stands under it.
+    /// also carries New group…, whose form stands under it. The context
+    /// drawer draws the same picker on its Group tab, with no New group.
     #[allow(clippy::too_many_arguments)]
-    fn line_served(
+    pub(crate) fn line_served(
         &self,
         depot: &str,
         stage: &str,
@@ -1512,7 +1513,12 @@ impl Footplate {
     /// that its card will stand in Decide and this window approves
     /// nothing, the yardmaster's answer where one has come, and
     /// Clear.
-    fn line_filed_row(&self, filed: &LineFiled, palette: Palette, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn line_filed_row(
+        &self,
+        filed: &LineFiled,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let mut row = div().flex().flex_col().gap_1().child(
             div()
                 .text_sm()
@@ -1673,7 +1679,7 @@ impl Footplate {
             .as_ref()
             .filter(|sent| sent.depot == depot && sent.owner == owner)
         {
-            row = row.child(self.line_hand_off(sent, &selector, palette, cx));
+            row = row.child(self.line_hand_off(sent, &selector, palette, false, cx));
         }
         row
     }
@@ -1719,8 +1725,9 @@ impl Footplate {
     /// Cancel and Send. Send is held while the text is blank or what
     /// stands, while a send is on its way and while the prompt has moved
     /// under the editor, which says so. A send that did not go says why in
-    /// red, with the text as it was.
-    fn line_editor(
+    /// red, with the text as it was. The context drawer draws the same
+    /// editor under its prompt.
+    pub(crate) fn line_editor(
         &self,
         edit: &LineEdit,
         selector: &str,
@@ -1821,12 +1828,15 @@ impl Footplate {
     /// or, once the line is read again, that the prompt now reads as the
     /// text sent or changed since it was read, with the yardmaster's
     /// answer under it when one has come. Read again reads the line again;
-    /// Clear takes the hand-off away.
-    fn line_hand_off(
+    /// Clear takes the hand-off away. The context drawer draws the same
+    /// row under its prompt, and there Read again reads the drawer's
+    /// depot again instead of opening the Line window.
+    pub(crate) fn line_hand_off(
         &self,
         sent: &LineSent,
         selector: &str,
         palette: Palette,
+        drawer: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let selector = format!("{selector} sent");
@@ -1888,8 +1898,9 @@ impl Footplate {
                             let selector = selector.clone();
                             move || format!("{selector} read")
                         })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select(Selected::LineWindow(depot.clone()), window, cx)
+                        .on_click(cx.listener(move |this, _, window, cx| match drawer {
+                            true => this.reread_context(cx),
+                            false => this.select(Selected::LineWindow(depot.clone()), window, cx),
                         })),
                 )
                 .child(

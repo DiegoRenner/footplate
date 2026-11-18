@@ -1730,6 +1730,10 @@ pub struct Model {
     /// it read, as it keeps the open travelling bead: it is none of the
     /// queue's, and a closed bead never is.
     drawn: Option<String>,
+    /// The stage the context drawer stands open on, while one does: the
+    /// drawer's Line read belongs to the depot it names, as the Line
+    /// window's belongs to the depot it stands on.
+    context: Option<ContextStage>,
     /// The option chosen with a number key or the arrows, by bead and ask.
     chosen: HashMap<(String, u64), u64>,
     /// The asks whose card stands expanded, by bead and ask.
@@ -1928,6 +1932,9 @@ impl Model {
     /// on with the yard; what went wrong last was said while it showed.
     pub fn leave(&mut self) {
         self.selected = None;
+        // A context drawer belongs to the yard on screen. Its late Line
+        // read must not keep the old yard's drawer current while it is held.
+        self.context = None;
         self.aside = true;
         self.notice.clear();
     }
@@ -3538,12 +3545,17 @@ impl Model {
         self.line_unserved
     }
 
-    /// Whether an answer still belongs to the Line window open now.
+    /// Whether an answer still belongs to the Line window open now,
+    /// or to the context drawer standing on the depot: the drawer reads
+    /// the same line, over another selection.
     fn line_read_is_current(&self, depot: &str, generation: u64) -> bool {
         self.line_generation == generation
-            && self.selected.as_ref().is_some_and(
+            && (self.selected.as_ref().is_some_and(
                 |selected| matches!(selected, Selected::LineWindow(open) if open == depot),
-            )
+            ) || self
+                .context
+                .as_ref()
+                .is_some_and(|context| context.depot == depot))
     }
 
     /// The line as read again. An answer for a depot that is no longer
@@ -6464,6 +6476,77 @@ impl Model {
         }
     }
 
+    /// Stands the context drawer open on `stage` of `flow` in `depot`,
+    /// and reads the depot's line where the one held is another depot's
+    /// or none: a press on another station of the same depot reads
+    /// nothing again. Nothing is read where the line is not offered, as
+    /// where the Line window stands unopened.
+    pub fn open_context(
+        &mut self,
+        depot: &str,
+        flow: &str,
+        flow_type: &str,
+        stage: &str,
+    ) -> Vec<Effect> {
+        let same_depot = self
+            .context
+            .as_ref()
+            .is_some_and(|context| context.depot == depot);
+        self.context = Some(ContextStage {
+            depot: depot.to_string(),
+            flow: flow.to_string(),
+            flow_type: flow_type.to_string(),
+            stage: stage.to_string(),
+        });
+        // While the drawer stays open, another station of the same depot
+        // uses its Line read. A fresh open reads again even if that depot's
+        // older Line window left an answer cached.
+        if !self.line_offered() || (same_depot && self.line_read_for(depot).is_some()) {
+            return Vec::new();
+        }
+        // A fresh depot reads again, as a fresh open of the Line
+        // window does: clearing the old answer lets a failure speak in
+        // the drawer instead of leaving another depot's line there.
+        self.line_generation = self.line_generation.wrapping_add(1);
+        self.line = None;
+        self.line_notice = None;
+        vec![Effect::Line {
+            depot: depot.to_string(),
+            generation: self.line_generation,
+        }]
+    }
+
+    /// Shuts the context drawer: a Line answer for its depot says
+    /// nothing after this, as one for a Line window left does.
+    pub fn shut_context(&mut self) {
+        self.context = None;
+    }
+
+    /// Reads the context drawer's depot again, as reopening the Line
+    /// window reads its: the hand-off's Read again, which says where an
+    /// edit stands against the text that stands now. Nothing where no
+    /// drawer stands open, or where the line is not offered.
+    pub fn reread_context(&mut self) -> Vec<Effect> {
+        let Some(depot) = self.context.as_ref().map(|context| context.depot.clone()) else {
+            return Vec::new();
+        };
+        if !self.line_offered() {
+            return Vec::new();
+        }
+        self.line_generation = self.line_generation.wrapping_add(1);
+        self.line = None;
+        self.line_notice = None;
+        vec![Effect::Line {
+            depot,
+            generation: self.line_generation,
+        }]
+    }
+
+    /// The stage the context drawer stands open on, while one does.
+    pub fn context(&self) -> Option<&ContextStage> {
+        self.context.as_ref()
+    }
+
     /// Mail was sent to `to`. It also comes from the stream; reading it
     /// shows it when the stream is lost at this moment, and costs what is
     /// new.
@@ -8388,6 +8471,17 @@ pub fn line_group_words(group: &crate::api::LineGroup) -> String {
 /// mail.
 pub const YARDMASTER: &str = "yardmaster";
 
+/// The stage a context drawer stands open on: its depot, its flow by
+/// name and type, and the stage. The drawer reads the depot's line for
+/// it, as the Line window reads the depot's it stands on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ContextStage {
+    pub depot: String,
+    pub flow: String,
+    pub flow_type: String,
+    pub stage: String,
+}
+
 /// Whose prompt an edit in the Line window is for: a group's, which
 /// every stage the group serves shares, or a crew member's, which no
 /// stage carries.
@@ -8603,6 +8697,18 @@ pub fn line_change_words(change: &LineChange) -> String {
         words.push_str(&format!(" (was {})", change.was));
     }
     words
+}
+
+/// A routed group's seats as the context drawer's Group tab says
+/// them: its limit with how many live sessions hold, `1 · 0 taken`.
+/// `None` where the yard serves neither, and the tab says no seats.
+pub fn context_seats_words(limit: Option<usize>, taken: Option<usize>) -> Option<String> {
+    match (limit, taken) {
+        (Some(limit), Some(taken)) => Some(format!("{limit} · {taken} taken")),
+        (Some(limit), None) => Some(limit.to_string()),
+        (None, Some(taken)) => Some(format!("{taken} taken")),
+        (None, None) => None,
+    }
 }
 
 /// Who a runner is, in the flow map's words beside a group's name in
@@ -16366,6 +16472,130 @@ mod tests {
             m.line_notice(),
             Some("the line could not be read: the line is closed")
         );
+        // The context drawer reads the same line, over another
+        // selection: its first depot reads, another station of the same
+        // depot reads nothing again while the drawer stays open; a fresh
+        // open reads that depot again, and another depot clears the old
+        // answer.
+        let (mut m, _) = Model::new(line_state(), Mode::Timetable, None);
+        assert_eq!(
+            m.open_context("yardr", "default", "", "new"),
+            vec![Effect::Line {
+                depot: "yardr".into(),
+                generation: 1,
+            }]
+        );
+        assert_eq!(
+            m.context(),
+            Some(&ContextStage {
+                depot: "yardr".into(),
+                flow: "default".into(),
+                flow_type: String::new(),
+                stage: "new".into(),
+            })
+        );
+        m.line_read(
+            "yardr",
+            1,
+            Line {
+                depot: "yardr".into(),
+                ..Default::default()
+            },
+        );
+        assert!(m.line_read_for("yardr").is_some());
+        assert_eq!(m.open_context("yardr", "default", "", "review"), Vec::new());
+        m.shut_context();
+        assert_eq!(
+            m.open_context("yardr", "default", "", "new"),
+            vec![Effect::Line {
+                depot: "yardr".into(),
+                generation: 2,
+            }]
+        );
+        assert!(m.line_read_for("yardr").is_none());
+        m.line_read(
+            "yardr",
+            2,
+            Line {
+                depot: "yardr".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            m.open_context("notes", "default", "", "new"),
+            vec![Effect::Line {
+                depot: "notes".into(),
+                generation: 3,
+            }]
+        );
+        assert!(m.line_read_for("yardr").is_none());
+        // Shut, a late answer says nothing.
+        m.shut_context();
+        assert_eq!(m.context(), None);
+        m.line_read(
+            "notes",
+            3,
+            Line {
+                depot: "notes".into(),
+                ..Default::default()
+            },
+        );
+        assert!(m.line_read_for("notes").is_none());
+        // Read again reads the drawer's depot again, and nothing where
+        // no drawer stands.
+        assert_eq!(m.reread_context(), Vec::new());
+        assert_eq!(
+            m.open_context("yardr", "default", "", "new"),
+            vec![Effect::Line {
+                depot: "yardr".into(),
+                generation: 4,
+            }]
+        );
+        m.line_read(
+            "yardr",
+            4,
+            Line {
+                depot: "yardr".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            m.reread_context(),
+            vec![Effect::Line {
+                depot: "yardr".into(),
+                generation: 5,
+            }]
+        );
+        assert!(m.line_read_for("yardr").is_none());
+        m.leave();
+        assert_eq!(m.context(), None);
+        m.line_read(
+            "yardr",
+            5,
+            Line {
+                depot: "yardr".into(),
+                ..Default::default()
+            },
+        );
+        assert!(m.line_read_for("yardr").is_none());
+        // Not the operator's: the drawer stands, but reads nothing.
+        let mut state = line_state();
+        state.operator = "someone-else".into();
+        let (mut m, _) = Model::new(state, Mode::Timetable, None);
+        assert_eq!(m.open_context("yardr", "default", "", "new"), Vec::new());
+        assert!(m.context().is_some());
+        // Seats are the limit with how many live sessions hold, and
+        // none where the yard serves neither.
+        assert_eq!(
+            context_seats_words(Some(1), Some(0)),
+            Some("1 · 0 taken".to_string())
+        );
+        assert_eq!(context_seats_words(Some(3), None), Some("3".to_string()));
+        assert_eq!(
+            context_seats_words(None, Some(2)),
+            Some("2 taken".to_string())
+        );
+        assert_eq!(context_seats_words(None, None), None);
     }
 
     /// A prompt edit is one mail whose first lines name the depot, the

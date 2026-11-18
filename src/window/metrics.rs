@@ -362,6 +362,23 @@ pub(crate) fn grown(usual: f32) -> Div {
 /// line view's columns do.
 pub(crate) const DRAWER_WIDTH: f32 = 320.;
 
+/// A context drawer's width in pixels at the usual text size, drawn
+/// through [`grown`]: the board's 440, room for a stage file's lines
+/// and a prompt's beside the pane.
+pub(crate) const CONTEXT_WIDTH: f32 = 440.;
+
+/// Whether the window `window` pixels wide holds a context drawer
+/// beside the reading pane: the pane keeps at least the drawer's own
+/// width past it, as with the bead drawer. Where it does not, the
+/// drawer stands over the pane's right instead: at 960 the pane is 544
+/// and the drawer stands over it, at 1440 it stands beside it. `rem`
+/// is the window's rem in pixels.
+pub(crate) fn context_beside(window: Pixels, rem: f32) -> bool {
+    let drawer = CONTEXT_WIDTH.max(CONTEXT_WIDTH / 16. * rem);
+    let list = (LIST * rem / 16.).min((f32::from(window) - RAIL - 290. * rem / 16.).max(0.));
+    f32::from(window) - RAIL - list - drawer >= drawer
+}
+
 /// Whether the window `window` pixels wide holds the bead drawer beside
 /// the reading pane: the pane keeps at least the drawer's own width. The
 /// rail is [`RAIL`] pixels, the list [`LIST`] at the usual text size and
@@ -416,6 +433,13 @@ mod tests {
         assert_eq!(list_cap(px(624.), 16.), 270.);
         assert_eq!(pane_width(px(624.), 16.), 290.);
         assert_eq!(pane_width(px(960.), 16.), 544.);
+    }
+
+    #[test]
+    fn a_context_drawer_stands_beside_a_wide_pane_and_over_a_narrow_one() {
+        assert!(context_beside(px(1440.), 16.));
+        assert!(!context_beside(px(960.), 16.));
+        assert!(!context_beside(px(624.), 16.));
     }
 
     #[test]
