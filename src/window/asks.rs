@@ -3434,12 +3434,8 @@ impl Footplate {
             )
     }
 
-    /// One dealt with, in the open rows' shape: its outcome's icon where
-    /// their lamp stands (an approval's in the go colour, the rest quiet),
-    /// the question's first line, then the outcome in the text colour with
-    /// whose it was and when it was asked quiet after it, and the bead's
-    /// short id at the right. Each is cut with an ellipsis where it does
-    /// not fit.
+    /// One dealt with, in the open rows' shape (`decided_lines`), with the
+    /// bead's short id at the right of its outcome's line.
     pub(crate) fn decided_row(
         &self,
         row: DecidedRow,
@@ -3447,109 +3443,40 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let sel = Selected::Decided(row.bead.clone(), row.ask);
-        // The model words the outcome as its icon and its words together.
-        let mut chars = row.outcome.chars();
-        let icon = chars.next().map(String::from).unwrap_or_default();
-        let words = chars.as_str().to_string();
-        let icon_color = match icon.as_str() {
-            "✓" => palette.ok,
-            _ => palette.faint,
-        };
         let mut short = div()
             .flex_none()
             .text_size(rems(TYPE_CODE))
             .text_color(palette.faint)
             .debug_selector(|| format!("decided id {} {}", row.bead, row.ask))
-            .child(row.short);
+            .child(row.short.clone());
         if let Some(mono) = select::mono(cx) {
             short = short.font_family(mono);
         }
-        div()
+        let lines = decided_lines(
+            &row.outcome,
+            &row.head,
+            &row.detail,
+            format!("{} {}", row.bead, row.ask),
+            "decided",
+            short,
+            palette,
+        );
+        lines
             .id(SharedString::from(format!(
                 "decided {} {}",
                 row.bead, row.ask
             )))
-            .mx_1()
-            .px_2()
-            .py_1p5()
-            .rounded_md()
-            .flex()
-            .items_start()
-            .cursor_pointer()
-            .border_1()
-            .border_color(rgba(0x00000000))
             .when(row.selected, |el| el.bg(palette.open))
             .when(!row.selected, |el| {
                 el.hover(|style| style.border_color(palette.line))
             })
             .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(ROW_LAMP + ROW_LAMP_GAP))
-                    .text_size(rems(TYPE_LABEL))
-                    .text_color(icon_color)
-                    .debug_selector(|| format!("decided icon {} {}", row.bead, row.ask))
-                    .child(icon),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(rems(TYPE_LABEL))
-                            .font_weight(FontWeight::MEDIUM)
-                            .debug_selector(|| format!("decided head {} {}", row.bead, row.ask))
-                            .child(shorten(&row.head, ROW_TITLE_CHARS)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_baseline()
-                            .justify_between()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_baseline()
-                                    .gap_1()
-                                    .min_w_0()
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .max_w(relative(0.6))
-                                            .text_xs()
-                                            .truncate()
-                                            .debug_selector(|| {
-                                                format!("decided outcome {} {}", row.bead, row.ask)
-                                            })
-                                            .child(words),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_xs()
-                                            .text_color(palette.faint)
-                                            .truncate()
-                                            .child(format!("· {}", row.detail)),
-                                    ),
-                            )
-                            .child(short),
-                    ),
-            )
     }
 
-    /// Several look-alikes folded into one row: the first's question with
-    /// the shared outcome and asker. A click opens the fold to show them,
-    /// or folds it shut again; the count with ▸ and ▾ stands where one
-    /// row's bead id does, past what the head's cut would hide.
+    /// Several look-alikes folded into one row, in a dealt with row's
+    /// shape: the first's question with the shared outcome and asker. A
+    /// click opens the fold to show them, or folds it shut again; the
+    /// count with ▸ and ▾ stands where one row's bead id does.
     pub(crate) fn decided_fold(
         &self,
         fold: DecidedFold,
@@ -3559,80 +3486,32 @@ impl Footplate {
         let bead = fold.bead.clone();
         let ask = fold.ask;
         let mark = if fold.open { "▾" } else { "▸" };
-        let count = format!("×{} {mark}", fold.rows.len());
-        div()
-            .id(SharedString::from(format!(
-                "decided fold {} {}",
-                fold.bead, fold.ask
-            )))
-            .debug_selector(|| format!("decided fold {} {}", fold.bead, fold.ask))
-            .mx_1()
-            .px_2()
-            .py_1p5()
-            .rounded_md()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .cursor_pointer()
-            .border_1()
-            .border_color(rgba(0x00000000))
-            .hover(|style| style.border_color(palette.line))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.change(cx, |m| {
-                    m.toggle_decided_fold(&bead, ask);
-                    Vec::new()
-                })
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(rems(TYPE_LABEL))
-                            .font_weight(FontWeight::MEDIUM)
-                            .debug_selector(|| {
-                                format!("decided fold head {} {}", fold.bead, fold.ask)
-                            })
-                            .child(fold.head),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_baseline()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .debug_selector(|| {
-                                        format!("decided fold outcome {} {}", fold.bead, fold.ask)
-                                    })
-                                    .child(fold.outcome),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(palette.faint)
-                                    .truncate()
-                                    .child(format!("· {}", fold.detail)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(palette.faint)
-                    .child(count),
-            )
+        let count = div()
+            .flex_none()
+            .text_xs()
+            .text_color(palette.faint)
+            .child(format!("×{} {mark}", fold.rows.len()));
+        decided_lines(
+            &fold.outcome,
+            &fold.head,
+            &fold.detail,
+            format!("{} {}", fold.bead, fold.ask),
+            "decided fold",
+            count,
+            palette,
+        )
+        .id(SharedString::from(format!(
+            "decided fold {} {}",
+            fold.bead, fold.ask
+        )))
+        .debug_selector(|| format!("decided fold {} {}", fold.bead, fold.ask))
+        .hover(|style| style.border_color(palette.line))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.change(cx, |m| {
+                m.toggle_decided_fold(&bead, ask);
+                Vec::new()
+            })
+        }))
     }
 
     /// A bead's open asks, each as its card: the yard, the bead and the
@@ -6739,4 +6618,101 @@ pub(crate) fn file_url(path: &str, windows: bool) -> String {
         }
     }
     url
+}
+
+/// A dealt with row's shape, one ask's or a fold's, as the open rows stand:
+/// the outcome's icon where their lamp stands (an approval's in the go
+/// colour, the rest quiet), the question's first line, then the outcome in
+/// the text colour with `detail` quiet after it, and `right` at the end of
+/// that line. `outcome` is the model's, the icon and its words together.
+/// The debug selectors are `<kind> head <key>`, `<kind> outcome <key>` and
+/// `<kind> icon <key>`.
+fn decided_lines(
+    outcome: &str,
+    head: &str,
+    detail: &str,
+    key: String,
+    kind: &'static str,
+    right: Div,
+    palette: Palette,
+) -> Div {
+    let mut chars = outcome.chars();
+    let icon = chars.next().map(String::from).unwrap_or_default();
+    let words = chars.as_str().to_string();
+    let icon_color = match icon.as_str() {
+        "✓" => palette.ok,
+        _ => palette.faint,
+    };
+    let (icon_key, head_key, outcome_key) = (key.clone(), key.clone(), key);
+    div()
+        .mx_1()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .flex()
+        .items_start()
+        .cursor_pointer()
+        .border_1()
+        .border_color(rgba(0x00000000))
+        .child(
+            div()
+                .flex_none()
+                .w(px(ROW_LAMP + ROW_LAMP_GAP))
+                .text_size(rems(TYPE_LABEL))
+                .text_color(icon_color)
+                .debug_selector(move || format!("{kind} icon {icon_key}"))
+                .child(icon),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(rems(TYPE_LABEL))
+                        .font_weight(FontWeight::MEDIUM)
+                        .debug_selector(move || format!("{kind} head {head_key}"))
+                        .child(shorten(head, ROW_TITLE_CHARS)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_baseline()
+                                .gap_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(relative(0.6))
+                                        .text_xs()
+                                        .truncate()
+                                        .debug_selector(move || {
+                                            format!("{kind} outcome {outcome_key}")
+                                        })
+                                        .child(words),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(palette.faint)
+                                        .truncate()
+                                        .child(format!("· {detail}")),
+                                ),
+                        )
+                        .child(right),
+                ),
+        )
 }
