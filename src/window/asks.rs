@@ -27,11 +27,11 @@ use super::expanded_text_key;
 use super::keys::{APPROVE_KEY, SETUP_SECRET_CONTEXT};
 use super::metrics::{
     ASK_QUESTION_MIN, LEVER_H, RADIUS_CARD, RADIUS_CONTROL, ROW_ASK_CHARS, ROW_LAMP, ROW_LAMP_GAP,
-    ROW_TITLE_CHARS,
+    ROW_MARK, ROW_TITLE_CHARS,
 };
 use super::rail::{Picture, RailTip, UnsentNote, post_note};
 use super::state::{Adding, ApprovalPairing};
-use super::ui::{field, keys_row, send_held, shorten, small_button};
+use super::ui::{field, keys_row, outcome_glyph, send_held, shorten, small_button};
 use super::words::{bead_words, decide_words, decided_words, left_words};
 use super::{AskAbout, Decline, Expand, FocusFilter, FocusWords};
 use crate::api::{self};
@@ -39,7 +39,7 @@ use crate::draft::{self, Attachment};
 use crate::input::Line;
 use crate::model::{
     self, AnswerAction, DecidedEntry, DecidedFold, DecidedRow, DecisionAsk, DecisionDetail,
-    DecisionRow, Effect, Mode, Model, Selected, Sending, Taken, Target, Write,
+    DecisionRow, Effect, Mode, Model, Outcome, Selected, Sending, Taken, Target, Write,
 };
 use crate::select::{self};
 use crate::theme::{
@@ -3453,6 +3453,7 @@ impl Footplate {
             short = short.font_family(mono);
         }
         let lines = decided_lines(
+            row.mark,
             &row.outcome,
             &row.head,
             &row.detail,
@@ -3492,6 +3493,7 @@ impl Footplate {
             .text_color(palette.faint)
             .child(format!("×{} {mark}", fold.rows.len()));
         decided_lines(
+            fold.mark,
             &fold.outcome,
             &fold.head,
             &fold.detail,
@@ -6621,13 +6623,14 @@ pub(crate) fn file_url(path: &str, windows: bool) -> String {
 }
 
 /// A dealt with row's shape, one ask's or a fold's, as the open rows stand:
-/// the outcome's icon where their lamp stands (an approval's in the go
+/// the outcome's mark where their lamp stands (an approval's in the go
 /// colour, the rest quiet), the question's first line, then the outcome in
 /// the text colour with `detail` quiet after it, and `right` at the end of
-/// that line. `outcome` is the model's, the icon and its words together.
+/// that line.
 /// The debug selectors are `<kind> head <key>`, `<kind> outcome <key>` and
 /// `<kind> icon <key>`.
 fn decided_lines(
+    mark: Outcome,
     outcome: &str,
     head: &str,
     detail: &str,
@@ -6636,13 +6639,11 @@ fn decided_lines(
     right: Div,
     palette: Palette,
 ) -> Div {
-    let mut chars = outcome.chars();
-    let icon = chars.next().map(String::from).unwrap_or_default();
-    let words = chars.as_str().to_string();
-    let icon_color = match icon.as_str() {
-        "✓" => palette.ok,
+    let icon_color = match mark {
+        Outcome::Approved => palette.ok,
         _ => palette.faint,
     };
+    let words = outcome.to_string();
     let (icon_key, head_key, outcome_key) = (key.clone(), key.clone(), key);
     div()
         .mx_1()
@@ -6655,13 +6656,15 @@ fn decided_lines(
         .border_1()
         .border_color(rgba(0x00000000))
         .child(
+            // The mark stands in the lamp's room, on the head's first line.
             div()
                 .flex_none()
                 .w(px(ROW_LAMP + ROW_LAMP_GAP))
-                .text_size(rems(TYPE_LABEL))
-                .text_color(icon_color)
+                .h(rems(TYPE_LABEL * 1.5))
+                .flex()
+                .items_center()
                 .debug_selector(move || format!("{kind} icon {icon_key}"))
-                .child(icon),
+                .child(outcome_glyph(mark, ROW_MARK, icon_color)),
         )
         .child(
             div()

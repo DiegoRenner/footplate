@@ -112,6 +112,10 @@ pub(crate) const LIST: f32 = 352.;
 pub(crate) const ROW_LAMP: f32 = 8.;
 pub(crate) const ROW_LAMP_GAP: f32 = 8.;
 
+/// A dealt with row's outcome mark in pixels: Lucide's glyph, at a size
+/// that sits in the lamp's room with a gap before the title.
+pub(crate) const ROW_MARK: f32 = 12.;
+
 /// The char budgets of a list row's lines, which end in an ellipsis past
 /// them (`ui::shorten`): gpui's `truncate()` clips mid-glyph in a row's
 /// flex items. At the list's full 352 a title of 34 chars at the label size

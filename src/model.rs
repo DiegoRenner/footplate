@@ -828,19 +828,6 @@ impl Outcome {
         Outcome::PutAside,
     ];
 
-    /// The history's icon, first on its rows: each draws in the
-    /// system's fonts on macOS and Linux. A put-aside stands as two
-    /// bars, not the pause mark, which Linux's fonts have no glyph for.
-    pub fn icon(self) -> &'static str {
-        match self {
-            Outcome::Approved => "✓",
-            Outcome::Words => "✎",
-            Outcome::TakenBack => "↩",
-            Outcome::PutAside => "‖",
-            Outcome::Declined => "✕",
-        }
-    }
-
     /// The chip's word.
     pub fn chip(self) -> &'static str {
         match self {
@@ -871,7 +858,9 @@ pub struct DecidedRow {
     pub ask: u64,
     /// The question's first line in plain words.
     pub head: String,
-    /// The outcome's icon with its words: `✓approved`.
+    /// What became of it: the mark the window draws first on the row.
+    pub mark: Outcome,
+    /// The outcome in words: `approved`, `put aside`, the words answered.
     pub outcome: String,
     /// `<asker> · <asked at>`.
     pub detail: String,
@@ -896,7 +885,8 @@ pub struct DecidedFold {
     pub ask: u64,
     /// The first's head in plain words.
     pub head: String,
-    /// The shared outcome's icon with its word: `↩taken back`.
+    /// The shared outcome: its mark, and its word (`taken back`).
+    pub mark: Outcome,
     pub outcome: String,
     /// The shared asker.
     pub detail: String,
@@ -4087,7 +4077,8 @@ impl Model {
                 bead: first.bead.clone(),
                 ask: first.ask,
                 head: row_head(&first.question),
-                outcome: format!("{}{}", outcome.icon(), outcome.word()),
+                mark: outcome,
+                outcome: outcome.word().to_string(),
                 detail: first.asker.clone(),
                 open,
                 rows: members,
@@ -4105,7 +4096,7 @@ impl Model {
     }
 
     /// One dealt with as its history row: the question's first line, the
-    /// outcome's icon with its words, and whose it was with when it was
+    /// outcome's mark and its words, and whose it was with when it was
     /// asked.
     fn decided_row<Tz: TimeZone>(&self, ask: &DecidedAsk, zone: &Tz) -> DecidedRow
     where
@@ -4127,7 +4118,8 @@ impl Model {
             bead: ask.bead.clone(),
             ask: ask.ask,
             head: row_head(&ask.question),
-            outcome: format!("{}{}", outcome.icon(), words),
+            mark: outcome,
+            outcome: words,
             detail: detail.join(" · "),
             short: short_bead(&ask.bead),
             selected: self.selected.as_ref() == Some(&Selected::Decided(ask.bead.clone(), ask.ask)),
@@ -18063,12 +18055,12 @@ mod tests {
         assert_eq!(groups[0].day, "8 Oct");
         let rows = decided_all(&m);
         assert_eq!(rows[0].head, "Send them to build?");
-        assert_eq!(rows[0].outcome, "✓approved");
+        assert_eq!(rows[0].outcome, "approved");
         assert_eq!(rows[0].detail, "yardmaster · 09:30");
-        assert_eq!(rows[1].outcome, "✎warmly");
+        assert_eq!(rows[1].outcome, "warmly");
         assert_eq!(rows[1].detail, "yardmaster · 09:30");
-        assert_eq!(rows[2].outcome, "✕declined: not mine");
-        assert_eq!(rows[3].outcome, "‖put aside");
+        assert_eq!(rows[2].outcome, "declined: not mine");
+        assert_eq!(rows[3].outcome, "put aside");
         // Open: its rows stand in the decisions' tab order, after the
         // open ones.
         m.select(Selected::Decided("yd-links".into(), 6));
@@ -18218,7 +18210,7 @@ mod tests {
         assert_eq!(fold.bead, "yd-cal");
         assert_eq!(fold.ask, 3);
         assert_eq!(fold.head, "Raise Google Docs to 2000 calls");
-        assert_eq!(fold.outcome, "✓approved");
+        assert_eq!(fold.outcome, "approved");
         assert_eq!(fold.detail, "mayor");
         assert!(!fold.open);
         assert_eq!(fold.rows.len(), 2);
@@ -18227,7 +18219,7 @@ mod tests {
         let DecidedEntry::One(row) = &groups[1].rows[1] else {
             panic!("the secret stands alone: {:?}", groups[1].rows[1]);
         };
-        assert_eq!(row.outcome, "✎gave GOOGLE_ACCOUNT");
+        assert_eq!(row.outcome, "gave GOOGLE_ACCOUNT");
         assert_eq!(row.detail, "mayor · 09:00");
         // The decline and the timeless put-aside, one by one.
         assert_eq!(groups[2].rows.len(), 1);
@@ -19768,7 +19760,7 @@ mod tests {
             rows[0].head,
             "Move this yard's 64 links to the declared source now?"
         );
-        assert_eq!(rows[0].outcome, "✓approved");
+        assert_eq!(rows[0].outcome, "approved");
         assert_eq!(rows[0].detail, "yardmaster · 10:00");
         // The open bead is gone: the next decision is open.
         assert_eq!(m.selected(), Some(&Selected::Decision("yardr-3msx".into())));
@@ -19987,7 +19979,7 @@ mod tests {
         assert!(!row.head.contains("when you approve"), "{:?}", row.head);
         assert!(!row.head.contains("yardr peer list"), "{:?}", row.head);
         // Whose words they are, the row's detail says.
-        assert_eq!(row.outcome, "‖put aside");
+        assert_eq!(row.outcome, "put aside");
         assert_eq!(row.detail, "yardmaster · 10:00");
     }
 
@@ -20019,7 +20011,7 @@ mod tests {
             bead: "yd-link".into()
         }));
         assert_eq!(m.decisions_count(), 0);
-        assert_eq!(decided_all(&m)[0].outcome, "✓approved");
+        assert_eq!(decided_all(&m)[0].outcome, "approved");
         let detail = m.decided_detail("yd-link", 2710, &chrono::Utc).unwrap();
         assert_eq!(
             detail.state_line,
@@ -20539,7 +20531,7 @@ mod tests {
         );
         let mut m = with_a_run_ask(&[]);
         assert!(m.deferred("yd-link", 2710).contains(&Effect::Asks));
-        assert_eq!(decided_all(&m)[0].outcome, "‖put aside");
+        assert_eq!(decided_all(&m)[0].outcome, "put aside");
         assert_eq!(m.approving("yd-link", 2710), Some(&more_mail()));
         assert_eq!(m.approved("yd-link", 2710, &approved()).len(), 2);
         assert_eq!(m.approving("yd-link", 2710), None);
@@ -20690,7 +20682,7 @@ mod tests {
             bead: "yd-crm".into()
         }));
         assert_eq!(m.decisions_count(), 0);
-        assert_eq!(decided_all(&m)[0].outcome, "✎gave BOOKS_TOKEN");
+        assert_eq!(decided_all(&m)[0].outcome, "gave BOOKS_TOKEN");
         let detail = m.decided_detail("yd-crm", 18, &chrono::Utc).unwrap();
         assert_eq!(detail.state_line, "you gave BOOKS_TOKEN");
         assert_eq!(detail.secret, Some(books()));
@@ -20710,7 +20702,7 @@ mod tests {
         assert_eq!(m.decisions_count(), 0);
         let detail = m.decided_detail("yd-crm", 18, &chrono::Utc).unwrap();
         assert_eq!(detail.state_line, "you declined");
-        assert_eq!(decided_all(&m)[0].outcome, "✕declined");
+        assert_eq!(decided_all(&m)[0].outcome, "declined");
         assert_eq!(m.secret("yd-crm", 18), Some(&books()));
         assert_eq!(m.giving("yd-crm", 18), None);
         // Put aside, it is given still.
@@ -20929,7 +20921,7 @@ mod tests {
             bead: "yd-crm".into()
         }));
         assert_eq!(m.decisions_count(), 0);
-        assert_eq!(decided_all(&m)[0].outcome, "✓approved");
+        assert_eq!(decided_all(&m)[0].outcome, "approved");
         let detail = m.decided_detail("yd-crm", 41, &chrono::Utc).unwrap();
         assert_eq!(
             detail.state_line,
@@ -20982,7 +20974,7 @@ mod tests {
             detail.state_line,
             "approved, being carried out: setup of pack courier, preset read to crew yardmaster; gave COURIER_ACCOUNT"
         );
-        assert_eq!(decided_all(&m)[0].outcome, "✓approved");
+        assert_eq!(decided_all(&m)[0].outcome, "approved");
         m.decided[0].ran.as_mut().unwrap().result = "source courier: added".to_string();
         let detail = m.decided_detail("yd-crm", 41, &chrono::Utc).unwrap();
         assert_eq!(
@@ -21143,9 +21135,9 @@ mod tests {
         let (mut m, _) = Model::new(state, Mode::Chat, None);
         m.toggle_decided();
         let rows = decided_all(&m);
-        assert_eq!(rows[0].outcome, "↩taken back by mayor: the train left");
+        assert_eq!(rows[0].outcome, "taken back by mayor: the train left");
         assert_eq!(rows[0].detail, "yardmaster · 09:30");
-        assert_eq!(rows[1].outcome, "↩it was taken back in north's yard");
+        assert_eq!(rows[1].outcome, "it was taken back in north's yard");
         let line = |ask: u64| {
             m.decided_detail("yd-links", ask, &chrono::Utc)
                 .unwrap()
@@ -21271,7 +21263,7 @@ mod tests {
         assert!(effects.contains(&Effect::Asks));
         assert_eq!(m.decisions_count(), 3);
         assert_eq!(m.decided_count(), 1);
-        assert_eq!(decided_all(&m)[0].outcome, "‖put aside");
+        assert_eq!(decided_all(&m)[0].outcome, "put aside");
 
         // Decline without words changes nothing: it asks for words.
         assert_eq!(m.declined("yardr-3msx", 4, "  "), Vec::new());

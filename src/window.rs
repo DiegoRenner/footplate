@@ -10039,15 +10039,15 @@ yardr.dev
         assert_eq!(
             rows,
             [
-                ("✓approved".to_string(), "mayor · 11:07".to_string()),
-                ("✓approved".to_string(), "mayor · 11:07".to_string()),
-                ("‖put aside".to_string(), "mayor · 11:07".to_string()),
+                ("approved".to_string(), "mayor · 11:07".to_string()),
+                ("approved".to_string(), "mayor · 11:07".to_string()),
+                ("put aside".to_string(), "mayor · 11:07".to_string()),
                 (
-                    "✕declined: not mine".to_string(),
+                    "declined: not mine".to_string(),
                     "mayor · 11:07".to_string()
                 ),
-                ("✓left to mayor".to_string(), "11:07".to_string()),
-                ("✎warmly".to_string(), "mayor · 11:07".to_string()),
+                ("left to mayor".to_string(), "11:07".to_string()),
+                ("warmly".to_string(), "mayor · 11:07".to_string()),
             ]
         );
 
@@ -35311,11 +35311,11 @@ yardr.dev
             rows,
             [
                 (
-                    "↩taken back by yardmaster: the books moved".to_string(),
+                    "taken back by yardmaster: the books moved".to_string(),
                     "yardmaster · 10:00".to_string()
                 ),
                 (
-                    "↩it was taken back in north's yard".to_string(),
+                    "it was taken back in north's yard".to_string(),
                     "yardmaster · 10:00".to_string()
                 ),
             ]
