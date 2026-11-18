@@ -35,8 +35,9 @@ use crate::yard::Env;
 /// count where the assembly's shows three, an open decision card of a plain
 /// ask, that card with a selection posed over its context, that card
 /// with one of jo's beads changed, so Lines carries its badge, an open
-/// card of a run ask, the lever frame's card (a short-command run ask
-/// with its bead's thread and its image under it), an open card of a teammate invite, the
+/// card of a run ask, the frame's card (a short-command run ask with
+/// its moves row, its bead's thread and its image under it), that card
+/// with the bead's flow served for its head's stage dots, an open card of a teammate invite, the
 /// teammates view open on its row with a paired and a waiting
 /// teammate, a weighty run ask's card beside a routine one's,
 /// a weighty mapping ask's card beside a routine one's, a weighty run
@@ -184,6 +185,7 @@ pub const STATES: &[&str] = &[
     "lines",
     "run",
     "frame",
+    "decide",
     "teammates",
     "teammates-list",
     "weighty",
@@ -2881,14 +2883,17 @@ fn populate(yard: &Yard, state: &str) {
                 .to_string(),
             );
         }
-        "frame" => {
-            // The lever frame at 960x640: the open card's bead with two
-            // asks, a run ask with a short command and its four levers
-            // and a pick, and the bead's thread with its image under the
+        "frame" | "decide" => {
+            // The frame at 960x640: the open card's bead with two asks,
+            // a run ask with a short command and its moves row and a
+            // pick, and the bead's thread with its image under the
             // cards. Under it in the list, two more beads with three asks,
             // one bead parked for a move, twelve dealt with, and a crew of
             // four, two at work. The yard
-            // holds the image, as in the mail state.
+            // holds the image, as in the mail state. The decide state
+            // serves the open bead's flow besides, for its head's stage
+            // dots; the frame state serves none, and its head names the
+            // stage alone.
             yard.blob(IMAGE_HASH, IMAGE);
             yard.answer(
                 "Crew",
@@ -2942,6 +2947,9 @@ fn populate(yard: &Yard, state: &str) {
             yard.answer("Bead", &bead_frame());
             for (bead, answer) in beads_frame() {
                 yard.answer_for("Bead", "bead", bead, &answer);
+            }
+            if state == "decide" {
+                yard.answer("Flows", &flows_frame());
             }
         }
         "teammates" => {
@@ -3258,7 +3266,7 @@ fn run_of() -> serde_json::Value {
 }
 
 /// The frame shot's run: the pick's landing, short enough that its
-/// command, its four levers and the thread stand in one 960x640 frame.
+/// command, its moves row and the thread stand in one 960x640 frame.
 fn frame_run() -> serde_json::Value {
     json!({"command": "yardr land footplate-q2rd --onto main",
            "argv": ["land", "footplate-q2rd", "--onto", "main"],
@@ -3272,7 +3280,7 @@ fn frame_run() -> serde_json::Value {
 /// the assembly. None names a topic, so the list draws no topic's head. Their
 /// ages are from now, so the list reads minutes and hours whenever the
 /// shot runs. The yardmaster asks the open card's, and can be written to
-/// from here, so no unreachable line stands under its levers.
+/// from here, so no unreachable line stands under its moves.
 fn queued_frame() -> Vec<serde_json::Value> {
     vec![
         json!({
@@ -3388,6 +3396,42 @@ fn beads_frame() -> [(&'static str, String); 2] {
             .to_string(),
         ),
     ]
+}
+
+/// The decide shot's flows: footplate's own flow with the open bead
+/// standing at decide, the second of five stages, so that its head
+/// draws a dot behind, its own and three ahead with the stage named.
+fn flows_frame() -> String {
+    json!({"result": {
+        "travelling": 1,
+        "depots": [
+            {"name": "footplate", "kind": "git", "travelling": 1, "flows": [
+                {"name": "default", "type": "task", "source": "store", "stages": [
+                    {"stage": "new", "group": "muse-builders", "human": false,
+                     "lamp": "none", "terminal": false, "limit": 2, "taken": 1,
+                     "beads": []},
+                    {"stage": "decide", "group": "decisions", "human": true,
+                     "lamp": "turn", "terminal": false, "limit": 1, "taken": 0,
+                     "beads": [
+                        {"bead": "footplate-q2rd",
+                         "title": "Show the open asks on the dock badge",
+                         "expected": "—", "remark": "waits for jo",
+                         "tone": "amber", "working": false}]},
+                    {"stage": "review", "group": "muse-reviewers", "human": false,
+                     "lamp": "none", "terminal": false, "limit": 2, "taken": 2,
+                     "beads": []},
+                    {"stage": "review-security", "group": "muse-security", "human": false,
+                     "lamp": "none", "terminal": false, "limit": 1, "taken": 0,
+                     "beads": []},
+                    {"stage": "approved", "group": "shippers", "human": false,
+                     "lamp": "none", "terminal": true, "limit": 2, "taken": 0,
+                     "beads": []},
+                ]},
+            ], "elsewhere": []},
+        ],
+        "unassigned": [],
+    }})
+    .to_string()
 }
 
 /// The weighty shot's command: the mail limit the trust class is of,
@@ -3909,7 +3953,7 @@ mod tests {
                 }
                 "waiting" | "waiting-folded" | "waiting-end" | "old-waiting" | "lines-waiting"
                 | "lines-waiting-end" | "lines-help" | "lines-panel" | "lines-departures"
-                | "frame" => {
+                | "frame" | "decide" => {
                     assert_eq!(loaded.asks.decided.len(), 12, "{state}")
                 }
                 "pair-qr" | "pair-ended" => {
@@ -4285,7 +4329,7 @@ mod tests {
                     assert_eq!(bead.asks[0].question.lines().count(), 3, "{state}");
                     assert!(bead.asks[0].run.is_some(), "{state}");
                 }
-                "frame" => {
+                "frame" | "decide" => {
                     assert_eq!(loaded.asks.open.len(), 5, "{state}");
                     let run = loaded.asks.open[0].run.as_ref().unwrap();
                     assert_eq!(
@@ -4303,6 +4347,32 @@ mod tests {
                     for (id, asks) in [("yardr-m4kt", 2), ("plantime-7wq3", 1)] {
                         let bead = yard.client().bead(id).unwrap();
                         assert_eq!(bead.asks.len(), asks, "{state} {id}");
+                    }
+                    // The decide state serves the open bead's flow for its
+                    // head's stage dots: five stages with the bead at
+                    // decide, the second. The frame state serves none.
+                    if *state == "decide" {
+                        let stages = &loaded.flows.depots[0].flows[0].stages;
+                        let names: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
+                        assert_eq!(
+                            names,
+                            ["new", "decide", "review", "review-security", "approved"],
+                            "{state}"
+                        );
+                        assert_eq!(stages[1].beads.len(), 1, "{state}");
+                        assert_eq!(stages[1].beads[0].bead, "footplate-q2rd", "{state}");
+                    } else {
+                        // The frame state serves the shared flows alone,
+                        // where the open bead stands in no stage: its head
+                        // names the stage alone.
+                        let holds = loaded.flows.depots.iter().any(|depot| {
+                            depot.flows.iter().any(|flow| {
+                                flow.stages.iter().any(|stage| {
+                                    stage.beads.iter().any(|b| b.bead == "footplate-q2rd")
+                                })
+                            })
+                        });
+                        assert!(!holds, "{state}");
                     }
                 }
                 "teammates" => {

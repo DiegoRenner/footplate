@@ -6,10 +6,11 @@ use gpui::{
     rems,
 };
 
-use super::metrics::{LEVER_ACTION_H, RADIUS_CARD};
+use super::metrics::RADIUS_CONTROL;
 use super::{APPROVE_KEY, Footplate, small_button};
 use crate::api;
 use crate::model::{self, DecidedDetail, DecisionAsk};
+use crate::select;
 use crate::theme::{Palette, TYPE_LABEL, TYPE_META, TYPE_SECTION};
 
 /// A section's head in the left list: its title on the left, its count
@@ -100,18 +101,18 @@ pub(crate) fn group_head(title: &'static str) -> impl IntoElement {
 }
 
 /// What the card's button reads with an option to answer with: the
-/// option it answers, and its key. The option is the pick, else the
-/// recommendation, which stands preselected: Enter does what the button
-/// says.
+/// option it answers. The option is the pick, else the recommendation,
+/// which stands preselected: Enter does what the button says, and its
+/// chip stands beside the label, not in it.
 pub(crate) fn answer_label(number: u64, label: &str) -> String {
-    format!("Answer: {number} · {label} ↵")
+    format!("Answer: {number} · {label}")
 }
 
-/// What the card's button reads where words alone go: `Answer ↵` where
-/// they are the answer, `Send ↵` where they go as a note and the ask
-/// stays open.
-pub(crate) const ANSWER_WORDS: &str = "Answer ↵";
-pub(crate) const SEND_WORDS: &str = "Send ↵";
+/// What the card's button reads where words alone go: `Answer` where
+/// they are the answer, `Send` where they go as a note and the ask stays
+/// open. The key stands on the button's chip, not in its label.
+pub(crate) const ANSWER_WORDS: &str = "Answer";
+pub(crate) const SEND_WORDS: &str = "Send";
 
 /// What a lever's key plate says: its number alone, so every option's
 /// label stands at the same place, the recommended one's too.
@@ -168,11 +169,38 @@ pub(crate) fn ask_line(bead: &str, ask: u64) -> String {
     format!("{bead} · ask {ask}")
 }
 
-/// The head of a bead's open asks: the yard, the bead and the topic, once
-/// for every ask of the bead. The yard's dot stands before it, in its
-/// colour. No card is read without its yard.
-pub(crate) fn decision_head(yard: &str, bead: &str, topic: &str) -> String {
-    format!("{yard} · bead {bead} · {topic}")
+/// The head of a bead's open asks: the yard and the bead, once for
+/// every ask of the bead, then the topic where the bead has one (never
+/// the "Everything else" the list groups the topic-less under), and who
+/// built and reviewed it where either is known. The yard's dot stands
+/// before it, in its colour. No card is read without its yard.
+pub(crate) fn decision_head(
+    yard: &str,
+    bead: &str,
+    topic: &str,
+    built_by: &str,
+    reviewed_by: &str,
+) -> String {
+    let mut parts = vec![yard.to_string(), bead.to_string()];
+    if !topic.is_empty() && topic != model::EVERYTHING_ELSE {
+        parts.push(topic.to_string());
+    }
+    if !built_by.is_empty() {
+        parts.push(format!("built by {built_by}"));
+    }
+    if !reviewed_by.is_empty() {
+        parts.push(format!("reviewed by {reviewed_by}"));
+    }
+    parts.join(" · ")
+}
+
+/// What the head's pill counts: the bead's open asks that wait on the
+/// person reading. The head stands only where at least one does.
+pub(crate) fn asks_on_you(count: usize) -> String {
+    match count {
+        1 => "1 ask on you".to_string(),
+        count => format!("{count} asks on you"),
+    }
 }
 
 /// What Decline's tooltip says: saying no to every option, so the
@@ -348,52 +376,29 @@ pub(crate) fn typeback_mismatch(ask: u64) -> String {
     format!("ask {ask}'s number was not typed back, so nothing was done")
 }
 
-/// The keys of a run ask's card. Later, Decline and expand have their
-/// buttons; Enter is named because it does nothing here. Where the Mac's
-/// unlock stands in front, the key opens it first; where the card takes
-/// its number back, `i` types it.
-pub(crate) fn run_keys(approval: Approval, writable: bool) -> String {
+/// The keys of a run ask's card, beside what its buttons say: the
+/// approval and ask-about-this stand on their buttons' chips, so the
+/// line names only what no button does. Enter is named because it does
+/// nothing here; where the card takes its number back, `i` types it.
+pub(crate) fn run_keys(approval: Approval) -> String {
     let mut keys: Vec<String> = Vec::new();
-    match approval {
-        Approval::Direct => keys.push(format!("{APPROVE_KEY} approves")),
-        Approval::Unlock => keys.push(format!("{APPROVE_KEY} approves after unlocking")),
-        Approval::TypeBack => {
-            keys.push(format!("{APPROVE_KEY} approves after its number is typed"))
-        }
-        Approval::Nowhere => {}
-    }
     if !matches!(approval, Approval::Nowhere) {
         keys.push("enter alone approves nothing".to_string());
     }
     if matches!(approval, Approval::TypeBack) {
         keys.push("i types the number".to_string());
     }
-    if writable {
-        keys.push("a ask about this".to_string());
-    }
     keys.join(" · ")
 }
 
-/// The keys of a setup ask's card: the approval with its key, the field
-/// that types the account, and the same answer in a terminal on the
-/// yard's machine. Where the yard takes no approval from this window, the
-/// card says where it does in place of the control, and lists no keys.
-pub(crate) fn setup_keys(
-    bead: &str,
-    ask: u64,
-    setup: &api::Setup,
-    approval: Approval,
-    writable: bool,
-) -> String {
+/// The keys of a setup ask's card, beside what its buttons say: the
+/// approval and ask-about-this stand on their buttons' chips, so the
+/// line names only the field that types the account and the same answer
+/// in a terminal on the yard's machine. Where the yard takes no approval
+/// from this window, the card says where it does in place of the
+/// control, and lists no keys.
+pub(crate) fn setup_keys(bead: &str, ask: u64, setup: &api::Setup, approval: Approval) -> String {
     let mut keys: Vec<String> = Vec::new();
-    match approval {
-        Approval::Direct => keys.push(format!("{APPROVE_KEY} approves")),
-        Approval::Unlock => keys.push(format!("{APPROVE_KEY} approves after unlocking")),
-        Approval::TypeBack => {
-            keys.push(format!("{APPROVE_KEY} approves after its number is typed"))
-        }
-        Approval::Nowhere => {}
-    }
     if !matches!(approval, Approval::Nowhere) {
         keys.push("enter alone approves nothing".to_string());
         match approval {
@@ -404,9 +409,6 @@ pub(crate) fn setup_keys(
             "or in a terminal: {}",
             model::setup_approve_command(bead, ask, setup)
         ));
-    }
-    if writable {
-        keys.push("a ask about this".to_string());
     }
     keys.join(" · ")
 }
@@ -721,41 +723,62 @@ pub(crate) fn approve_button(
     card_button(id, label, palette, click)
 }
 
-/// What a run or setup card's Approve lever reads under its key plate:
+/// What a run or setup card's Approve move reads beside its key chip:
 /// the yard that runs the command, and unlocking first where the Mac's
-/// unlock stands in front. The plate carries the key, so the label
-/// names no key: `Approve in home`, plated `⌘↵`.
-pub(crate) fn approve_lever_label(yard: &str, unlock: bool) -> String {
+/// unlock stands in front. The chip carries the key, so the label names
+/// no key: `Approve in home`, chipped `⌘↵`.
+pub(crate) fn approve_move_label(yard: &str, unlock: bool) -> String {
     match unlock {
         true => format!("Approve in {yard} after unlocking"),
         false => format!("Approve in {yard}"),
     }
 }
 
-/// One action lever of a run or setup card: its key plate above its
-/// label, at [`LEVER_ACTION_H`]. Filled is the card's one fill (Approve);
-/// the rest are outlined. Without a click it stands disabled and takes
-/// none, as a held or waited card's levers do.
-pub(crate) fn action_lever(
+/// One move of an open card's row: its label with its key on a chip
+/// beside it. Filled is the card's one fill (Approve, Answer); the rest
+/// are outlined. Without a click it stands disabled and takes none, as a
+/// held or waited card's moves do.
+pub(crate) fn move_button(
     id: String,
-    plate: String,
     label: String,
+    key: String,
     filled: bool,
     palette: Palette,
+    cx: &mut Context<Footplate>,
     click: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
 ) -> Stateful<Div> {
     let enabled = click.is_some();
+    let mut chip = div()
+        .px(px(2.))
+        .py(px(1.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(match filled {
+            true => palette.on_button,
+            false => palette.strong,
+        })
+        .text_size(rems(TYPE_META))
+        .text_color(match filled {
+            true => palette.on_button,
+            false => palette.faint,
+        })
+        .child(key);
+    if let Some(mono) = select::mono(cx) {
+        chip = chip.font_family(mono);
+    }
     div()
         .id(SharedString::from(id.clone()))
         .debug_selector(|| id.clone())
-        .h(px(LEVER_ACTION_H))
-        .px_3()
-        .py_2()
-        .rounded(px(RADIUS_CARD))
+        .min_h(px(32.))
+        .px_1()
+        .py_1()
+        .rounded(px(RADIUS_CONTROL))
         .border_1()
         .flex()
-        .flex_col()
-        .justify_between()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap_1()
         .when(filled && enabled, |el| {
             el.bg(palette.button)
                 .border_color(palette.button)
@@ -786,19 +809,11 @@ pub(crate) fn action_lever(
         .when_some(click, |el, click| el.on_click(click))
         .child(
             div()
-                .text_size(rems(TYPE_META))
-                .text_color(match filled {
-                    true => palette.on_button,
-                    false => palette.faint,
-                })
-                .child(plate),
-        )
-        .child(
-            div()
                 .text_size(rems(TYPE_LABEL))
                 .font_weight(FontWeight::MEDIUM)
                 .child(label),
         )
+        .child(chip)
 }
 
 /// The primary button: one filled button, standing as the one to take,

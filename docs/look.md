@@ -56,9 +56,9 @@ meta 12, code 12. The constants are `TYPE_QUESTION`, `TYPE_TITLE`,
 | question | 22 | semibold | the current ask's question |
 | title | 15 | semibold | another ask's question |
 | section | 13 | semibold | a section's or a chat group's head |
-| label | 13 | medium | a lever's label, a row's head (semibold on an open ask's row), the decision pane's bead title |
+| label | 13 | medium | a lever's or a move button's label, a row's head (semibold on an open ask's row), the decision pane's bead title |
 | body | 13 | regular | a card's context lines |
-| meta | 12 | regular | counts, metadata, a lever's plate and consequence, the line over a question |
+| meta | 12 | regular | counts, metadata, a lever's plate and consequence, a move button's key chip, the line over a question |
 | code | 12 | mono | commands, and a row's short id |
 
 The mono face is the machine's first of Menlo, Consolas, DejaVu Sans
@@ -92,10 +92,15 @@ in it set the size (`src/window/metrics.rs`).
   mid-glyph in a row's flex items, so it is only the backstop where the
   list is narrower.
 - A lever: at least 32 high (`LEVER_H`, the control's height), a 6px
-  radius (`RADIUS_CONTROL`), 8px of padding at its sides. An action
-  lever (`LEVER_ACTION_H`, direction 2's 58) stands taller, its key
-  plate above its label; the four stand in one row under a run or
-  setup card's command.
+  radius (`RADIUS_CONTROL`), 8px of padding at its sides.
+- A card's moves stand in one row of buttons with key chips, at the
+  control's height and radius; the row wraps where the pane is narrower.
+- A Decide head's stage dots are 8 (`ROW_LAMP`) with 14px ties
+  (`STAGE_TIE`) between them, and the stage named beside them in the
+  meta role.
+- A thread picture stands in a 156 by 96 frame (`THREAD_PIC_W`,
+  `THREAD_PIC_H`), the control's radius, the strong border, the side
+  ground, the image scaled inside it.
 - Controls stand at least 32 high; a row's padding is 8 by 6; a
   section head stands at least 32 high.
 - The conversation's reading column stands full width up to 880,
@@ -136,9 +141,12 @@ another topic.
 
 ## Cards and the one-fill rule
 
-The decision pane's head is the yard's dot with the yard, the bead and
-the topic in the meta role and quiet, over the bead's title in the label
-role. Under it the bead's asks stand as flat cards, ruled apart. Each
+The decision pane's head is the yard's dot with the yard, the bead,
+its topic where it has one and who built and reviewed it where either
+is known in the meta role and quiet, over the bead's title in the label
+role; beside them the stage dots of its flow with the stage named, and
+a pill counting the bead's asks on the reader (`2 asks on you`). Under
+it the bead's asks stand as flat cards, ruled apart. Each
 card: the yard's weight lines in text accent; a line over the question
 in the meta role, `Waiting on you · run 1` in text accent, then how long
 and who asks quiet (`asked 12m · yardmaster`), and at its right the ask
@@ -154,8 +162,8 @@ as theirs, so none reads as the yard's.
 Under all the bead's cards stands its thread: the bead's notes newest
 first (as in the card's details and the bead whole in Lines; the crew's
 conversation alone reads oldest first), each headed by who wrote it, its
-time and the bead, its words beside its image where it has one (156
-wide, 60 high), its other files under its words as one quiet line of
+time and the bead, its words beside its image where it has one (156 by
+96 in its frame), its other files under its words as one quiet line of
 name and size each, their Open and run on the bead whole behind the
 disclosure. A short card and its thread stand together at 960×640.
 
@@ -169,12 +177,11 @@ its why stands under its label inside the lever. No option lever is ever
 filled.
 
 One filled control per ask: the card's only fill is its Answer button
-(a pick ask) or its Approve lever (a run or setup ask), in `button`
-with white on it. A run or setup card's four moves are levers in one
-row — Approve filled, Ask about this (`a`), Later (`x`) and Decline
-(`d`) outlined, each with its key plate above its label. Later,
-Decline and Ask about this on a pick card are bordered secondary
-buttons. A run ask's command stands in a block on the side ground,
-its Copy returning the plain command; a setup ask's taken account is
-outlined, as a lever is, and its Approve is the card's one fill
-likewise.
+(a pick or words ask) or its Approve button (a run or setup ask), in
+`button` with white on it. A card's moves stand in one row of buttons
+with key chips — Approve or Answer filled, Ask about this (`a`), Later
+(`x`) and Decline (`d`) outlined, each with its key on a chip beside
+its label. A run ask's command stands in a block on the side ground
+with Copy as a link word beside it, returning the plain command; a
+setup ask's taken account is outlined, as a lever is, and its Approve
+is the card's one fill likewise.

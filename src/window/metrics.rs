@@ -130,14 +130,21 @@ pub(crate) const ROW_ASK_CHARS: usize = 34;
 /// card's the card's (8). A lever row is one option of an ask card: its
 /// plate, its label and its consequence, outlined where it stands
 /// chosen or recommended, never filled (the one-fill rule: a card's
-/// only fill is its Answer or Approve button). An action lever — a run
-/// or setup card's Approve, Ask about this, Later or Decline — stands
-/// taller, at direction 2's 58, its key plate above its label, so the
-/// four stand whole beside a short command at 960x640.
+/// only fill is its Answer or Approve button). A card's moves are one
+/// row of buttons with key chips, at the control's height and radius.
 pub(crate) const LEVER_H: f32 = 32.;
-pub(crate) const LEVER_ACTION_H: f32 = 58.;
 pub(crate) const RADIUS_CONTROL: f32 = 6.;
 pub(crate) const RADIUS_CARD: f32 = 8.;
+
+/// The tie between two stage dots of a Decide head, in pixels: the
+/// board's 14, at a pixel and a half thick, in the strong colour, as
+/// the dots are. The dots themselves are [`ROW_LAMP`].
+pub(crate) const STAGE_TIE: f32 = 14.;
+
+/// A thread picture's frame, in pixels: the board's 156 by 96, with the
+/// control's radius and the strong border, the image scaled inside it.
+pub(crate) const THREAD_PIC_W: f32 = 156.;
+pub(crate) const THREAD_PIC_H: f32 = 96.;
 
 /// The rail's width in pixels, fixed: room for a label under each
 /// icon, as the review has it.

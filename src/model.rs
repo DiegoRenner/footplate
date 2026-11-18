@@ -1060,6 +1060,13 @@ pub struct DecisionDetail {
     pub bead: String,
     pub title: String,
     pub topic: String,
+    /// The bead's stage, as its whole reads it; empty until that is read.
+    pub stage: String,
+    /// Who built and who reviewed the bead, from the authors of the
+    /// builder's and the reviewer's notes; empty where no such note is
+    /// known.
+    pub built_by: String,
+    pub reviewed_by: String,
     pub body: String,
     pub notes: Vec<CardNote>,
     /// A design bead's document, named by path and branch, not fetched;
@@ -4173,10 +4180,16 @@ impl Model {
             ),
             None => (String::new(), Vec::new(), String::new()),
         };
+        let stage = cached.map(|b| b.stage.clone()).unwrap_or_default();
+        let built_by = built_by(&notes);
+        let reviewed_by = reviewed_by(&notes);
         Some(DecisionDetail {
             bead: bead.to_string(),
             title: first.bead_title.clone(),
             topic: display_topic(&first.topic),
+            stage,
+            built_by,
+            reviewed_by,
             body,
             notes,
             doc,
@@ -7428,6 +7441,29 @@ fn display_topic(topic: &str) -> String {
 /// A bead's id small, at a row's end: past its last `-`.
 pub fn short_bead(bead: &str) -> String {
     bead.rsplit('-').next().unwrap_or(bead).to_string()
+}
+
+/// Who built the bead: the author of the first note that reads as the
+/// builder's, one whose words begin with `Built:`. Every note the yard
+/// serves carries the kind `note`, so the words are the only signal;
+/// empty where no note reads as one.
+pub fn built_by(notes: &[CardNote]) -> String {
+    notes
+        .iter()
+        .find(|n| n.text.trim_start().starts_with("Built:"))
+        .map(|n| n.author.clone())
+        .unwrap_or_default()
+}
+
+/// Who reviewed the bead: the author of the first note that reads as the
+/// reviewer's, one whose words begin with `Review`. As [`built_by`]:
+/// empty where no note reads as one.
+pub fn reviewed_by(notes: &[CardNote]) -> String {
+    notes
+        .iter()
+        .find(|n| n.text.trim_start().starts_with("Review"))
+        .map(|n| n.author.clone())
+        .unwrap_or_default()
 }
 
 /// How many of the flow's beads stand on its `backlog` stage: the
@@ -19650,12 +19686,47 @@ mod tests {
 
     #[test]
     fn the_card_carries_context_options_and_the_recommended_why() {
-        let m = evening_with_links();
+        let mut m = evening_with_links();
+        let mut bead = links_bead();
+        // The yard serves notes newest first. The head finds the builder
+        // and reviewer among them without mistaking an ordinary later note.
+        bead.notes = vec![
+            BeadNote {
+                seq: 4,
+                kind: "note".into(),
+                author: "yardmaster".into(),
+                text: "main moved two commits since the review".into(),
+                at: "2026-10-10T09:45:00Z".into(),
+                files: vec![],
+            },
+            BeadNote {
+                seq: 3,
+                kind: "note".into(),
+                author: "ada".into(),
+                text: "Review passed. The dock with three open asks.".into(),
+                at: "2026-10-10T09:40:00Z".into(),
+                files: vec![],
+            },
+            BeadNote {
+                seq: 2,
+                kind: "note".into(),
+                author: "muse-wonder".into(),
+                text: "Built: the badge counts open asks.".into(),
+                at: "2026-10-10T09:30:00Z".into(),
+                files: vec![],
+            },
+        ];
+        m.bead_loaded(bead);
         let detail = m.decision_detail("yardr-n8ta", &noon()).unwrap();
         assert_eq!(detail.title, "Move the links");
         assert_eq!(detail.body, "The links file declares the new source.");
-        assert_eq!(detail.notes.len(), 1);
+        assert_eq!(detail.notes.len(), 3);
         assert_eq!(detail.notes[0].author, "yardmaster");
+        // The head's stage, and who built and reviewed it from the
+        // matching notes, not the newer ordinary note.
+        assert_eq!(detail.stage, "new");
+        assert_eq!(detail.built_by, "muse-wonder");
+        assert_eq!(detail.reviewed_by, "ada");
         let card = &detail.asks[0];
         assert_eq!(
             card.question,
@@ -19678,6 +19749,32 @@ mod tests {
         assert!(card.current);
         assert!(!card.expanded);
         assert_eq!(card.chosen, 0);
+
+        // The note words are matched after leading whitespace, and the
+        // newest matching note of each kind wins. Ordinary mentions of
+        // building or review do not name either person.
+        let note = |author: &str, text: &str| CardNote {
+            author: author.to_string(),
+            at: String::new(),
+            text: text.to_string(),
+            files: Vec::new(),
+        };
+        let notes = vec![
+            note("one", "  Built: first."),
+            note("two", "Built: second."),
+            note("three", "Reviewed: first."),
+            note("four", "Review: second."),
+        ];
+        assert_eq!(built_by(&notes), "one");
+        assert_eq!(reviewed_by(&notes), "three");
+        let notes = vec![
+            note("one", "the build is green"),
+            note("two", "a review is wanted"),
+        ];
+        assert_eq!(built_by(&notes), "");
+        assert_eq!(reviewed_by(&notes), "");
+        assert_eq!(built_by(&[]), "");
+        assert_eq!(reviewed_by(&[]), "");
     }
 
     #[test]

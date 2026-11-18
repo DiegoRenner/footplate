@@ -396,21 +396,6 @@ impl Footplate {
             this.selection
                 .update(cx, |selection, cx| selection.pose_hover(23, 0, cx));
         }
-        // The frame shot poses the pointer on its run command, so that
-        // its copy control shows at the block's top right. A debug
-        // build's alone, as above.
-        #[cfg(debug_assertions)]
-        if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("frame") {
-            let card = select::key(("footplate-q2rd".to_string(), 1u64));
-            let key = select::key((
-                card,
-                "run",
-                0usize,
-                "yardr land footplate-q2rd --onto main".to_string(),
-            ));
-            this.selection
-                .update(cx, |selection, cx| selection.pose_hover(key, 0, cx));
-        }
         // The column-top shot poses the pointer on the head of mail 15, a
         // letter that begins a group: the list stands that head at its top
         // (`reconcile_scroll`), where the bar of reactions has no room
@@ -7301,7 +7286,7 @@ fn shot_selected() -> Option<Selected> {
         | Ok("pair-ask") => {
             return Some(Selected::Decision("bead-s".into()));
         }
-        Ok("frame") => {
+        Ok("frame") | Ok("decide") => {
             return Some(Selected::Decision("footplate-q2rd".into()));
         }
         Ok("pair-qr") | Ok("pair-ended") => {

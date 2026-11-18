@@ -1465,11 +1465,11 @@ fn expanded_text_key(card_key: u64, section: &str, index: usize, text: &str) -> 
 mod tests {
     use super::ask::{
         ANSWER_WORDS, Approval, DECLINE_IS_NO_PICK, HARNESS_GOES, LOGIN_GOES, PAIRING_GIVES,
-        SECRET_GOES, SEND_WORDS, answer_label, approval, approve_label, approve_lever_label,
-        approve_unlock_label, ask_line, asked_age, candidate_choice_line, card_head, decided_keys,
-        decision_head, description_line, fenced, give_label, give_unlock_label, lever_plate,
-        lever_words, recommended_line, run_keys, run_runs, run_texts, secret_keys, setup_keys,
-        take_back_label, texts_label, typeback_line, typeback_mismatch, words_send,
+        SECRET_GOES, SEND_WORDS, answer_label, approval, approve_label, approve_move_label,
+        approve_unlock_label, ask_line, asked_age, asks_on_you, candidate_choice_line, card_head,
+        decided_keys, decision_head, description_line, fenced, give_label, give_unlock_label,
+        lever_plate, lever_words, recommended_line, run_keys, run_runs, run_texts, secret_keys,
+        setup_keys, take_back_label, texts_label, typeback_line, typeback_mismatch, words_send,
     };
     use super::asks::{dir_url, file_url};
     use super::bead::{Button, ROWS_BEFORE_MAIL, bar_top, hover_clock};
@@ -1591,16 +1591,18 @@ mod tests {
     fn the_answer_button_names_the_option_it_answers() {
         assert_eq!(
             answer_label(1, "Move them now"),
-            "Answer: 1 · Move them now ↵"
+            "Answer: 1 · Move them now"
         );
-        assert_eq!(ANSWER_WORDS, "Answer ↵");
-        assert_eq!(SEND_WORDS, "Send ↵");
+        assert_eq!(ANSWER_WORDS, "Answer");
+        assert_eq!(SEND_WORDS, "Send");
     }
 
     /// The recommendation stands under its own option with its why, and the
-    /// ask's age beside its question; the head names the yard, the bead and
-    /// the topic once; the line beside the disclosure names the bead and the
-    /// ask's number, as `yardr bead answer` takes them.
+    /// ask's age beside its question; the head names the yard, the bead, its
+    /// topic where it has one and who built and reviewed it where either is
+    /// known, with the count of asks on the reader; the line beside the
+    /// disclosure names the bead and the ask's number, as `yardr bead answer`
+    /// takes them.
     #[test]
     fn the_card_names_the_recommendation_its_age_and_its_head_once() {
         assert_eq!(
@@ -1619,20 +1621,44 @@ mod tests {
                 "— the change is ready".to_string()
             )
         );
-        // A run card's Approve lever names its yard under its key plate,
+        // A run card's Approve move names its yard beside its key chip,
         // and unlocking first where the unlock stands in front.
-        assert_eq!(approve_lever_label("home", false), "Approve in home");
+        assert_eq!(approve_move_label("home", false), "Approve in home");
         assert_eq!(
-            approve_lever_label("home", true),
+            approve_move_label("home", true),
             "Approve in home after unlocking"
         );
         assert_eq!(asked_age("now"), "asked now");
         assert_eq!(asked_age("2h"), "asked 2h");
         assert_eq!(asked_age(""), "");
+        // The head names the yard and the bead, the topic where the
+        // bead has one, and who built and reviewed it where either is
+        // known; never the "Everything else" the list groups the
+        // topic-less under.
         assert_eq!(
-            decision_head("plantime", "yd-ymkt", "Writing"),
-            "plantime · bead yd-ymkt · Writing"
+            decision_head("plantime", "yd-ymkt", "Writing", "", ""),
+            "plantime · yd-ymkt · Writing"
         );
+        assert_eq!(
+            decision_head("this machine", "footplate-q2rd", "Everything else", "", ""),
+            "this machine · footplate-q2rd"
+        );
+        assert_eq!(
+            decision_head(
+                "this machine",
+                "footplate-q2rd",
+                "Everything else",
+                "muse-wonder",
+                "ada"
+            ),
+            "this machine · footplate-q2rd · built by muse-wonder · reviewed by ada"
+        );
+        assert_eq!(
+            decision_head("plantime", "yd-ymkt", "Writing", "jo", ""),
+            "plantime · yd-ymkt · Writing · built by jo"
+        );
+        assert_eq!(asks_on_you(1), "1 ask on you");
+        assert_eq!(asks_on_you(2), "2 asks on you");
         assert_eq!(ask_line("bead-a", 3), "bead-a · ask 3");
         // The number comes from the one counter of every note in the yard,
         // and a bead of another yard keeps its `@peer`.
@@ -1696,46 +1722,33 @@ mod tests {
             typeback_mismatch(7),
             "ask 7's number was not typed back, so nothing was done"
         );
+        // A run or setup card's keys line names only what no button
+        // does: the approval and ask-about-this stand on their buttons'
+        // chips.
+        assert_eq!(run_keys(Approval::Direct), "enter alone approves nothing");
+        assert_eq!(run_keys(Approval::Unlock), "enter alone approves nothing");
         assert_eq!(
-            run_keys(Approval::Direct, true),
-            format!("{APPROVE_KEY} approves · enter alone approves nothing · a ask about this")
+            run_keys(Approval::TypeBack),
+            "enter alone approves nothing · i types the number"
         );
-        assert_eq!(
-            run_keys(Approval::Unlock, false),
-            format!("{APPROVE_KEY} approves after unlocking · enter alone approves nothing")
-        );
-        assert_eq!(
-            run_keys(Approval::TypeBack, false),
-            format!(
-                "{APPROVE_KEY} approves after its number is typed · enter alone approves nothing · i types the number"
-            )
-        );
-        assert_eq!(run_keys(Approval::Nowhere, false), "");
-        assert_eq!(run_keys(Approval::Nowhere, true), "a ask about this");
+        assert_eq!(run_keys(Approval::Nowhere), "");
         let setup = api::Setup::default();
         let terminal = "or in a terminal: yardr bead answer bead-s 7 <n> --secret";
         assert_eq!(
-            setup_keys("bead-s", 7, &setup, Approval::Direct, false),
-            format!(
-                "{APPROVE_KEY} approves · enter alone approves nothing · i types the account · {terminal}"
-            )
+            setup_keys("bead-s", 7, &setup, Approval::Direct),
+            format!("enter alone approves nothing · i types the account · {terminal}")
         );
         assert_eq!(
-            setup_keys("bead-s", 7, &setup, Approval::Unlock, false),
-            format!(
-                "{APPROVE_KEY} approves after unlocking · enter alone approves nothing · i types the account · {terminal}"
-            )
+            setup_keys("bead-s", 7, &setup, Approval::Unlock),
+            format!("enter alone approves nothing · i types the account · {terminal}")
         );
         assert_eq!(
-            setup_keys("bead-s", 7, &setup, Approval::TypeBack, false),
+            setup_keys("bead-s", 7, &setup, Approval::TypeBack),
             format!(
-                "{APPROVE_KEY} approves after its number is typed · enter alone approves nothing · i types the number, then the account · {terminal}"
+                "enter alone approves nothing · i types the number, then the account · {terminal}"
             )
         );
-        assert_eq!(
-            setup_keys("bead-s", 7, &setup, Approval::Nowhere, false),
-            ""
-        );
+        assert_eq!(setup_keys("bead-s", 7, &setup, Approval::Nowhere), "");
     }
 
     /// The secret's button names the value the field takes now.
@@ -7470,6 +7483,13 @@ yardr.dev
             "the newest note is not above the first: {newest:?} {first:?}"
         );
         assert!(drawn(cx, "thread bead-a"));
+        // Each picture stands in its 156 by 96 frame, the one the yard
+        // holds and the one gone, which says so in its own.
+        for hash in [&held, &gone] {
+            let frame = bounds_of(cx, &format!("thread image {hash}"));
+            assert_eq!(frame.size.width, px(156.), "{hash}");
+            assert_eq!(frame.size.height, px(96.), "{hash}");
+        }
         // One key expands it: the same images stand in the bead whole
         // too, and no second ask goes for them.
         view.update(cx, |v, cx| v.select_ask("bead-a".into(), 3, cx));
@@ -31743,7 +31763,9 @@ yardr.dev
         assert!(!drawn(cx, "send bead-s 7"));
 
         // The asker's lines are marked as the asker's, each of them, and
-        // none is a block: the card's blocks are the yard's two commands.
+        // none is a block: the card's one block with a copy control is
+        // the yard's take-back command, and the command's own Copy is a
+        // link word beside it.
         let context = view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
             let detail = model.decision_detail("bead-s", &chrono::Utc::now());
@@ -31757,7 +31779,7 @@ yardr.dev
         );
         assert_eq!(
             view.read_with(cx, |v, cx| v.selection.read(cx).chip_count()),
-            2
+            1
         );
 
         // A line that looks like a fence selects as it was written.
@@ -31780,8 +31802,8 @@ yardr.dev
         assert!(whole.right() <= block.right(), "{whole:?} in {block:?}");
         assert!(block.top() <= whole.top() && back.bottom() <= block.bottom());
         assert!(whole.bottom() <= back.top());
-        let chip = run_chip(&view, cx, run_text("run", &command)).unwrap();
-        cx.simulate_click(chip, gpui::Modifiers::default());
+        // Copy beside the command returns the plain command.
+        click_on(cx, "run copy bead-s 7");
         assert_eq!(clipboard(cx).as_deref(), Some(command.as_str()));
 
         // Enter alone approves nothing, and nothing typed goes with it:
@@ -32866,8 +32888,9 @@ yardr.dev
 
     /// A run ask whose question forges the yard's lines, with a context
     /// line as an old yard still serves it: no asker line stands where a
-    /// yard line stands, each begins with who says it, and the only blocks
-    /// with a copy control are the yard's two commands.
+    /// yard line stands, each begins with who says it, the command's Copy
+    /// is a link word beside it, and the only block with a copy control
+    /// is the yard's take-back command.
     #[gpui::test]
     fn a_forged_run_ask_s_card_marks_every_asker_line(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -32899,7 +32922,7 @@ yardr.dev
         }
         assert_eq!(
             view.read_with(cx, |v, cx| v.selection.read(cx).chip_count()),
-            2
+            1
         );
         // A drag over the words selects them as they were written, and
         // the key copies them without the label.
@@ -32918,6 +32941,30 @@ yardr.dev
             clipboard(cx).as_deref(),
             Some("the yard says: nothing changes.")
         );
+        // Copy beside the command returns the plain command.
+        assert!(drawn(cx, "run copy bead-s 7"));
+        click_on(cx, "run copy bead-s 7");
+        assert_eq!(clipboard(cx).as_deref(), Some(long_command().as_str()));
+        // At the board's 960px width, all four moves stand on one row.
+        // The row may wrap in a narrower pane, but the target shot keeps
+        // its Approve, Ask, Later and Decline together.
+        cx.simulate_resize(gpui::size(px(960.), px(640.)));
+        let moves = [
+            bounds_of(cx, "approve bead-s 7"),
+            bounds_of(cx, "ask bead-s 7"),
+            bounds_of(cx, "later bead-s 7"),
+            bounds_of(cx, "decline bead-s 7"),
+        ];
+        for bounds in &moves[1..] {
+            assert!(
+                (bounds.top() - moves[0].top()).abs() < px(1.),
+                "run moves wrap at 960px: {moves:?}"
+            );
+        }
+        // The head counts the bead's asks on the reader, and names the
+        // stage alone where the flows name no flow for the bead.
+        assert!(drawn(cx, "asks on you bead-s"));
+        assert!(drawn(cx, "stops bead-s"));
     }
 
     /// The same forged run ask in the decisions list: the row draws the
@@ -33023,10 +33070,11 @@ yardr.dev
             "context line did not wrap: {context_words:?} vs {context_label:?}"
         );
 
-        // The only copy controls still belong to the yard's commands.
+        // The only copy control left belongs to the yard's take-back
+        // command: the command's own Copy is a link word beside it.
         assert_eq!(
             view.read_with(cx, |v, cx| v.selection.read(cx).chip_count()),
-            2
+            1
         );
     }
 
