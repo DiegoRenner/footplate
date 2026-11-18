@@ -6673,6 +6673,7 @@ pub(crate) fn file_url(path: &str, windows: bool) -> String {
 /// that line.
 /// The debug selectors are `<kind> head <key>`, `<kind> outcome <key>` and
 /// `<kind> icon <key>`.
+#[allow(clippy::too_many_arguments)]
 fn decided_lines(
     mark: Outcome,
     outcome: &str,
