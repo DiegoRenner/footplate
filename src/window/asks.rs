@@ -2612,10 +2612,10 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) {
         if self.mode() != Mode::Decisions
-            || !self
+            || self
                 .model
                 .as_ref()
-                .is_some_and(|model| model.decided_count() > 0)
+                .is_none_or(|model| model.decided_count() == 0)
         {
             return;
         }

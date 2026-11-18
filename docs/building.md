@@ -339,7 +339,9 @@ image under it), `teammates` (an open card of a
 teammate invite), `teammates-list` (the teammates view open on its row,
 with a paired and a waiting teammate), `weighty` (a weighty run ask's
 card beside a routine one's), `weighty-mapping` (a weighty mapping ask's
-card beside a routine one's), `stopped` (the head with a stopped
+card beside a routine one's), `weighty-trojan` (a weighty run ask's
+card whose weight line carries a pack file's Trojan name, read as
+letters, beside a routine one's), `stopped` (the head with a stopped
 yard), `far` (a yard at an address, away), `settings` (the settings
 on each of their sections: `settings` is this window, and
 `settings-appearance`, `settings-yards`, `settings-agents`,

@@ -39,7 +39,8 @@ use crate::yard::Env;
 /// with its bead's thread and its image under it), an open card of a teammate invite, the
 /// teammates view open on its row with a paired and a waiting
 /// teammate, a weighty run ask's card beside a routine one's,
-/// a weighty mapping ask's card beside a routine one's, a yard that is
+/// a weighty mapping ask's card beside a routine one's, a weighty run
+/// ask's card whose weight line carries a pack file's Trojan name, a yard that is
 /// stopped, a yard at an
 /// address, the settings on each of their sections, the voice section
 /// with a voice chosen and its list open, and with a microphone chosen
@@ -187,6 +188,7 @@ pub const STATES: &[&str] = &[
     "teammates-list",
     "weighty",
     "weighty-mapping",
+    "weighty-trojan",
     "stopped",
     "far",
     "settings",
@@ -2818,6 +2820,67 @@ fn populate(yard: &Yard, state: &str) {
                 .to_string(),
             );
         }
+        "weighty-trojan" => {
+            // A weighty run ask's card whose weight line carries a pack
+            // file's Trojan name: the marks of direction drop, and the
+            // name reads as letters, beside a routine one's.
+            yard.answer(
+                "UserInbox",
+                r#"{"result": {"mail": [{"seq": 12, "from": "yardmaster", "to": "jo", "text": "Shall I install it?", "read": false}], "unread": 1, "last": 12, "from": ["yardmaster"]}}"#,
+            );
+            yard.answer(
+                "Conversation",
+                r#"{"result": [{"seq": 12, "at": "2026-10-08T09:30:00Z", "from": "yardmaster", "to": "jo", "text": "Shall I install it?", "read": false}]}"#,
+            );
+            yard.answer(
+                "UserAsks",
+                &json!({"result": {"open": [
+                    {"bead": "bead-s", "bead_title": "Install the trojan pack", "topic": "",
+                     "ask": 7, "question": "Install the pack trojan into north?",
+                     "asker": "yardmaster", "since": "2026-10-10T10:00:00Z",
+                     "run": {"command": "yardr pack install trojan --depot north",
+                             "argv": ["pack", "install", "trojan", "--depot", "north"],
+                             "does": ["installs the pack trojan into the depot north"],
+                             "back": "yardr pack rm trojan --depot north takes it back out"},
+                     "weight": [{"class": "code",
+                                 "line": "the first install of pack trojan into depot north makes roles/07\u{202e}\u{2066}.md[31m x.md"}]},
+                    {"bead": "bead-s", "bead_title": "Install the trojan pack", "topic": "",
+                     "ask": 8, "question": "List the yard's peers?",
+                     "asker": "yardmaster", "since": "2026-10-10T10:05:00Z",
+                     "run": {"command": "yardr peer list", "argv": ["peer", "list"],
+                             "does": ["lists the yard's peers, and what each takes and sends"],
+                             "back": ""}},
+                ], "decided": []}})
+                .to_string(),
+            );
+            yard.answer(
+                "Bead",
+                &json!({"result": {"id": "bead-s", "title": "Install the trojan pack",
+                    "body": "The body.", "stage": "new", "labels": [], "notes": [],
+                    "asks": [
+                        {"ask": 7, "to": "jo", "asker": "yardmaster",
+                         "since": "2026-10-10T10:00:00Z",
+                         "question": "Install the pack trojan into north?",
+                         "context": ["the pack brings a crew of its own."],
+                         "options": [], "state": "open",
+                         "run": {"command": "yardr pack install trojan --depot north",
+                                 "argv": ["pack", "install", "trojan", "--depot", "north"],
+                                 "does": ["installs the pack trojan into the depot north"],
+                                 "back": "yardr pack rm trojan --depot north takes it back out"},
+                         "weight": [{"class": "code",
+                                     "line": "the first install of pack trojan into depot north makes roles/07\u{202e}\u{2066}.md[31m x.md"}]},
+                        {"ask": 8, "to": "jo", "asker": "yardmaster",
+                         "since": "2026-10-10T10:05:00Z",
+                         "question": "List the yard's peers?",
+                         "context": ["the board wants the count."],
+                         "options": [], "state": "open",
+                         "run": {"command": "yardr peer list", "argv": ["peer", "list"],
+                                 "does": ["lists the yard's peers, and what each takes and sends"],
+                                 "back": ""}},
+                    ]}})
+                .to_string(),
+            );
+        }
         "frame" => {
             // The lever frame at 960x640: the open card's bead with two
             // asks, a run ask with a short command and its four levers
@@ -4281,6 +4344,27 @@ mod tests {
                     assert!(bead.asks[0].identity.is_some(), "{state}");
                     assert_eq!(bead.asks[0].options.len(), 4, "{state}");
                     assert!(bead.asks[1].identity.is_none(), "{state}");
+                }
+                "weighty-trojan" => {
+                    // The weighty run ask beside the routine one: the
+                    // first carries its class with the Trojan name raw,
+                    // as the yard stored it, which the card reads as
+                    // letters; the second carries none.
+                    assert_eq!(loaded.asks.open.len(), 2, "{state}");
+                    assert!(loaded.asks.open[0].run.is_some(), "{state}");
+                    assert_eq!(loaded.asks.open[0].weight.len(), 1, "{state}");
+                    let weight = &loaded.asks.open[0].weight[0];
+                    assert_eq!(weight.class, "code", "{state}");
+                    assert!(weight.line.contains('\u{202e}'), "{state}");
+                    assert_eq!(
+                        crate::model::weight_line(&weight.class, &weight.line),
+                        "WEIGHTY · code: the first install of pack trojan into depot north makes roles/07.md[31m x.md",
+                        "{state}"
+                    );
+                    assert!(loaded.asks.open[1].run.is_some(), "{state}");
+                    assert!(loaded.asks.open[1].weight.is_empty(), "{state}");
+                    let bead = yard.client().bead("bead-s").unwrap();
+                    assert_eq!(bead.asks.len(), 2, "{state}");
                 }
                 "pair-ask" => {
                     // The pairing run ask: its command, and its trust

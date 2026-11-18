@@ -7291,6 +7291,7 @@ fn shot_selected() -> Option<Selected> {
         | Ok("teammates")
         | Ok("weighty")
         | Ok("weighty-mapping")
+        | Ok("weighty-trojan")
         | Ok("secret")
         | Ok("secret-shown")
         | Ok("secret-refused")

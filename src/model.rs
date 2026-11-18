@@ -7251,6 +7251,23 @@ pub fn plain(text: &str) -> String {
         .collect()
 }
 
+/// Text as letters: [`plain`], and without the marks of direction
+/// (Unicode Bidi_Control), which would reorder the line drawn around
+/// them. A writer's words, as the yard's Letters reads them for a
+/// terminal; the weight line is footplate's one reader of such words.
+pub fn letters(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            '\n' | '\t' => Some(c),
+            '\u{2028}' | '\u{2029}' => None,
+            c if c.is_control() => None,
+            '\u{61c}' | '\u{200e}' | '\u{200f}' => None,
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
 /// The bead ids a text names, as its chips find them: an id alone, or the
 /// bead an ask is named on. Each as often as it stands.
 fn named_beads(text: &str) -> Vec<String> {
@@ -7788,7 +7805,7 @@ pub fn not_given(err: &api::Error, bead: &str, ask: u64) -> String {
 /// `yardr bead ask` prints it, with the class and the yard's line for
 /// what this card does.
 pub fn weight_line(class: &str, line: &str) -> String {
-    format!("WEIGHTY · {}: {}", plain(class), plain(line))
+    letters(&format!("WEIGHTY · {}: {}", plain(class), plain(line)))
 }
 
 /// The command that approves a run ask in a terminal on the yard's machine:
@@ -17365,6 +17382,16 @@ mod tests {
             grant_weight_lines("crm", "customer", &as_ada),
             ["WEIGHTY · as-user: lets calls or words count as a person's: as ada"]
         );
+        // A Trojan name among the grant's words reads as letters on
+        // its lines too: the grant lines ride the weight line.
+        let trojan_user = SourceGrant {
+            as_user: "ada\u{202e}\u{2066}".into(),
+            ..crm.clone()
+        };
+        assert_eq!(
+            grant_weight_lines("crm", "customer", &trojan_user),
+            ["WEIGHTY · as-user: lets calls or words count as a person's: as ada"]
+        );
         // The same grant from a yard that serves no kinds: both calls are
         // weighty, as they were before, and `read` still is not.
         let older = kinds(&[]);
@@ -20528,6 +20555,16 @@ mod tests {
         assert_eq!(
             weight_line("trust\u{7f}", "user kim\u{2028}twice"),
             "WEIGHTY · trust: user kimtwice"
+        );
+        // A pack file's Trojan name in the weight line reads as
+        // letters: the marks of direction drop with the other
+        // controls, and the line keeps its order.
+        assert_eq!(
+            weight_line(
+                "code",
+                "the first install of pack trojan into depot north makes roles/07\u{202e}\u{2066}.md\u{1b}[31m\u{2028}x.md",
+            ),
+            "WEIGHTY · code: the first install of pack trojan into depot north makes roles/07.md[31mx.md"
         );
         let mut m = with_a_run_ask(&[]);
         assert!(m.deferred("yd-link", 2710).contains(&Effect::Asks));
