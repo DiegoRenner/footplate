@@ -277,6 +277,7 @@ pub const STATES: &[&str] = &[
     "lines-board",
     "lines-context",
     "lines-served",
+    "crew-context",
     "keys",
     "about",
     "about-missing",
@@ -1482,6 +1483,30 @@ fn populate(yard: &Yard, state: &str) {
                 .to_string(),
             );
         }
+        // The crew drawer's member reads the first depot's line:
+        // footplate's, with the yardmaster's role prompt whole and
+        // carriable, and the operator's words with the settings.
+        if state == "crew-context" {
+            yard.answer(
+                "Settings",
+                r#"{"result": {"operator": "jo", "operator_style": "show", "operator_note": "I read diffs, not prose"}}"#,
+            );
+            yard.answer("Flows", &flows_frame());
+            yard.answer_for(
+                "Line",
+                "depot",
+                "footplate",
+                &json!({"result": {"depot": "footplate", "kind": "git", "flows": [],
+                "crew": [{"name": "yardmaster",
+                  "prompt": {"path": ".yardr/roles/yardmaster.md", "source": "file",
+                    "found": "/home/jo/.yardr/roles/yardmaster.md",
+                    "text": crew_role_text(),
+                    "digest": "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1",
+                    "carriable": true}},
+                 {"name": "signalman"}]}})
+                .to_string(),
+            );
+        }
     }
     match state {
         // The yard at an address is opened from the settings, not from
@@ -1535,6 +1560,7 @@ fn populate(yard: &Yard, state: &str) {
         | "lines-board"
         | "lines-context"
         | "lines-served"
+        | "crew-context"
         | "line-window"
         | "line-edit"
         | "line-sent"
@@ -3570,6 +3596,50 @@ fn beads_frame() -> [(&'static str, String); 2] {
 /// The decide shot's flows: footplate's own flow with the open bead
 /// standing at decide, the second of five stages, so that its head
 /// draws a dot behind, its own and three ahead with the stage named.
+/// The yardmaster's role as the `crew-context` shot reads it: past
+/// thirty lines, so the Role tab folds it behind its count, with the
+/// headings, the list and the code the window's Markdown draws.
+fn crew_role_text() -> String {
+    [
+        "# Yardmaster",
+        "",
+        "You coordinate the work in this yard across its depots. You do not implement: builders do, each bead in its own worktree, and reviewers check their work.",
+        "",
+        "## First run",
+        "",
+        "Read `yardr doctor` when you start. Its \"Setup\" part lists the steps below, each `done` or `todo`, and names the next one: while a step is `todo`, your job is the setup, with mckean. Go on from the first step not done, never from the top.",
+        "",
+        "The onboarding ends in `yardr chat`, which shows mckean the mail between you and nothing of your pane. So when your first prompt asks you to greet them, do it by mail: `yardr mail mckean \"…\"`.",
+        "",
+        "## The work",
+        "",
+        "What you do:",
+        "",
+        "- **Triage.** Read your inbox when nudged. Things that went wrong (gave_up, session_blocked, session_stalled, move_refused, unrouted, stranded…) and beads agents held are yours to understand and resolve, or to bring to mckean.",
+        "- **Shape work.** Beads wait in stage `backlog`, where `yardr bead create` puts them. When a bead is specified well enough for a builder to finish it without asking (a clear goal, where to look, what done means, how to test), advance it: `yardr bead advance <id> --to new`.",
+        "- **Watch the line.** A bead that has stood past its expected arrival is late: find who holds it and why, and say so before mckean asks.",
+        "- **Keep the crew.** The crew's sessions are yours to start and stop; a session that failed to start is yours to understand first.",
+        "",
+        "## Mail",
+        "",
+        "Write short declarative sentences that say what a thing *is* or *does*. Address mckean as \"you\" only for things they do; describe the system in the third person. No exclamation marks, no emoji, no hype.",
+        "",
+        "Numbers first: versions, sizes, counts. Never an adjective where a number says it.",
+        "",
+        "## Asks",
+        "",
+        "An ask you file carries its question, what you tried, and what you recommend. Weighty cards go through the operator's unlock; the window takes the ask's number typed back where no unlock is offered.",
+        "",
+        "Decide in the open: the bead's history shows every move, and your notes say why. A question too small for a bead goes by mail.",
+        "",
+        "## End of day",
+        "",
+        "Nothing waits on mckean overnight that can wait on you instead. What waits on them stands in Decide with its question whole, its context marked, and your recommendation.",
+    ]
+    .join("\n")
+        + "\n"
+}
+
 fn flows_frame() -> String {
     json!({"result": {
         "travelling": 1,
@@ -4517,6 +4587,25 @@ mod tests {
                     assert!(prompt.carriable, "{state}");
                     assert_eq!(prompt.digest.len(), 64, "{state}");
                     assert!(flow.stages[1].route.is_none(), "{state}");
+                }
+                "crew-context" => {
+                    // The drawer's member reads the first depot's line:
+                    // footplate's, with the yardmaster's role prompt
+                    // whole and carriable past the fold, and the
+                    // operator's words with the state.
+                    let line = yard.client().line("footplate").unwrap();
+                    assert_eq!(line.depot, "footplate", "{state}");
+                    let member = line
+                        .crew
+                        .iter()
+                        .find(|member| member.name == "yardmaster")
+                        .unwrap();
+                    let prompt = member.prompt.as_ref().unwrap();
+                    assert!(prompt.carriable, "{state}");
+                    assert_eq!(prompt.digest.len(), 64, "{state}");
+                    assert!(prompt.text.lines().count() > 30, "{state}");
+                    assert_eq!(loaded.operator_style, "show", "{state}");
+                    assert_eq!(loaded.operator_note, "I read diffs, not prose", "{state}");
                 }
                 "crew" => {
                     // The sidebar's groups full: three crew with their

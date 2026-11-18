@@ -90,13 +90,15 @@ The window, its state and the yard:
     list measures: rows are measured as they come into view and a view and
     more beyond it (`MAIL_OVERDRAW`), so a place is exact over the ground
     the view has covered.
-  - `src/window/context.rs`: a stage's context drawer at the window's
-    right: its head and three tabs (the stage file, the serving group,
-    the group's prompt), its foot with Copy path and Propose an edit,
-    and what opens and shuts it. Its Line read is the Line window's,
-    over another selection; its prompt editor, hand-off and Served-by
-    picker are the Line window's rows, drawn here. The crew drawer
-    reuses this shell.
+  - `src/window/context.rs`: the context drawer at the window's
+    right: a stage's (its head and three tabs — the stage file, the
+    serving group, the group's prompt — opened from a pressed station)
+    or a crew member's (its head and two tabs — the role, the prime —
+    opened from the conversation head's Context button), its foot with
+    Copy path and Propose an edit, and what opens and shuts it. Its
+    Line read is the Line window's, over another selection; its prompt
+    editor, hand-off and Served-by picker are the Line window's rows,
+    drawn here.
   - `src/window/feedback.rs`: the Feedback form over the window; what it
     sends is `src/feedback.rs`'s.
   - `src/window/firstrun.rs`: the first run, "Set up a yard here", where the

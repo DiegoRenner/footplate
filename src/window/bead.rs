@@ -2546,6 +2546,15 @@ impl Footplate {
                             .gap_2()
                             // A voice session's minutes and cost, quiet.
                             .children(self.voice_meter(palette))
+                            // The crew member's context, beside its screen.
+                            // Who is no member of this yard's crew has no
+                            // role prompt, and the header carries no button,
+                            // nor where the window is not the operator's.
+                            .children(
+                                model
+                                    .crew_context_offered(with)
+                                    .then(|| self.context_button(with, palette, cx)),
+                            )
                             // The crew member's screen, at the header's right
                             // edge. Who is no member of this yard's crew has no
                             // session, and the header carries no icon.

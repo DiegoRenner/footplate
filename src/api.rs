@@ -237,13 +237,22 @@ fn concealed() -> bool {
     true
 }
 
-/// The yard's settings, of which a client reads the operator, the cap on
-/// a file, how many of them a mail or a note carries, and whether the
-/// yard is a hosted one.
+/// The yard's settings, of which a client reads the operator, the
+/// operator's words to their agents, the cap on a file, how many of them
+/// a mail or a note carries, and whether the yard is a hosted one.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub operator: String,
+    /// How the operator asked agents to work with them: `guide`, `show`,
+    /// `work` or `report`. Absent when the operator has not set one, and
+    /// to a device of any user who is not an operator.
+    #[serde(default)]
+    pub operator_style: String,
+    /// The one line the operator asked agents to know about them; absent
+    /// as `operator_style` is.
+    #[serde(default)]
+    pub operator_note: String,
     /// A whole number in a string; absent when the yard has set none.
     #[serde(default)]
     pub blob_max_bytes: String,
@@ -9285,8 +9294,19 @@ mod tests {
     #[test]
     fn settings_with_and_without_an_operator() {
         let yard = Yard::start();
+        yard.answer(
+            "Settings",
+            r#"{"result": {"operator": "jo", "operator_style": "show", "operator_note": "I read diffs, not prose"}}"#,
+        );
+        let settings = yard.client().settings().unwrap();
+        assert_eq!(settings.operator, "jo");
+        assert_eq!(settings.operator_style, "show");
+        assert_eq!(settings.operator_note, "I read diffs, not prose");
         yard.answer("Settings", r#"{"result": {"operator": "jo"}}"#);
-        assert_eq!(yard.client().settings().unwrap().operator, "jo");
+        let settings = yard.client().settings().unwrap();
+        assert_eq!(settings.operator, "jo");
+        assert_eq!(settings.operator_style, "");
+        assert_eq!(settings.operator_note, "");
         yard.answer("Settings", r#"{"result": {}}"#);
         assert_eq!(yard.client().settings().unwrap().operator, "");
     }

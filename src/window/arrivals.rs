@@ -1501,10 +1501,7 @@ impl Footplate {
         let lit = !stage.beads.is_empty();
         let selector = format!("{} {}", depot.name, Self::flow_label(depot, flow));
         let open = self.context.as_ref().is_some_and(|open| {
-            open.depot == depot.name
-                && open.flow == flow.name
-                && open.flow_type == flow.flow_type
-                && open.stage == stage.stage
+            open.stands_on(&depot.name, &flow.name, &flow.flow_type, &stage.stage)
         });
         let (press_depot, press_flow, press_type, press_stage) = (
             depot.name.clone(),
@@ -2411,10 +2408,7 @@ impl Footplate {
                     .bg(palette.strong),
             };
             let knot_open = self.context.as_ref().is_some_and(|open| {
-                open.depot == depot
-                    && open.flow == flow.name
-                    && open.flow_type == flow.flow_type
-                    && open.stage == stage.stage
+                open.stands_on(depot, &flow.name, &flow.flow_type, &stage.stage)
             });
             let (knot_depot, knot_flow, knot_type, knot_stage) = (
                 depot.to_string(),

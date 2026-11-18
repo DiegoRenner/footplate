@@ -282,3 +282,37 @@ that returns the path whole; on a prompt, Propose an edit stands
 before it with the note of what an edit does, and the Line window's
 editor and hand-off stand under the prompt, the foot going while the
 editor stands.
+
+## Crew
+
+A crew member's conversation head carries a Context button beside its
+screen, on the operator's window alone: 28 high, 10 of padding at its
+sides, a 6px radius, the strong edge, the file-text glyph at 14 with
+`Context` in the meta role medium and quiet. While the drawer stands
+on the conversation the button reads in the text colour over the
+accent's edge.
+
+The press opens the member's context drawer: the stage drawer's shell
+with two tabs. Its head is the `crew` kicker chip with `{member}'s
+context`; its tabs are Role and Prime with how many shape it (`Prime ·
+2`, the role alone where the settings carry neither of the operator's
+words).
+
+The Role tab opens with the file line — the path in the code role, a
+digest in a file name said by its first twelve, over `depot X · N
+lines · read when its session starts` — and the role as the window's
+Markdown, folded past 30 lines behind `N more lines · Show the whole
+file`. Where the read has no role prompt it says `No role prompt.`
+The foot holds Propose an edit with the note of what an edit does and
+Copy path; the Line window's editor and hand-off stand under the role,
+the foot going while the editor stands.
+
+The Prime tab opens with what the member's session reads when it
+starts, in order, with the yard's command for the whole (`yardr prime
+--crew X`); under it each known shaping stands numbered — the
+18-wide number in the code role and quiet, its title in the meta role
+medium, its value in code, whose in quiet. First the role, with its
+path and `depot X · N lines` (`no prompt` where the read has none),
+then how to work with the operator — the style and the note as the
+settings carry them — with `the yard's settings · every session reads
+both`. The tab lists, and carries no foot.

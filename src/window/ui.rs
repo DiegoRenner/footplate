@@ -230,6 +230,35 @@ pub(crate) fn terminal_glyph(color: Rgba) -> impl IntoElement {
     })
 }
 
+/// Lucide's file-text: the page with its folded corner and two lines,
+/// drawn from Lucide's 24-grid paths at its stroke, at `size` pixels.
+/// The conversation head's Context button; no icon font is loaded for
+/// the one glyph.
+pub(crate) fn file_glyph(size: f32, color: Rgba) -> impl IntoElement {
+    glyph_canvas_at(size, move |o, s, window| {
+        let mut path = gpui::PathBuilder::stroke(px(2. * s));
+        // The page, drawn clockwise from the fold's top: the corner
+        // arcs join the straight sides, and the last side closes at the
+        // fold.
+        glyph_poly(&mut path, o, s, &[(15., 2.), (6., 2.)]);
+        glyph_arc(&mut path, o, s, 2., 4., 4.);
+        glyph_poly(&mut path, o, s, &[(4., 4.), (4., 20.)]);
+        glyph_arc(&mut path, o, s, 2., 6., 22.);
+        glyph_poly(&mut path, o, s, &[(6., 22.), (18., 22.)]);
+        glyph_arc(&mut path, o, s, 2., 20., 20.);
+        glyph_poly(&mut path, o, s, &[(20., 20.), (20., 7.), (15., 2.)]);
+        // The folded corner and the two lines of text.
+        glyph_poly(&mut path, o, s, &[(14., 2.), (14., 6.)]);
+        glyph_arc(&mut path, o, s, 2., 16., 8.);
+        glyph_poly(&mut path, o, s, &[(16., 8.), (20., 8.)]);
+        glyph_line(&mut path, o, s, 10., 13., 14., 13.);
+        glyph_line(&mut path, o, s, 10., 17., 14., 17.);
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
+    })
+}
+
 /// The window's top band, where the content reaches up into the title bar
 /// and the traffic lights stand over the rail's top: `top` pixels high, with
 /// the hairline at its foot. The rail, the list's head and the settings'

@@ -1405,14 +1405,17 @@ impl Footplate {
                     #[cfg(debug_assertions)]
                     if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("lines-context") {
                         self.context = Some(super::context::ContextOpen {
-                            depot: "footplate".into(),
-                            flow: "default".into(),
-                            flow_type: "task".into(),
-                            stage: "new".into(),
+                            subject: crate::model::ContextSubject::Stage {
+                                depot: "footplate".into(),
+                                flow: "default".into(),
+                                flow_type: "task".into(),
+                                stage: "new".into(),
+                            },
                             tab: super::context::ContextTab::Stage,
                             served_open: false,
                             stage_whole: false,
                             prompt_whole: false,
+                            role_whole: false,
                         });
                         effects.extend(model.open_context("footplate", "default", "task", "new"));
                     }
@@ -1426,20 +1429,43 @@ impl Footplate {
                     #[cfg(debug_assertions)]
                     if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("lines-served") {
                         self.context = Some(super::context::ContextOpen {
-                            depot: "yardr".into(),
-                            flow: "default".into(),
-                            flow_type: "".into(),
-                            stage: "new".into(),
+                            subject: crate::model::ContextSubject::Stage {
+                                depot: "yardr".into(),
+                                flow: "default".into(),
+                                flow_type: "".into(),
+                                stage: "new".into(),
+                            },
                             tab: super::context::ContextTab::Group,
                             served_open: true,
                             stage_whole: false,
                             prompt_whole: false,
+                            role_whole: false,
                         });
                         self.line_served_marks.insert(
                             ("yardr".to_string(), "new".to_string(), "r-1".to_string()),
                             "reviewers".to_string(),
                         );
                         effects.extend(model.open_context("yardr", "default", "", "new"));
+                    }
+                    // The crew shot opens the drawer on the yardmaster's
+                    // conversation, as a press on its Context button
+                    // does: the first depot's line is read, and the
+                    // drawer shows it once the call answers. A debug
+                    // build's alone, as above.
+                    #[cfg(debug_assertions)]
+                    if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("crew-context") {
+                        self.context = Some(super::context::ContextOpen {
+                            subject: crate::model::ContextSubject::Crew {
+                                depot: "footplate".into(),
+                                member: "yardmaster".into(),
+                            },
+                            tab: super::context::ContextTab::Role,
+                            served_open: false,
+                            stage_whole: false,
+                            prompt_whole: false,
+                            role_whole: false,
+                        });
+                        effects.extend(model.open_crew_context("footplate", "yardmaster"));
                     }
                     // The waiting-folded shot stands with its section folded
                     // to the head, and its card still open. A debug build's
@@ -1733,18 +1759,28 @@ impl Footplate {
             if matches!(&after_sel, Some(Selected::Bead(_))) {
                 self.drawer = None;
             }
-            // The context drawer follows the Lines views: leaving them
-            // shuts it, here and in the model, whose Line read belonged
-            // to the depot it stood on.
-            if !matches!(
-                &after_sel,
-                Some(
-                    Selected::Arrivals
-                        | Selected::Line(_)
-                        | Selected::Flow(_, _, _)
-                        | Selected::NoLine
-                )
-            ) {
+            // The context drawer follows what it stands on: a stage's
+            // the Lines views, a member's its conversation. Leaving
+            // them shuts it, here and in the model, whose Line read
+            // belonged to the depot it stood on.
+            let follows = match self.context.as_ref() {
+                Some(open) => match open.crew_member() {
+                    Some(member) => {
+                        matches!(&after_sel, Some(Selected::Conversation(open)) if open == member)
+                    }
+                    None => matches!(
+                        &after_sel,
+                        Some(
+                            Selected::Arrivals
+                                | Selected::Line(_)
+                                | Selected::Flow(_, _, _)
+                                | Selected::NoLine
+                        )
+                    ),
+                },
+                None => true,
+            };
+            if !follows {
                 self.context = None;
                 model.shut_context();
             }

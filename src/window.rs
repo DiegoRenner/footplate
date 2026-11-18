@@ -16818,14 +16818,13 @@ yardr.dev
         );
     }
 
-    /// A press on a station opens the stage's context drawer: its file,
-    /// its serving group and the group's prompt under three tabs. The
-    /// depot's line is read once, whatever station of it is pressed;
-    /// another depot reads its own. At 960 the drawer stands over the
+    /// A press on a station opens the stage's context drawer; a press
+    /// on Context opens a crew member's. Their Line reads, tabs, and
+    /// hand-off are checked here. At 960 the drawer stands over the
     /// pane's right, at 1440 beside it. Esc, its × and leaving the
-    /// Lines views shut it; moving among them keeps it.
+    /// subject shut it.
     #[gpui::test]
-    fn a_station_press_opens_the_stage_s_context_drawer(cx: &mut TestAppContext) {
+    fn a_station_or_context_press_opens_its_drawer(cx: &mut TestAppContext) {
         let stage_file: String = (0..35).map(|n| format!("line {n}\n")).collect();
         let flows = || {
             json!({"result": {"travelling": 2, "depots": [
@@ -16866,11 +16865,20 @@ yardr.dev
                     {"stage": "review", "next": ["merged"], "terminal": false,
                      "other_routes": [], "open": 0},
                     {"stage": "merged", "next": [], "terminal": true, "other_routes": [], "open": 0}]}],
-              "crew": []}})
+              "crew": [
+                {"name": "yardmaster",
+                 "prompt": {"path": "/home/jo/.yardr/roles/yardmaster.md", "source": "file",
+                            "found": "/home/jo/.yardr/roles/yardmaster.md", "text": "Mind the yard.\n",
+                            "digest": "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1", "carriable": true}},
+                {"name": "assembly"}]}})
             .to_string()
         };
         let yard = Yard::start();
         a_yard_of_jo(&yard);
+        yard.answer(
+            "Settings",
+            r#"{"result": {"operator": "jo", "operator_style": "show", "operator_note": "I read diffs, not prose"}}"#,
+        );
         yard.answer("Flows", &flows());
         yard.answer_for("Line", "depot", "yardr", &line_yardr());
         yard.answer_for(
@@ -16999,7 +17007,7 @@ yardr.dev
         assert_eq!(yard.asked("Line").len(), 1);
         view.read_with(cx, |v, _| {
             let open = v.context.as_ref().unwrap();
-            assert_eq!(open.stage, "review");
+            assert!(open.stands_on("yardr", "default", "", "review"));
             assert_eq!(open.tab, super::context::ContextTab::Stage);
         });
         click_on(cx, "context tab group");
@@ -17071,6 +17079,146 @@ yardr.dev
             assert!(v.context.is_none());
             assert!(v.model.as_ref().unwrap().context().is_none());
         });
+
+        // The conversation head offers Context to a member of this
+        // yard's crew on its operator's window. Its Role tab renders the
+        // member's prompt, and Prime lists the role and operator words.
+        assert!(drawn(cx, "talk context yardmaster"));
+        let before = yard.asked("Line").len();
+        click_on(cx, "talk context yardmaster");
+        wait(cx, "the role", |cx| drawn(cx, "context role file"));
+        assert_eq!(yard.asked("Line").len(), before + 1);
+        assert!(drawn(cx, "context propose"));
+        assert!(drawn(cx, "context copy path"));
+        let drawer = bounds_of(cx, "context drawer");
+        for selector in ["context role file", "context propose", "context copy path"] {
+            assert!(
+                bounds_of(cx, selector).right() <= drawer.right(),
+                "{selector} extends past the crew drawer"
+            );
+        }
+        click_on(cx, "context tab prime");
+        wait(cx, "the prime", |cx| drawn(cx, "context prime about"));
+        assert!(drawn(cx, "context prime role"));
+        assert!(drawn(cx, "context prime operator"));
+        let drawer = bounds_of(cx, "context drawer");
+        for selector in [
+            "context prime about",
+            "context prime role",
+            "context prime operator",
+        ] {
+            assert!(
+                bounds_of(cx, selector).right() <= drawer.right(),
+                "{selector} extends past the crew drawer"
+            );
+        }
+        click_on(cx, "talk context yardmaster");
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| assert!(v.context.is_none()));
+        let before = yard.asked("Line").len();
+        click_on(cx, "talk context yardmaster");
+        wait(cx, "the drawer's new read", |_| {
+            yard.asked("Line").len() == before + 1
+        });
+        wait(cx, "the drawer reopened", |cx| {
+            drawn(cx, "context role file")
+        });
+
+        // A crew member with no prompt says so in Role. Prime still
+        // lists its role and the operator's words. Moving to another
+        // conversation shuts the first member's drawer.
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Conversation("assembly".into()), window, cx)
+        });
+        wait(cx, "assembly's conversation", |cx| {
+            drawn(cx, "talk context assembly")
+        });
+        click_on(cx, "talk context assembly");
+        wait(cx, "no role prompt", |cx| drawn(cx, "context role none"));
+        click_on(cx, "context tab prime");
+        wait(cx, "the role item without a prompt", |cx| {
+            drawn(cx, "context prime role")
+        });
+        assert!(drawn(cx, "context prime operator"));
+
+        // A failed Line read leaves a retry on the drawer. Pressing
+        // Context shuts it; pressing again reads the first depot anew.
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Conversation("yardmaster".into()), window, cx)
+        });
+        wait(cx, "yardmaster's conversation again", |cx| {
+            drawn(cx, "talk context yardmaster")
+        });
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            r#"{"error": {"code": "error", "message": "the line is closed"}}"#,
+        );
+        let before = yard.asked("Line").len();
+        click_on(cx, "talk context yardmaster");
+        wait(cx, "the failed read", |cx| drawn(cx, "context retry"));
+        assert_eq!(yard.asked("Line").len(), before + 1);
+        yard.answer_for("Line", "depot", "yardr", &line_yardr());
+        click_on(cx, "talk context yardmaster");
+        cx.run_until_parked();
+        click_on(cx, "talk context yardmaster");
+        wait(cx, "the role after retry", |cx| {
+            drawn(cx, "context role file")
+        });
+        assert_eq!(yard.asked("Line").len(), before + 2);
+
+        // Where no depot names the Line call, the drawer says so and
+        // makes no read.
+        let empty = Yard::start();
+        a_yard_of_jo(&empty);
+        empty.answer(
+            "Flows",
+            r#"{"result": {"travelling": 0, "depots": [], "unassigned": []}}"#,
+        );
+        let (_empty_view, cx) = opened(&empty, &["Shall I land it?"], cx);
+        click_on(cx, "talk context yardmaster");
+        wait(cx, "the empty context", |cx| drawn(cx, "context empty"));
+        assert_eq!(empty.asked("Line"), Vec::<Value>::new());
+
+        // Settings from before the operator's words say nothing for the
+        // Prime tab: only the role is listed.
+        let plain = Yard::start();
+        a_yard_of_jo(&plain);
+        plain.answer("Flows", &flows());
+        plain.answer_for("Line", "depot", "yardr", &line_yardr());
+        let (_plain_view, cx) = opened(&plain, &["Shall I land it?"], cx);
+        click_on(cx, "talk context yardmaster");
+        wait(cx, "the plain role", |cx| drawn(cx, "context role file"));
+        click_on(cx, "context tab prime");
+        wait(cx, "the plain prime", |cx| drawn(cx, "context prime role"));
+
+        // A device that is not the operator's does not get a Context
+        // button in the conversation head, even for a crew member. Its
+        // selector has not stood in an earlier frame.
+        let other = Yard::start();
+        a_yard_of_jo(&other);
+        other.answer(
+            "Crew",
+            r#"{"result": [{"name": "operator_probe", "enabled": true, "state": "stopped"}]}"#,
+        );
+        other.answer("Settings", r#"{"result": {"operator": "mckean"}}"#);
+        let (other_view, cx) = opened(&other, &["Shall I land it?"], cx);
+        other_view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Conversation("operator_probe".into()), window, cx)
+        });
+        wait(cx, "the operator probe conversation", |cx| {
+            open_row(&other_view, cx) == Some(Selected::Conversation("operator_probe".into()))
+        });
+        other_view.read_with(cx, |v, _| {
+            assert!(
+                !v.model
+                    .as_ref()
+                    .unwrap()
+                    .crew_context_offered("operator_probe")
+            );
+        });
+        assert!(!drawn(cx, "talk context operator_probe"));
     }
 
     /// Propose an edit in the drawer's Prompt tab mails the yardmaster
@@ -17082,6 +17230,7 @@ yardr.dev
     fn the_context_drawer_s_prompt_tab_mails_an_edit(cx: &mut TestAppContext) {
         let digest = "c34328a2b18796ffa525e37ab5a91bb12a4c43108f583a5fce0e2a4a92f83be1";
         let prompt = format!("/home/jo/.yardr/roles/builders.{digest}.md");
+        let crew_prompt = format!("/home/jo/.yardr/roles/yardmaster.{digest}.md");
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer(
@@ -17111,7 +17260,9 @@ yardr.dev
                                     "carriable": true}}], "limit": 3},
                      "other_routes": [], "open": 1,
                      "stage_file": {"path": ".yardr/flows/default/new.md", "text": "Start here.\n"}}]}],
-              "crew": []}})
+              "crew": [{"name": "yardmaster",
+                "prompt": {"path": crew_prompt, "source": "file", "found": crew_prompt,
+                           "text": "Mind the yard.\n", "digest": digest, "carriable": true}}]}})
             .to_string(),
         );
         yard.answer("Mail", "{}");
@@ -17170,6 +17321,46 @@ yardr.dev
             drawn(cx, "context prompt file")
         });
         click_on(cx, "context prompt sent clear");
+        view.read_with(cx, |v, _| assert!(v.line_sent.is_none()));
+
+        // The crew drawer uses the same editor and hand-off, with its
+        // own crew key in the mail. The path and digest are the role's
+        // Line read, and nothing is approved.
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Conversation("yardmaster".into()), window, cx)
+        });
+        wait(cx, "the yardmaster conversation", |cx| {
+            drawn(cx, "talk context yardmaster")
+        });
+        click_on(cx, "talk context yardmaster");
+        wait(cx, "the crew role", |cx| drawn(cx, "context role file"));
+        click_on(cx, "context propose");
+        wait(cx, "the role editor", |cx| drawn(cx, "context role editor"));
+        assert_eq!(typed(&view, cx).as_deref(), Some("Mind the yard.\n"));
+        click_on(cx, "context role editor");
+        cx.simulate_keystrokes("secondary-a");
+        cx.simulate_input("Mind the yard well.");
+        assert_eq!(typed(&view, cx).as_deref(), Some("Mind the yard well."));
+        click_on(cx, "context role editor send");
+        wait(cx, "the crew mail", |_| yard.asked("Mail").len() == 2);
+        assert_eq!(
+            yard.asked("Mail")[1],
+            json!({"to": "yardmaster", "actor": "jo", "text": format!(
+                "depot: yardr\ncrew: yardmaster\nprompt file: {crew_prompt}\nprompt digest: {digest}\n\nMind the yard well.")})
+        );
+        wait(cx, "the crew hand-off", |cx| {
+            drawn(cx, "context role sent waiting")
+        });
+        assert!(drawn(cx, "context role sent read"));
+        assert!(drawn(cx, "context role sent clear"));
+        assert_eq!(yard.asked("ApproveAsk"), Vec::<Value>::new());
+        let before = yard.asked("Line").len();
+        click_on(cx, "context role sent read");
+        wait(cx, "the crew reread", |_| {
+            yard.asked("Line").len() == before + 1
+        });
+        wait(cx, "the role again", |cx| drawn(cx, "context role file"));
+        click_on(cx, "context role sent clear");
         view.read_with(cx, |v, _| assert!(v.line_sent.is_none()));
     }
 

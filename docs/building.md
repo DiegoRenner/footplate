@@ -457,6 +457,8 @@ merged alone), `lines-context` (that pane with a stage's
 context drawer open on footplate's default flow at new, over the pane),
 `lines-served` (that pane with the drawer's Group tab open on yardr's
 default flow at new, its serving picker open with a group marked),
+`crew-context` (the yardmaster's conversation with the member's context
+drawer open on its Role tab, over the pane),
 `keys` (the cheatsheet open over an open card),
 `about` (the About card open over the yardmaster's conversation,
 naming footplate's version and the yardr's, with its path), `about-missing`
