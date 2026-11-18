@@ -13,8 +13,8 @@ use gpui::{
 use super::Expanded;
 use super::Footplate;
 use super::ask::{
-    ANSWER_WORDS, APPROVE_ELSEWHERE, Approval, DECLINE_IS_NO_PICK, RUN_PROPOSED, RunText,
-    SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate, action_lever,
+    ANSWER_WORDS, APPROVE_ELSEWHERE, Approval, DECLINE_IS_NO_PICK, RECOMMENDED, RUN_PROPOSED,
+    RunText, SEND_WORDS, SETUP_PROPOSED, SETUP_TAKE, TEAMMATE_CORRECTION, Teammate, action_lever,
     answer_label, approval, approve_button, approve_lever_label, ask_line, asked_age,
     candidate_choice_line, card_head, carried_texts, decided_keys, decision_head, description_line,
     fenced, fold_head, give_label, give_unlock_label, is_device_pair_run, lever_plate, lever_words,
@@ -4046,13 +4046,18 @@ impl Footplate {
                     // the accent, never filled: the card's one filled
                     // control is its Answer button below (the one-fill
                     // rule). The recommended one is chosen until another
-                    // is picked; after that only its plate's words say so,
-                    // so two outlines never stand at once.
+                    // is picked, so two outlines never stand at once. Every
+                    // plate holds its number alone, so the labels line up;
+                    // the recommended lever's plate is in the accent, the
+                    // word "recommended" stands at its row's right, and its
+                    // why under its label, inside the lever.
                     let n = option.number;
                     let recommended = ask.recommend != 0 && n == ask.recommend;
                     let chosen = n == answered;
                     let (label, consequence) = lever_words(&option.label, &option.consequence);
                     let bead_click = bead_id.clone();
+                    let why = (recommended && !ask.why.is_empty()).then(|| ask.why.clone());
+                    marked |= recommended;
                     card = card.child(
                         div()
                             .id(SharedString::from(format!("pick {bead_id} {ask_seq} {n}")))
@@ -4069,8 +4074,7 @@ impl Footplate {
                             .min_h(px(LEVER_H))
                             .flex()
                             .flex_row()
-                            .flex_wrap()
-                            .items_center()
+                            .items_start()
                             .gap_2()
                             .when(!chosen, |el| {
                                 el.hover(|style| style.border_color(palette.line))
@@ -4085,7 +4089,7 @@ impl Footplate {
                                     .py_0p5()
                                     .rounded_md()
                                     .border_1()
-                                    .border_color(match chosen {
+                                    .border_color(match chosen || recommended {
                                         true => palette.accent,
                                         false => palette.line,
                                     })
@@ -4095,34 +4099,71 @@ impl Footplate {
                                         true => palette.text_accent,
                                         false => palette.faint,
                                     })
-                                    .child(lever_plate(n, recommended)),
+                                    .child(lever_plate(n)),
                             )
                             .child(
                                 div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_size(rems(TYPE_LABEL))
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(TYPE_META))
-                                    .text_color(palette.faint)
-                                    .child(consequence),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_0p5()
+                                    // The words wrap on their own, and the
+                                    // tag keeps its column at the right.
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_baseline()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .flex_wrap()
+                                                    .items_baseline()
+                                                    .gap_x_2()
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_size(rems(TYPE_LABEL))
+                                                            .child(label),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(rems(TYPE_META))
+                                                            .text_color(palette.faint)
+                                                            .child(consequence),
+                                                    ),
+                                            )
+                                            .when(recommended, |el| {
+                                                el.child(
+                                                    div()
+                                                        .debug_selector(|| {
+                                                            format!(
+                                                                "recommended {bead_id} {ask_seq} {n}"
+                                                            )
+                                                        })
+                                                        .flex_none()
+                                                        .text_size(rems(TYPE_META))
+                                                        .text_color(palette.text_accent)
+                                                        .child(RECOMMENDED),
+                                                )
+                                            }),
+                                    )
+                                    .children(why.map(|why| {
+                                        div()
+                                            .debug_selector(|| {
+                                                format!("recommended why {bead_id} {ask_seq}")
+                                            })
+                                            .text_xs()
+                                            .text_color(palette.faint)
+                                            .child(why)
+                                    })),
                             ),
                     );
-                    // The recommended one's why, under its own lever.
-                    if recommended {
-                        marked = true;
-                        if !ask.why.is_empty() {
-                            card = card.child(
-                                div()
-                                    .ml_6()
-                                    .text_xs()
-                                    .text_color(palette.faint)
-                                    .child(ask.why.clone()),
-                            );
-                        }
-                    }
                 }
                 // A recommendation the options do not hold stands past them, as
                 // nothing else names it.

@@ -113,16 +113,14 @@ pub(crate) fn answer_label(number: u64, label: &str) -> String {
 pub(crate) const ANSWER_WORDS: &str = "Answer ↵";
 pub(crate) const SEND_WORDS: &str = "Send ↵";
 
-/// A lever's key plate: its number, with the recommendation named on
-/// the recommended one's plate (`2 · recommended`, in text accent and
-/// an accent outline, never a fill: a card's one filled control is its
-/// Answer or Approve button).
-pub(crate) fn lever_plate(number: u64, recommended: bool) -> String {
-    match recommended {
-        true => format!("{number} · recommended"),
-        false => format!("{number}"),
-    }
+/// What a lever's key plate says: its number alone, so every option's
+/// label stands at the same place, the recommended one's too.
+pub(crate) fn lever_plate(number: u64) -> String {
+    number.to_string()
 }
+
+/// The word at the right end of the recommended lever's row, in the accent.
+pub(crate) const RECOMMENDED: &str = "recommended";
 
 /// What a lever says beside its key plate: the yard's words for the
 /// choice and its consequence. The number lives on the plate alone.

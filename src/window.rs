@@ -1610,8 +1610,8 @@ mod tests {
         assert_eq!(recommended_line(""), "recommended");
         // The recommendation stands on its lever's plate, outlined and
         // never filled; the one fill on a card is its Answer button.
-        assert_eq!(lever_plate(2, true), "2 · recommended");
-        assert_eq!(lever_plate(1, false), "1");
+        assert_eq!(lever_plate(2), "2");
+        assert_eq!(lever_plate(11), "11");
         assert_eq!(
             lever_words("Move them now", "the change is ready"),
             (
