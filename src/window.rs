@@ -7424,6 +7424,41 @@ yardr.dev
         assert_eq!(refused_of(&view, cx, "bead-a", 5), "");
     }
 
+    /// The bead's thread under its asks stands newest first: the note
+    /// written last is right under the cards, the first one at the end.
+    #[gpui::test]
+    fn the_thread_under_the_asks_stands_newest_first(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer("UserAsks", &asks_three());
+        yard.answer("Bead", &bead_three_with_note("the newest word", 0));
+        cx.update(|cx| {
+            input::bind_keys(cx);
+            bind_keys(cx);
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let view = Footplate::new(yard.client(), "jo".into(), window, cx);
+            window.focus(&view.line.focus_handle(cx));
+            view
+        });
+        wait(cx, "the decision", |cx| {
+            to_decisions(&view, cx);
+            view.read_with(cx, |v, _| {
+                v.model
+                    .as_ref()
+                    .is_some_and(|m| m.selected() == Some(&Selected::Decision("bead-a".into())))
+            })
+        });
+        wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-a"));
+        // Note 0 is the yardmaster's of 09:30, note 1 jo's of 12:00.
+        let first = bounds_of(cx, "thread note bead-a 0");
+        let newest = bounds_of(cx, "thread note bead-a 1");
+        assert!(
+            newest.bottom() <= first.top(),
+            "the newest note is not above the first: {newest:?} {first:?}"
+        );
+    }
+
     #[gpui::test]
     fn an_expanded_card_shows_its_notes_pictures(cx: &mut TestAppContext) {
         let yard = Yard::start();

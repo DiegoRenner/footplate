@@ -3626,7 +3626,7 @@ impl Footplate {
             })
     }
 
-    /// The bead's thread under its open asks: its notes in order, each
+    /// The bead's thread under its open asks: its notes newest first, each
     /// headed by who wrote it, its time and the bead, its words beside
     /// its image where it has one (the pick's thread: words left, the
     /// picture right at 156 wide), its other files under its words as
@@ -3649,7 +3649,10 @@ impl Footplate {
             .flex()
             .flex_col()
             .gap_3();
-        for (ix, note) in detail.notes.iter().enumerate() {
+        // The newest first, right under the asks: the latest note is most
+        // often what the ask is about, and a long thread does not push it
+        // out of view. Each keeps its own index, so its keys do not move.
+        for (ix, note) in detail.notes.iter().enumerate().rev() {
             let at = model::clock_time(&note.at, &chrono::Local);
             let head = match at.is_empty() {
                 true => format!("{} · on {bead}", note.author),
