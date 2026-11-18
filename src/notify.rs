@@ -233,6 +233,9 @@ pub fn name(yard: &str, target: &Selected) -> String {
         Selected::Yard => "yard".to_string(),
         Selected::Arrivals => "arrivals".to_string(),
         Selected::Line(line) => format!("line:{line}"),
+        // A flow's notification opens its depot: no name stands for
+        // the flow alone, and the depot's board holds it.
+        Selected::Flow(depot, _, _) => format!("line:{depot}"),
         Selected::LineWindow(depot) => format!("line window:{depot}"),
         Selected::NoLine => "no line".to_string(),
         Selected::Bead(bead) => format!("bead:{bead}"),

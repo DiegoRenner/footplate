@@ -77,7 +77,7 @@
 # signed out), `away` (the away screen of a yard at an address that
 # no longer lets the device in, with a way's fields open),
 # `arrivals` (the arrivals panel open on the arrivals
-# row, with its lamps, headcodes and quiet lines),
+# row, with its tracks, chips and the quiet depots folded),
 # `departures` (the departures board open under the toggle, with its
 # banner), `arrival` (one arrival's bead open from the panel), `flow`
 # (yardr's line open on its flow), `old-lines` (the Lines pane against
@@ -126,9 +126,14 @@
 # its body), `lines-waiting-end` (those details at their end, the move
 # back picked and its note typed), `lines-help` (the same details on a yard
 # from before the call, which say who moves the stage in one line), `lines-panel`
-# (the arrivals panel over that yard, its summary line counting the open ask
+# (the arrivals panel over that yard, its stats counting the open ask
 # with the three parked beads after it), `lines-departures` (that yard's board
-# with its banner, counting the same), `keys`
+# with its banner, counting the same), `lines-arrivals` (the arrivals pane
+# over the rich yard: the depot tree with its nested flows, the head's
+# stats, each moving flow a track of stations with its beads' chips,
+# the quiet flows as one line each), `lines-flow` (yardr's default flow
+# open from that tree: its list grouped by stage, the empty stages
+# folded), `keys`
 # (the cheatsheet open over an open card), `about` (the About card open over the yardmaster's
 # conversation, naming footplate's version and the kept yardr's),
 # `about-missing` (that card with no yardr on the machine), `feedback` (the
@@ -172,7 +177,7 @@ set -e
 caller=$PWD
 # The states src/shot.rs serves, kept as that file's own list has them: a
 # state added there is added here, and refused here until it is.
-states="yardmaster crew thread column column-hover column-copy column-top older-unread plain plain-select lines run frame decide teammates teammates-list weighty weighty-mapping weighty-trojan stopped far settings settings-appearance settings-yards settings-yards-rename settings-agents settings-notifications settings-connection settings-connection-edge settings-voice settings-voice-list settings-voice-microphone settings-telemetry settings-telemetry-off voice voice-ready voice-draft reconnecting page page-unset page-unset-many mail image image-menu mail-refused mail-edge refusal undelivered answered setup setup-terminal setup-other hosted signedout away arrivals departures arrival flow line-window line-edit line-sent line-picker line-refused line-pack old-lines grants pairing pair-ask pair-qr pair-ended secret secret-shown secret-refused secret-harness secret-harness-empty setup-host switcher switcher-shut switcher-member member-pair refs decisions decisions-filtered decisions-more waiting waiting-folded waiting-end waiting-many waiting-many-open old-waiting lines-waiting lines-waiting-end lines-help lines-panel lines-departures keys about about-missing feedback reactions reactions-hover reactions-zoom reply notice drawer delivery screen screen-hosted screen-refused screen-wide"
+states="yardmaster crew thread column column-hover column-copy column-top older-unread plain plain-select lines run frame decide teammates teammates-list weighty weighty-mapping weighty-trojan stopped far settings settings-appearance settings-yards settings-yards-rename settings-agents settings-notifications settings-connection settings-connection-edge settings-voice settings-voice-list settings-voice-microphone settings-telemetry settings-telemetry-off voice voice-ready voice-draft reconnecting page page-unset page-unset-many mail image image-menu mail-refused mail-edge refusal undelivered answered setup setup-terminal setup-other hosted signedout away arrivals departures arrival flow line-window line-edit line-sent line-picker line-refused line-pack old-lines grants pairing pair-ask pair-qr pair-ended secret secret-shown secret-refused secret-harness secret-harness-empty setup-host switcher switcher-shut switcher-member member-pair refs decisions decisions-filtered decisions-more waiting waiting-folded waiting-end waiting-many waiting-many-open old-waiting lines-waiting lines-waiting-end lines-help lines-panel lines-departures lines-arrivals lines-flow keys about about-missing feedback reactions reactions-hover reactions-zoom reply notice drawer delivery screen screen-hosted screen-refused screen-wide"
 is_state() {
     case " $states " in
         *" $1 "*) return 0 ;;

@@ -105,6 +105,18 @@ pub(crate) const ASK_QUESTION_MIN: f32 = 200.;
 /// with the same rule.
 pub(crate) const LIST: f32 = 352.;
 
+/// The list's cap, in pixels, which keeps the reading pane at 290 pixels
+/// at the usual text size and grows with the text.
+pub(crate) fn list_cap(window: Pixels, rem: f32) -> f32 {
+    (f32::from(window) - RAIL - 290. * rem / 16.).max(160.)
+}
+
+/// The reading pane's width after the list takes its capped width.
+pub(crate) fn pane_width(window: Pixels, rem: f32) -> f32 {
+    let list = (LIST * rem / 16.).min(list_cap(window, rem));
+    f32::from(window) - RAIL - list
+}
+
 /// A list row's lamp, in pixels: the dot before a row's title that says
 /// whose turn it is, as the crew's rows have it, and the gap after it,
 /// which the lines under the title are indented by so they stand under
@@ -171,21 +183,124 @@ pub(crate) const RAIL_LABEL: f32 = 10.;
 /// pixels as the lights are, whatever the text.
 pub(crate) const HEAD_INSET: f32 = titlebar::CLEAR - RAIL;
 
-/// A stage cell's narrowest width in rems: a headcode with its lamp
-/// dot and the cell's padding, and the longest stage word whole.
-/// Measured as DejaVu Sans draws `● 7mcg` (the widest sans of the
-/// desktops here, and the font the Linux shots draw in), 47 pixels at
-/// the meta size, with the cell's 16 pixels of padding and the running
-/// dot's 12 (the lamp's 8 with its 4-pixel gap), rounded up to 96 pixels
-/// to hold the longest stage word `contributor` (67 pixels) with its lamp
-/// and padding without cutting, at the usual 16-pixel rem. The 80 pixels
-/// under the padding hold each phrase of a "+N" whole up to two digits:
-/// `+10 working` is 77 as DejaVu draws it. In rems because
-/// the words in it are: a cell in pixels cut its words at the larger
-/// text sizes. Stage heads longer than the cell wrap whole onto a
-/// second line; headcodes longer than this truncate, as they did on the
-/// fixed grid.
-pub(crate) const PANEL_MIN: f32 = 6.;
+/// A track's station at its narrowest, in pixels at the usual text
+/// size, drawn through [`grown`]: the board's 82, room for the node
+/// with the track through it and one bead chip. Stations share the
+/// card's width past that, and the track scrolls sideways past the
+/// pane's edge.
+pub(crate) const TRACK_STATION: f32 = 82.;
+
+/// A quiet flow's name in its one line, in pixels at the usual text
+/// size, drawn through [`grown`]: the board's 150, past which the name
+/// ends in an ellipsis and the path takes the rest of the row.
+pub(crate) const QUIET_NAME: f32 = 150.;
+
+/// How many chars of a quiet flow's name its one line shows before an
+/// ellipsis (`ui::shorten`): 20 at the meta size take 140 of the
+/// [`QUIET_NAME`] pixels as DejaVu Sans draws them, with the ellipsis
+/// past them. The row's `truncate()` cuts what is left where the pane
+/// is narrower.
+pub(crate) const QUIET_NAME_CHARS: usize = 20;
+
+/// A flow list row's short id in pixels at the usual text size, drawn
+/// through [`grown`]: the board's 44, a four-letter headcode in mono
+/// with room past it, so the titles start at one place.
+pub(crate) const FLOW_ID: f32 = 44.;
+
+/// The chars before an ellipsis in a flow-list row's title and metadata,
+/// sized to the pane the row stands in. The fixed width is its padding,
+/// mark, id and gaps; the text widths use conservative character advances
+/// for the body and meta roles at the widest desktop sans.
+pub(crate) fn flow_row_budgets(
+    pane: f32,
+    rem: f32,
+    title_len: usize,
+    meta_len: usize,
+) -> (usize, usize) {
+    let scale = rem / 16.;
+    let fixed = 40. + (FLOW_ID + 36.) * scale;
+    let available = (pane - fixed).max(0.);
+    let title_advance = 8.5 * scale;
+    let meta_advance = 7. * scale;
+    let title_reserve = (title_len.min(13) + 1) as f32 * title_advance;
+    let meta_visible = ((available - title_reserve).max(0.) / meta_advance).floor() as usize;
+    let meta_budget = before_ellipsis(meta_len, meta_visible);
+    let shown_meta = shown_chars(meta_len, meta_visible);
+    let title_visible =
+        ((available - shown_meta as f32 * meta_advance).max(0.) / title_advance).floor() as usize;
+    (before_ellipsis(title_len, title_visible), meta_budget)
+}
+
+/// The chars before an ellipsis in a flow group head's stage and group
+/// words. It leaves at least 18 meta chars for the group words, then gives
+/// the remaining width to the stage name.
+pub(crate) fn flow_group_budgets(
+    pane: f32,
+    rem: f32,
+    stage_len: usize,
+    words_len: usize,
+) -> (usize, usize) {
+    let scale = rem / 16.;
+    let fixed = 42. + 20. * scale;
+    let title_advance = 8.5 * scale;
+    let meta_advance = 7. * scale;
+    let stage_visible =
+        ((pane - fixed - 18. * meta_advance).max(0.) / title_advance).floor() as usize;
+    let shown_stage = shown_chars(stage_len, stage_visible);
+    let words_visible = ((pane - fixed - shown_stage as f32 * title_advance).max(0.) / meta_advance)
+        .floor() as usize;
+    (
+        before_ellipsis(stage_len, stage_visible),
+        before_ellipsis(words_len, words_visible),
+    )
+}
+
+/// The chars before an ellipsis in the folded list of empty stages: its
+/// count keeps its place, and the remaining width holds their names.
+pub(crate) fn flow_empty_budgets(
+    pane: f32,
+    rem: f32,
+    count_len: usize,
+    names_len: usize,
+) -> (usize, usize) {
+    let scale = rem / 16.;
+    let fixed = 32. + 36. * scale;
+    let title_advance = 8.5 * scale;
+    let meta_advance = 7. * scale;
+    let count_visible = ((pane - fixed).max(0.) / title_advance).floor() as usize;
+    let shown_count = shown_chars(count_len, count_visible);
+    let names_visible = ((pane - fixed - shown_count as f32 * title_advance).max(0.) / meta_advance)
+        .floor() as usize;
+    (
+        before_ellipsis(count_len, count_visible),
+        before_ellipsis(names_len, names_visible),
+    )
+}
+
+/// The chars before an ellipsis in one unfolded empty-stage row. The
+/// stage has the room past its mark, gaps, padding and "empty" label.
+pub(crate) fn flow_empty_stage_budget(pane: f32, rem: f32, stage_len: usize) -> usize {
+    let scale = rem / 16.;
+    let fixed = 42. + 20. * scale + 5. * 7. * scale;
+    let visible = ((pane - fixed).max(0.) / (8.5 * scale)).floor() as usize;
+    before_ellipsis(stage_len, visible)
+}
+
+fn before_ellipsis(length: usize, visible: usize) -> usize {
+    if length > visible {
+        visible.saturating_sub(1)
+    } else {
+        length
+    }
+}
+
+fn shown_chars(length: usize, visible: usize) -> usize {
+    if length > visible {
+        visible.max(1)
+    } else {
+        length
+    }
+}
 
 /// The switcher's list in rems, drawn once: its narrowest and its widest.
 /// They are in rems because the hint line in it is: a list in pixels cut
@@ -290,3 +405,68 @@ pub(crate) const MAIL_NEAR_TOP: usize = 12;
 /// under the sender's name. In rems because the clock in it is: a
 /// gutter in pixels cut the time at the larger text sizes.
 pub(crate) const LETTER_GUTTER: f32 = 3.5;
+
+#[cfg(test)]
+mod tests {
+    use super::super::ui::shorten;
+    use super::*;
+
+    #[test]
+    fn flow_pane_width_tracks_the_list_cap() {
+        assert_eq!(list_cap(px(624.), 16.), 270.);
+        assert_eq!(pane_width(px(624.), 16.), 290.);
+        assert_eq!(pane_width(px(960.), 16.), 544.);
+    }
+
+    #[test]
+    fn flow_rows_shorten_to_the_room_and_keep_full_text_when_wide() {
+        let title = "The sign-in's password label";
+        let meta = "moving · 3 hours";
+        let (title_budget, meta_budget) = flow_row_budgets(
+            pane_width(px(624.), 16.),
+            16.,
+            title.chars().count(),
+            meta.chars().count(),
+        );
+        assert_eq!(shorten(title, title_budget), "The sign-in's…");
+        assert!(shorten(meta, meta_budget).ends_with('…'));
+
+        let (title_budget, meta_budget) = flow_row_budgets(
+            pane_width(px(960.), 16.),
+            16.,
+            title.chars().count(),
+            meta.chars().count(),
+        );
+        assert_eq!(shorten(title, title_budget), title);
+        assert_eq!(shorten(meta, meta_budget), meta);
+    }
+
+    #[test]
+    fn flow_group_and_empty_stage_names_shorten_at_the_pane_edge() {
+        let stage = "review-security";
+        let words = "2 · mckean · waiting on a person · 0 of 1 seats";
+        let (stage_budget, words_budget) = flow_group_budgets(290., 16., stage.len(), words.len());
+        assert_eq!(shorten(stage, stage_budget), "review-secu…");
+        assert!(shorten(words, words_budget).ends_with('…'));
+
+        let names = "critique · ready · review-security · approved";
+        let (count_budget, names_budget) = flow_empty_budgets(290., 16., 14, names.len());
+        assert_eq!(shorten("6 empty stages", count_budget), "6 empty stages");
+        assert!(shorten(names, names_budget).ends_with('…'));
+        assert_eq!(
+            shorten(stage, flow_empty_stage_budget(290., 16., stage.len())),
+            stage
+        );
+    }
+
+    #[test]
+    fn flow_budgets_account_for_the_ellipsis_at_large_text_sizes() {
+        let (stage_budget, words_budget) = flow_group_budgets(400., 36., 15, 48);
+        assert!(stage_budget <= 15);
+        assert!(words_budget < 48);
+
+        let (title_budget, meta_budget) = flow_row_budgets(400., 36., 28, 16);
+        assert!(title_budget < 28);
+        assert!(meta_budget < 16);
+    }
+}

@@ -1,10 +1,9 @@
 //! The reading pane's primitives: its column, its day breaks and
 //! rows, and the panel's heads, tracks and cards.
 
-use gpui::{AnyElement, Div, div, prelude::*, px, rems};
+use gpui::{AnyElement, Div, div, prelude::*, px};
 
 use super::READING_WIDTH;
-use crate::api::FlowDepot;
 use crate::model;
 use crate::theme::Palette;
 
@@ -67,22 +66,6 @@ pub(crate) fn waits_head(waiting: usize) -> String {
     }
 }
 
-/// What the timetable's Quiet fold says: folded or open, with how many
-/// quiet lines stand under it.
-pub(crate) fn quiet_head(open: bool, quiet: usize) -> String {
-    format!("{} Quiet · {}", if open { "▾" } else { "▸" }, quiet)
-}
-
-/// What the panel's folded Quiet says: folded or open, naming the
-/// quiet lines, with nothing in transit under them.
-pub(crate) fn panel_quiet_head(open: bool, names: &[&str]) -> String {
-    format!(
-        "{} Quiet · {} · nothing in transit",
-        if open { "▾" } else { "▸" },
-        names.join(", ")
-    )
-}
-
 /// The track through a stage's cell: a 2-pixel rail stopping short of
 /// each stage boundary for the insulated joint, dashed where people
 /// handle the stage. It runs in the border colour through an empty
@@ -118,34 +101,6 @@ pub(crate) fn panel_track_line(human: bool, lit: bool, palette: Palette) -> Div 
     }
 }
 
-/// How many stage columns the panel's tracks share: the stages of
-/// the flow with the most of them, whichever line holds it, the backlog
-/// never a column. Every track's cells are this many to the card's
-/// width, so columns line up across tracks; a flow with fewer stages
-/// leaves the rest empty. At least one, so a yard with no stages still
-/// divides.
-pub(crate) fn panel_columns(depots: &[FlowDepot]) -> usize {
-    depots
-        .iter()
-        .flat_map(|depot| &depot.flows)
-        .map(|flow| {
-            flow.stages
-                .iter()
-                .filter(|stage| stage.stage != "backlog")
-                .count()
-        })
-        .max()
-        .unwrap_or(0)
-        .max(1)
-}
-
-/// The kit's meta type, for the panel's small words: 12 pixels on a
-/// 16-pixel line, in rems, so the rows stand close and still grow with
-/// the text.
-pub(crate) fn panel_meta() -> Div {
-    div().text_xs().line_height(rems(1.))
-}
-
 /// A stage name in the panel: GPUI can break an overlong hyphenated
 /// name between its letters, so give it an invisible break after each
 /// hyphen. The hyphenated words then stay whole when the cell wraps.
@@ -167,12 +122,12 @@ pub(crate) fn lines_too_old(palette: Palette) -> Div {
         .child(model::LINES_TOO_OLD)
 }
 
-/// A track's card: a surface of its own under its name and its cells,
-/// in the sunken ground with the border's hairline and the kit's
-/// 8-pixel radius, as wide as the pane, so the tracks stand as bands
-/// one under another and never past the pane's edge. The card never
-/// shrinks: squeezed below its content it would spill its headcodes
-/// over the next row, so the panel scrolls instead.
+/// A track's card: a surface of its own under its head and its
+/// stations, on the raised ground with the border's hairline and the
+/// kit's 8-pixel radius, as wide as the pane, so the tracks stand as
+/// bands one under another. The card never shrinks: squeezed below its
+/// content it would spill its chips over the next row, so the panel
+/// scrolls instead.
 pub(crate) fn panel_card(palette: Palette) -> Div {
     div()
         .w_full()
@@ -180,12 +135,12 @@ pub(crate) fn panel_card(palette: Palette) -> Div {
         .flex()
         .flex_col()
         .flex_none()
-        .px_2()
-        .py_1()
+        .px_3()
+        .py_3()
         .rounded_lg()
         .border_1()
         .border_color(palette.line)
-        .bg(palette.side)
+        .bg(palette.raised)
 }
 
 /// The buffer stop that closes a terminal stage's track: a short

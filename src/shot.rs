@@ -77,11 +77,11 @@ use crate::yard::Env;
 /// screen of a hosted yard that is signed out, the away screen of a
 /// yard at an address that no longer lets the device in, with a way's
 /// fields open, the arrivals panel open
-/// on the arrivals row with its lamps, headcodes and quiet lines, the
-/// departures board open under the toggle, one
+/// on the arrivals row with its tracks, chips and the quiet depots
+/// folded, the departures board open under the toggle, one
 /// arrival's bead open from the panel, its body holding the whole-text
 /// Markdown sample, one
-/// line's flow open on its row with what landed under its landed
+/// depot's board open on its row with what landed under its landed
 /// station, the Line window open on yardr's depot with its flows
 /// named by their source, its first stage's detail and the crew
 /// below, that window on a yard-wide rule's stage with its serving
@@ -131,7 +131,10 @@ use crate::yard::Env;
 /// the line for their note are, the Lines details of the first of those beads
 /// with the same moves under its body, those details stood at their end with
 /// the move back picked and its note typed, and the same details on a yard
-/// from before the call, which say in one line who moves the stage, and one
+/// from before the call, which say in one line who moves the stage, the
+/// arrivals pane over the rich yard with the depot tree, the head's stats
+/// and the tracks, and yardr's default flow open from that tree as its
+/// list, and one
 /// bead served ten plain moves, open on its card stood at its end, folded
 /// behind the one control and unfolded, and the Decide list on a yard whose
 /// yardr refuses the call that names its arguments, with the words that the
@@ -268,6 +271,8 @@ pub const STATES: &[&str] = &[
     "lines-help",
     "lines-panel",
     "lines-departures",
+    "lines-arrivals",
+    "lines-flow",
     "keys",
     "about",
     "about-missing",
@@ -1490,6 +1495,8 @@ fn populate(yard: &Yard, state: &str) {
         | "departures"
         | "arrival"
         | "flow"
+        | "lines-arrivals"
+        | "lines-flow"
         | "line-window"
         | "line-edit"
         | "line-sent"
@@ -2526,7 +2533,7 @@ fn populate(yard: &Yard, state: &str) {
             // under its body, and on a yard from before the call, which
             // serves no `Waiting`, the one line that says who moves its
             // stage. The panel and departures shots open the arrivals pane
-            // over the same yard instead: its summary line and its banner
+            // over the same yard instead: its stats and its banner
             // count the open ask with the three parked beads after it. The
             // old-waiting shot is the Decide list on a yard whose yardr
             // refuses the call by name, as one from before the call was a
@@ -2992,7 +2999,11 @@ fn populate(yard: &Yard, state: &str) {
             yard.answer("Bead", &bead_run(question, &context));
         }
     }
-    if state == "arrivals" || state == "departures" {
+    if state == "arrivals"
+        || state == "departures"
+        || state == "lines-arrivals"
+        || state == "lines-flow"
+    {
         // The board these states shoot answers over the shared one: a
         // late bead with the overrun the yard will print, a bead that
         // waits on jo, and one jo holds. The window draws the panel on
@@ -3035,128 +3046,168 @@ fn populate(yard: &Yard, state: &str) {
             .to_string(),
         );
     }
-    if state == "arrivals" || state == "departures" || state == "flow" {
+    if state == "arrivals"
+        || state == "departures"
+        || state == "flow"
+        || state == "lines-arrivals"
+        || state == "lines-flow"
+    {
         // The flows these states shoot answer over the shared ones:
         // five tracks with a backlog to count, a bead jo holds, one
         // yardmaster holds and a blocked bead under a fault lamp, a
         // late and a worked bead with one more in review's full group,
         // a wait and a person's turn under a turn lamp, footplate's
         // `new` with two beads worked and two waiting for a slot, as
-        // yardr.dev's line stood at 16:44 on 2 Nov (its cell draws a
-        // worked headcode and says what the rest are), a terminal
-        // stage with its buffer stop and two landings under it, an
-        // Elsewhere bead, two beads with no line, and drafts quiet.
+        // yardr.dev's line stood at 16:44 on 2 Nov (its station draws a
+        // worked chip and counts the rest), a terminal
+        // stage with its end square and two landings under it, an
+        // Elsewhere bead, two beads with no flow, and drafts quiet.
         // Each stage carries its terminal flag and its routed group's
         // seats, each claimed bead its worker and its stage's clock.
         // The longest names this yard's own flows have stand among them:
-        // `contributor` and `approved` as stages of people, and the line
-        // `contributors.issue · issue`, so a cell too narrow for a real
-        // name shows in the picture.
-        yard.answer(
-            "Flows",
-            &with_two_at_work(with_the_longest_names(json!({"result": {
-                "travelling": 15,
-                "depots": [
-                    {"name": "yardr", "kind": "git", "travelling": 10, "flows": [
-                        {"name": "default", "type": "", "source": "store", "stages": [
-                            {"stage": "backlog", "group": "mckean", "human": true,
-                             "lamp": "none", "terminal": false, "limit": 1, "taken": 0,
-                             "beads": [
-                                {"bead": "yd-b1", "title": "First to shape",
-                                 "expected": "—", "remark": "", "tone": "none",
-                                 "working": false},
-                                {"bead": "yd-b2", "title": "Second to shape",
-                                 "expected": "—", "remark": "", "tone": "none",
-                                 "working": false}]},
-                            {"stage": "new", "group": "muse-builders", "human": false,
-                             "lamp": "fault", "terminal": false, "limit": 3, "taken": 2,
-                             "beads": [
-                                {"bead": "footplate-p512",
-                                 "title": "The sign-in's password label",
-                                 "expected": "—", "remark": "held by jo",
-                                 "tone": "red", "held_by": "jo",
-                                 "working": false},
-                                {"bead": "yd-x2", "title": "Held by another",
-                                 "expected": "2h–3h",
-                                 "remark": "held by yardmaster",
-                                 "tone": "red", "held_by": "yardmaster",
-                                 "working": false},
-                                {"bead": "yd-x1", "title": "Blocked behind it",
-                                 "expected": "1h–2h", "remark": "blocked by footplate-p512",
-                                 "tone": "amber", "working": false}]},
-                            {"stage": "decide", "group": "decisions", "human": true,
-                             "lamp": "none", "terminal": false, "limit": 1, "taken": 0,
-                             "beads": []},
-                            {"stage": "review", "group": "muse-reviewers", "human": false,
-                             "lamp": "none", "terminal": false, "limit": 2, "taken": 2,
-                             "beads": [
-                                {"bead": "yd-zulu", "title": "Zulu's late turn",
-                                 "expected": "5h–8h", "remark": "late by 40m",
-                                 "tone": "amber", "working": false},
-                                {"bead": "yd-r2", "title": "Second in review",
-                                 "expected": "2h–3h", "remark": "", "tone": "none",
-                                 "working": true, "worker": "herdr yd-r2-review",
-                                 "entered_stage_at": "2026-10-10T09:30:00Z"},
-                                {"bead": "yd-r3", "title": "Third in review",
-                                 "expected": "3h–4h", "remark": "", "tone": "none",
-                                 "working": false}]},
-                            {"stage": "review-security", "group": "muse-security", "human": false,
-                             "lamp": "turn", "terminal": false, "limit": 1, "taken": 0,
-                             "beads": [
-                                {"bead": "yd-alpha", "title": "Alpha moves first",
-                                 "expected": "20m–35m", "remark": "waits for jo, yardmaster",
-                                 "tone": "amber", "working": false},
-                                {"bead": "yd-w1", "title": "A person's turn",
-                                 "expected": "1h–2h", "remark": "",
-                                 "tone": "none", "working": false,
-                                 "entered_stage_at": "2026-10-10T09:45:00Z"}]},
-                            {"stage": "approved", "group": "shippers", "human": false,
-                             "lamp": "none", "terminal": true, "limit": 2, "taken": 0,
-                             "beads": []},
-                        ],
-                        "landings": [
-                            {"bead": "yd-r9pn", "title": "Serve the landings",
-                             "landed_at": landed_at(2, 15)},
-                            {"bead": "yd-points", "title": "Oil the points",
-                             "landed_at": landed_at(5, 40)},
-                        ]},
-                        {"name": "design.design", "type": "design", "source": "store", "stages": [
-                            {"stage": "draft", "group": "mckean", "human": true,
-                             "lamp": "none", "terminal": false, "limit": 1, "taken": 0,
-                             "beads": [
-                                {"bead": "yd-d1", "title": "Drafts the follow-up",
-                                 "expected": "3h–5h", "remark": "",
-                                 "tone": "none", "working": false}]},
-                            {"stage": "critique", "group": "mckean", "human": true,
-                             "lamp": "none", "terminal": true, "beads": []},
-                        ]},
-                    ], "elsewhere": [
-                        {"bead": "yardr-p9", "title": "A pinned flow's bead",
-                         "expected": "—", "remark": "", "tone": "none",
-                         "working": false},
+        // `contributor` and `approved` as stages of people, and the flow
+        // `contributors.issue · issue`, so a station too narrow for a real
+        // name shows in the picture. The lines shots add a quiet flow,
+        // standing as one line of its path.
+        let served = with_two_at_work(with_the_longest_names(json!({"result": {
+            "travelling": 15,
+            "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 10, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "backlog", "group": "mckean", "human": true,
+                         "lamp": "none", "terminal": false, "limit": 1, "taken": 0,
+                         "beads": [
+                            {"bead": "yd-b1", "title": "First to shape",
+                             "expected": "—", "remark": "", "tone": "none",
+                             "working": false},
+                            {"bead": "yd-b2", "title": "Second to shape",
+                             "expected": "—", "remark": "", "tone": "none",
+                             "working": false}]},
+                        {"stage": "new", "group": "muse-builders", "human": false,
+                         "lamp": "fault", "terminal": false, "limit": 3, "taken": 2,
+                         "beads": [
+                            {"bead": "footplate-p512",
+                             "title": "The sign-in's password label",
+                             "expected": "—", "remark": "held by jo",
+                             "tone": "red", "held_by": "jo",
+                             "working": false},
+                            {"bead": "yd-x2", "title": "Held by another",
+                             "expected": "2h–3h",
+                             "remark": "held by yardmaster",
+                             "tone": "red", "held_by": "yardmaster",
+                             "working": false},
+                            {"bead": "yd-x1", "title": "Blocked behind it",
+                             "expected": "1h–2h", "remark": "blocked by footplate-p512",
+                             "tone": "amber", "working": false}]},
+                        {"stage": "decide", "group": "decisions", "human": true,
+                         "lamp": "none", "terminal": false, "limit": 1, "taken": 0,
+                         "beads": []},
+                        {"stage": "review", "group": "muse-reviewers", "human": false,
+                         "lamp": "none", "terminal": false, "limit": 2, "taken": 2,
+                         "beads": [
+                            {"bead": "yd-zulu", "title": "Zulu's late turn",
+                             "expected": "5h–8h", "remark": "late by 40m",
+                             "tone": "amber", "working": false},
+                            {"bead": "yd-r2", "title": "Second in review",
+                             "expected": "2h–3h", "remark": "", "tone": "none",
+                             "working": true, "worker": "herdr yd-r2-review",
+                             "entered_stage_at": "2026-10-10T09:30:00Z"},
+                            {"bead": "yd-r3", "title": "Third in review",
+                             "expected": "3h–4h", "remark": "", "tone": "none",
+                             "working": false}]},
+                        {"stage": "review-security", "group": "muse-security", "human": false,
+                         "lamp": "turn", "terminal": false, "limit": 1, "taken": 0,
+                         "beads": [
+                            {"bead": "yd-alpha", "title": "Alpha moves first",
+                             "expected": "20m–35m", "remark": "waits for jo, yardmaster",
+                             "tone": "amber", "working": false},
+                            {"bead": "yd-w1", "title": "A person's turn",
+                             "expected": "1h–2h", "remark": "",
+                             "tone": "none", "working": false,
+                             "entered_stage_at": "2026-10-10T09:45:00Z"}]},
+                        {"stage": "approved", "group": "shippers", "human": false,
+                         "lamp": "none", "terminal": true, "limit": 2, "taken": 0,
+                         "beads": []},
+                    ],
+                    "landings": [
+                        {"bead": "yd-r9pn", "title": "Serve the landings",
+                         "landed_at": landed_at(2, 15)},
+                        {"bead": "yd-points", "title": "Oil the points",
+                         "landed_at": landed_at(5, 40)},
                     ]},
-                    {"name": "footplate", "kind": "git", "travelling": 2, "flows": [
-                        {"name": "default", "type": "task", "source": "store", "stages": [
-                            {"stage": "new", "group": "muse-builders", "human": false,
-                             "lamp": "none", "terminal": false, "limit": 2, "taken": 1,
-                             "beads": [
-                                {"bead": "footplate-f1", "title": "A quiet bead",
-                                 "expected": "1h–2h", "remark": "",
-                                 "tone": "none", "working": false}]},
-                        ]},
-                    ], "elsewhere": []},
-                    {"name": "drafts", "kind": "dir", "travelling": 0,
-                     "flows": [], "elsewhere": []},
-                ],
-                "unassigned": [
-                    {"bead": "yd-s1", "title": "Travels light",
-                     "expected": "2h–3h", "remark": "", "tone": "none",
+                    {"name": "design.design", "type": "design", "source": "store", "stages": [
+                        {"stage": "draft", "group": "mckean", "human": true,
+                         "lamp": "none", "terminal": false, "limit": 1, "taken": 0,
+                         "beads": [
+                            {"bead": "yd-d1", "title": "Drafts the follow-up",
+                             "expected": "3h–5h", "remark": "",
+                             "tone": "none", "working": false}]},
+                        {"stage": "critique", "group": "mckean", "human": true,
+                         "lamp": "none", "terminal": true, "beads": []},
+                    ]},
+                ], "elsewhere": [
+                    {"bead": "yardr-p9", "title": "A pinned flow's bead",
+                     "expected": "—", "remark": "", "tone": "none",
                      "working": false},
-                    {"bead": "yd-s2", "title": "Waits with no line",
-                     "expected": "—", "remark": "waits for yardmaster, jo",
-                     "tone": "amber", "working": false},
-                ],
-            }})))
+                ]},
+                {"name": "footplate", "kind": "git", "travelling": 2, "flows": [
+                    {"name": "default", "type": "task", "source": "store", "stages": [
+                        {"stage": "new", "group": "muse-builders", "human": false,
+                         "lamp": "none", "terminal": false, "limit": 2, "taken": 1,
+                         "beads": [
+                            {"bead": "footplate-f1", "title": "A quiet bead",
+                             "expected": "1h–2h", "remark": "",
+                             "tone": "none", "working": false}]},
+                    ]},
+                ], "elsewhere": []},
+                {"name": "drafts", "kind": "dir", "travelling": 0,
+                 "flows": [], "elsewhere": []},
+            ],
+            "unassigned": [
+                {"bead": "yd-s1", "title": "Travels light",
+                 "expected": "2h–3h", "remark": "", "tone": "none",
+                 "working": false},
+                {"bead": "yd-s2", "title": "Waits with no flow",
+                 "expected": "—", "remark": "waits for yardmaster, jo",
+                 "tone": "amber", "working": false},
+            ],
+        }})));
+        let served = match state {
+            "lines-arrivals" | "lines-flow" => with_quiet_flows(served),
+            _ => served,
+        };
+        yard.answer("Flows", &served.to_string());
+    }
+    if state == "lines-arrivals" || state == "lines-flow" {
+        // The asks the head's pills count: two open on beads of
+        // yardr's default flow, and two beads parked for jo's move on
+        // yardr's design flow and signalbox's, so the tree reads rust
+        // where they stand.
+        yard.answer(
+            "UserAsks",
+            &json!({"result": {"open": [
+                {"bead": "footplate-p512", "bead_title": "The sign-in's password label",
+                 "ask": 1, "question": "Hold it for the release?",
+                 "asker": "yardmaster", "since": "2026-10-10T10:00:00Z"},
+                {"bead": "yd-zulu", "bead_title": "Zulu's late turn",
+                 "ask": 2, "question": "Land it past the late mark?",
+                 "asker": "yardmaster", "since": "2026-10-10T10:05:00Z"},
+            ], "decided": []}})
+            .to_string(),
+        );
+        let midnight = shot_midnight();
+        yard.answer(
+            "Waiting",
+            &json!({"result": [
+                {"bead": "yd-d1", "title": "Drafts the follow-up",
+                 "depot": "yardr", "stage": "draft", "group": "mckean",
+                 "since": shot_since(&midnight, 1, 14, 10), "revision": "01KJ9",
+                 "actions": []},
+                {"bead": "signalbox-i1", "title": "An issue to triage",
+                 "depot": "signalbox", "stage": "triage", "group": "mckean",
+                 "since": shot_since(&midnight, 0, 8, 45), "revision": "01KJA",
+                 "actions": []},
+            ]})
             .to_string(),
         );
     }
@@ -3165,10 +3216,10 @@ fn populate(yard: &Yard, state: &str) {
 /// The rich flows with three beads more on footplate's `new` stage, two of
 /// them worked, so that two work there and two wait for a slot, as yardr.dev's
 /// line stood at 16:44 on 2 Nov with its waiting beads listed first: the
-/// cell draws one headcode, a worked one, with the running dot, and says
-/// "+1 working · 2 waiting", under a line head that reads "2 working · 2
-/// waiting", its lamp lit. Added to the literal, not written in it: it is
-/// long enough as it stands for json! to reach its recursion limit.
+/// station draws one chip, a worked one, with "+3" after it, under a
+/// track head that reads "2 working". Added to the literal, not written
+/// in it: it is long enough as it stands for json! to reach its recursion
+/// limit.
 fn with_two_at_work(mut flows: serde_json::Value) -> serde_json::Value {
     let bead = |bead: &str, working: bool| {
         json!({"bead": bead, "title": "A bead on the stage", "expected": "1h–2h",
@@ -3242,6 +3293,41 @@ fn with_the_longest_names(mut flows: serde_json::Value) -> serde_json::Value {
             ]},
         ], "elsewhere": []}
     ));
+    flows
+}
+
+/// The rich flows with a quiet flow on yardr: the release flow with
+/// three beads waiting in its backlog and none past it, so the lines
+/// shots draw its one line of path with its backlog. Added to the
+/// literal, not written in it: it is long enough as it stands for
+/// json! to reach its recursion limit.
+fn with_quiet_flows(mut flows: serde_json::Value) -> serde_json::Value {
+    let waiting = |bead: &str, title: &str| {
+        json!({"bead": bead, "title": title, "expected": "—",
+               "remark": "", "tone": "none", "working": false})
+    };
+    let stage = |stage: &str, human: bool, terminal: bool| {
+        json!({"stage": stage, "group": "shippers", "human": human,
+               "lamp": "none", "terminal": terminal, "beads": []})
+    };
+    flows["result"]["depots"][0]["flows"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(
+            {"name": "type/release", "type": "release", "source": "store", "stages": [
+                {"stage": "backlog", "group": "mckean", "human": true,
+                 "lamp": "none", "terminal": false, "beads": [
+                    waiting("yd-cut1", "First to cut"),
+                    waiting("yd-cut2", "Second to cut"),
+                    waiting("yd-cut3", "Third to cut")]},
+                stage("build", false, false),
+                stage("sign", false, false),
+                stage("decide", true, false),
+                stage("verify", false, false),
+                stage("publish", false, false),
+                stage("published", false, true),
+            ]}
+        ));
     flows
 }
 
@@ -4238,6 +4324,58 @@ mod tests {
                             "{state}"
                         );
                     }
+                }
+                "lines-arrivals" | "lines-flow" => {
+                    // The rich flows with a quiet flow on yardr, the
+                    // arrivals board over the shared one, two open asks
+                    // on yardr's default flow and two beads parked for
+                    // jo's move on footplate's and signalbox's.
+                    assert_eq!(
+                        loaded
+                            .asks
+                            .open
+                            .iter()
+                            .map(|ask| ask.bead.as_str())
+                            .collect::<Vec<_>>(),
+                        ["footplate-p512", "yd-zulu"],
+                        "{state}"
+                    );
+                    assert!(!loaded.waiting_too_old, "{state}");
+                    assert_eq!(
+                        loaded
+                            .parked
+                            .iter()
+                            .map(|p| p.bead.as_str())
+                            .collect::<Vec<_>>(),
+                        ["yd-d1", "signalbox-i1"],
+                        "{state}"
+                    );
+                    assert_eq!(loaded.arrivals.rows.len(), 3, "{state}");
+                    assert_eq!(loaded.arrivals.rows[0].bead, "yd-zulu", "{state}");
+                    assert_eq!(loaded.flows.travelling, 18, "{state}");
+                    assert_eq!(loaded.flows.depots.len(), 4, "{state}");
+                    let release = &loaded.flows.depots[0].flows[2];
+                    assert_eq!(release.name, "type/release", "{state}");
+                    assert_eq!(release.flow_type, "release", "{state}");
+                    assert_eq!(
+                        release
+                            .stages
+                            .iter()
+                            .filter(|s| s.stage != "backlog")
+                            .map(|s| s.beads.len())
+                            .sum::<usize>(),
+                        0,
+                        "{state}"
+                    );
+                    assert_eq!(
+                        release
+                            .stages
+                            .iter()
+                            .find(|s| s.stage == "backlog")
+                            .map(|s| s.beads.len()),
+                        Some(3),
+                        "{state}"
+                    );
                 }
                 "crew" => {
                     // The sidebar's groups full: three crew with their

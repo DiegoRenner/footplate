@@ -3,31 +3,36 @@
 //! travel with no line.
 
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, SharedString, Window, div, prelude::*, relative,
-    rems, rgba,
+    AnyElement, Context, FontWeight, MouseButton, SharedString, Window, div, prelude::*, px, rems,
+    rgba,
 };
 
 use super::Footplate;
 use super::ask::section_head;
 use super::metrics::{
-    BACKLOG_TITLES, BOARD_BEAD, BOARD_EXPECTED, BOARD_LINE, BOARD_PLATFORM, BOARD_REMARK,
-    LINE_COLUMN, LINE_HEAD, PANEL_MIN, grown,
+    BACKLOG_TITLES, BOARD_BEAD, BOARD_EXPECTED, BOARD_LINE, BOARD_PLATFORM, BOARD_REMARK, FLOW_ID,
+    LINE_COLUMN, LINE_HEAD, QUIET_NAME, QUIET_NAME_CHARS, ROW_MARK, TRACK_STATION,
+    flow_empty_budgets, flow_empty_stage_budget, flow_group_budgets, flow_row_budgets, grown,
 };
 use super::panel::{
-    buffer_stop, column_rule, lines_too_old, panel_card, panel_columns, panel_meta,
-    panel_quiet_head, panel_stage_name, panel_track_line, quiet_head, waits_head,
+    buffer_stop, column_rule, lines_too_old, panel_card, panel_stage_name, waits_head,
 };
 use super::rail::RailTip;
 use super::screen::screen_control;
+use super::ui::{fold_chevron, outcome_glyph, segment, segmented, shorten};
 use super::words::{
-    LineCounts, bead_words, decide_move_words, flow_words, headcode_color, lamp_dot, landed_age,
-    line_counts, more_words, remark_color, stage_group_words, stage_lamp, stage_state,
-    waiting_words, waits_for_seat, worked_first, worker_words, working_tip, working_words,
+    bead_words, chip_you, decide_move_words, depot_lamp, flow_path, flow_status, flow_words,
+    headcode_color, lamp_dot, landed_age, line_counts, moving_quiet_words, next_stage,
+    on_you_words, remark_color, stage_group_words, stage_lamp, stage_state, station_node,
+    waiting_words, waits_for_seat, with_beads_words, worked_first, worker_words, working_tip,
+    working_words,
 };
 use crate::api::{Arrival, Flow, FlowBead, FlowDepot, FlowLanding, FlowStage};
 use crate::model::{self, Mode, Model, Selected, short_bead, stage_age, you_first};
 use crate::select;
-use crate::theme::Palette;
+use crate::theme::{
+    Palette, TYPE_BODY, TYPE_CODE, TYPE_LABEL, TYPE_META, TYPE_SECTION, TYPE_TITLE,
+};
 
 /// Lines' waiting words, worded: the accent run with the quiet run after
 /// it, each where any are. A yard from before `Waiting` keeps its one
@@ -69,10 +74,45 @@ impl Footplate {
         });
     }
 
+    /// The flow head's toggle sets which view stands: the board where
+    /// true, the list where false.
+    pub(crate) fn set_flow_board(&mut self, board: bool, cx: &mut Context<Self>) {
+        self.change(cx, |m| {
+            m.set_flow_board(board);
+            Vec::new()
+        });
+    }
+
+    /// The depot's quiet fold sets whether its quiet flows stand
+    /// unfolded under it in the list.
+    pub(crate) fn toggle_quiet_flows(&mut self, depot: &str, cx: &mut Context<Self>) {
+        let depot = depot.to_string();
+        self.change(cx, |m| {
+            m.toggle_quiet_flows(&depot);
+            Vec::new()
+        });
+    }
+
+    /// The flow list's empty fold sets whether its empty stages stand
+    /// unfolded under it.
+    pub(crate) fn toggle_empty_stages(
+        &mut self,
+        depot: &str,
+        name: &str,
+        flow_type: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let (depot, name, flow_type) = (depot.to_string(), name.to_string(), flow_type.to_string());
+        self.change(cx, |m| {
+            m.toggle_empty_stages(&depot, &name, &flow_type);
+            Vec::new()
+        });
+    }
+
     /// The timetable's list: the arrivals row with the yard-wide
-    /// travelling total, the active lines in the served order with
-    /// their own, No line while beads travel with none, and the quiet
-    /// lines folded under Quiet.
+    /// travelling total, then the depots with beads — each active depot
+    /// with its flows nested under it, No flow while beads travel with
+    /// none — and the quiet depots folded under Quiet depots.
     pub(crate) fn list_timetable(
         &self,
         model: &Model,
@@ -84,13 +124,22 @@ impl Footplate {
         let mut body = self.list_body();
         let arrivals = model.arrivals_row();
         body = body.child(section_head("Timetable", arrivals.line.clone(), palette));
-        body = body.child(self.row(arrivals, Selected::Arrivals, palette, cx));
-        for row in model.active_line_rows() {
-            let sel = Selected::Line(row.name.clone());
-            body = body.child(self.row(row, sel, palette, cx));
+        body = body.child(self.arrivals_tree_row(model, palette, cx));
+        let active: Vec<&FlowDepot> = model
+            .depots()
+            .iter()
+            .filter(|depot| depot.travelling > 0)
+            .collect();
+        if !active.is_empty() || !model.unassigned().is_empty() {
+            let rows = active.len() + usize::from(!model.unassigned().is_empty());
+            body = body.child(section_head("Depots", with_beads_words(rows), palette));
         }
-        if let Some(row) = model.no_line_row() {
-            body = body.child(self.row(row, Selected::NoLine, palette, cx));
+        for depot in active {
+            body = body.child(self.depot_tree_row(model, depot, palette, cx));
+            body = body.child(self.depot_flow_rows(model, depot, palette, cx));
+        }
+        if !model.unassigned().is_empty() {
+            body = body.child(self.no_flow_tree_row(model, palette, cx));
         }
         let quiet = model.quiet_rows();
         if !quiet.is_empty() {
@@ -98,6 +147,7 @@ impl Footplate {
             body = body.child(
                 div()
                     .id("quiet")
+                    .debug_selector(|| "quiet".to_string())
                     .mx_1()
                     .px_2()
                     .py_1()
@@ -105,26 +155,497 @@ impl Footplate {
                     .cursor_pointer()
                     .flex()
                     .items_center()
-                    .justify_between()
                     .gap_2()
                     .hover(|style| style.bg(palette.hover))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_quiet(cx)))
+                    .child(fold_chevron(open, palette.faint))
                     .child(
                         div()
-                            .debug_selector(|| "quiet".to_string())
-                            .text_sm()
+                            .text_size(rems(TYPE_SECTION))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Quiet depots"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_right()
+                            .text_size(rems(TYPE_META))
                             .text_color(palette.faint)
-                            .child(quiet_head(open, quiet.len())),
+                            .child(format!("{} · nothing moving", quiet.len())),
                     ),
             );
             if open {
                 for row in quiet {
-                    let sel = Selected::Line(row.name.clone());
-                    body = body.child(self.row(row, sel, palette, cx));
+                    let Some(depot) = model.depot(&row.name) else {
+                        continue;
+                    };
+                    body = body.child(self.quiet_tree_row(model, depot, palette, cx));
                 }
             }
         }
         self.column(body, palette, top, window, cx)
+    }
+
+    /// One tree row's shell: the list row's shape — the open row filled,
+    /// a row under the pointer told by its hairline — opening `to`.
+    fn tree_row(
+        &self,
+        id: String,
+        to: Selected,
+        open: bool,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(SharedString::from(id.clone()))
+            .debug_selector(move || id.clone())
+            .mx_1()
+            .px_2()
+            .py_1p5()
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .border_1()
+            .border_color(rgba(0x00000000))
+            .when(open, |el| el.bg(palette.open))
+            .when(!open, |el| {
+                el.hover(|style| style.border_color(palette.line))
+            })
+            .on_click(cx.listener(move |this, _, window, cx| this.select(to.clone(), window, cx)))
+    }
+
+    /// Whether the depot's tree row stands open: its board, its Line
+    /// window, or a travelling bead opened from either.
+    fn depot_open(model: &Model, depot: &str) -> bool {
+        let back = Selected::Line(depot.to_string());
+        model.selected() == Some(&back)
+            || matches!(model.selected(), Some(Selected::LineWindow(name)) if name == depot)
+            || matches!(model.selected(), Some(Selected::Bead(_))) && model.bead_back() == back
+    }
+
+    /// Whether the flow's tree row stands open: its list, or a
+    /// travelling bead opened from it.
+    fn flow_open(model: &Model, depot: &str, name: &str, flow_type: &str) -> bool {
+        let back = Selected::Flow(depot.to_string(), name.to_string(), flow_type.to_string());
+        model.selected() == Some(&back)
+            || matches!(model.selected(), Some(Selected::Bead(_))) && model.bead_back() == back
+    }
+
+    /// A flow's name, disambiguated where its depot serves that name
+    /// for more than one type. An empty type is the depot's own flow.
+    fn flow_label(depot: &FlowDepot, flow: &Flow) -> String {
+        let same_name = depot
+            .flows
+            .iter()
+            .filter(|other| other.name == flow.name)
+            .count()
+            > 1;
+        if !same_name {
+            return flow.name.clone();
+        }
+        let kind = match flow.flow_type.is_empty() {
+            true => "depot flow".to_string(),
+            false => format!("type {}", flow.flow_type),
+        };
+        format!("{} · {kind}", flow.name)
+    }
+
+    /// A flow's element id includes its type: a depot can serve two
+    /// flows with the same name.
+    fn flow_element_id(kind: &str, depot: &FlowDepot, flow: &Flow) -> SharedString {
+        SharedString::from(format!(
+            "{kind} {:?} {:?} {:?}",
+            depot.name, flow.name, flow.flow_type
+        ))
+    }
+
+    /// The arrivals row of the tree: its name with the yard-wide
+    /// travelling total at its right. It stands open for a travelling
+    /// bead from the panel or the board too, which has no row of its own.
+    pub(crate) fn arrivals_tree_row(
+        &self,
+        model: &Model,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let travelling = model.travelling();
+        let right = match travelling {
+            0 => "none".to_string(),
+            travelling => format!("{travelling} · all depots"),
+        };
+        self.tree_row(
+            "row arrivals".to_string(),
+            Selected::Arrivals,
+            model.arrivals_row().selected,
+            palette,
+            cx,
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(rems(TYPE_LABEL))
+                .font_weight(FontWeight::MEDIUM)
+                .child("Arrivals"),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(rems(TYPE_META))
+                .text_color(palette.faint)
+                .child(right),
+        )
+    }
+
+    /// One depot's tree row: its lamp, its name, and at the right how
+    /// many wait on the reader in rust, else its travelling total; under
+    /// it its transit with its moving and quiet flows. It opens the
+    /// depot's board, and stands open for its Line window too.
+    pub(crate) fn depot_tree_row(
+        &self,
+        model: &Model,
+        depot: &FlowDepot,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let on_you = model.depot_on_you(&depot.name);
+        let (right, color) = match on_you {
+            0 => (depot.travelling.to_string(), palette.faint),
+            _ => (on_you_words(on_you), palette.text_accent),
+        };
+        let mut sub = format!("{} in transit", depot.travelling);
+        if let Some(flows) = moving_quiet_words(
+            Model::moving_flows(depot).len(),
+            Model::quiet_flows(depot).len(),
+        ) {
+            sub.push_str(&format!(" · {flows}"));
+        }
+        let lamp = lamp_dot(
+            depot_lamp(depot),
+            format!("row lamp {}", depot.name),
+            palette,
+        );
+        self.tree_row(
+            format!("row {}", depot.name),
+            Selected::Line(depot.name.clone()),
+            Self::depot_open(model, &depot.name),
+            palette,
+            cx,
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .children(lamp)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rems(TYPE_LABEL))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(depot.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(rems(TYPE_META))
+                                .text_color(color)
+                                .child(right),
+                        ),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child(sub),
+                ),
+        )
+    }
+
+    /// The depot's flows nested under its tree row: each moving flow
+    /// with its lamp and its count, then the quiet fold with the quiet
+    /// flows under it where it stands open. Nothing where the depot
+    /// governs no flow.
+    pub(crate) fn depot_flow_rows(
+        &self,
+        model: &Model,
+        depot: &FlowDepot,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let moving = Model::moving_flows(depot);
+        let quiet = Model::quiet_flows(depot);
+        let mut rows = div()
+            .ml_7()
+            .mr_1()
+            .mb_1()
+            .pl_2()
+            .border_l_1()
+            .border_color(palette.line)
+            .flex()
+            .flex_col();
+        for flow in moving {
+            rows = rows.child(self.flow_tree_row(model, depot, flow, false, palette, cx));
+        }
+        if !quiet.is_empty() {
+            let open = model.quiet_flows_expanded(&depot.name);
+            let name = depot.name.clone();
+            rows = rows.child(
+                div()
+                    .id(SharedString::from(format!("quiet flows {name}")))
+                    .debug_selector({
+                        let name = name.clone();
+                        move || format!("quiet flows {name}")
+                    })
+                    .h_7()
+                    .px_2()
+                    .rounded_md()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_quiet_flows(&name, cx)))
+                    .child(fold_chevron(open, palette.faint))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .rounded_full()
+                            .flex_none()
+                            .bg(palette.strong),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.faint)
+                            .child(match quiet.len() {
+                                1 => "1 quiet flow".to_string(),
+                                quiet => format!("{quiet} quiet flows"),
+                            }),
+                    ),
+            );
+            if open {
+                for flow in quiet {
+                    rows = rows.child(self.flow_tree_row(model, depot, flow, true, palette, cx));
+                }
+            }
+        }
+        rows
+    }
+
+    /// One flow's tree row under its depot's: its lamp, its name, and at
+    /// its right how many wait on the reader in rust where any do, else
+    /// what is worked, else its travelling total — a quiet flow's
+    /// backlog instead. It opens the flow's list.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn flow_tree_row(
+        &self,
+        model: &Model,
+        depot: &FlowDepot,
+        flow: &Flow,
+        quiet: bool,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let on_you = model.flow_on_you(&depot.name, &flow.name, &flow.flow_type);
+        let counts = line_counts(flow);
+        let label = Self::flow_label(depot, flow);
+        let (right, color) = match (quiet, on_you, counts.working) {
+            (_, on_you, _) if on_you > 0 => (on_you.to_string(), palette.text_accent),
+            (_, _, working) if working > 0 => (format!("{working} working"), palette.faint),
+            (true, _, _) => match counts.backlog {
+                0 => (String::new(), palette.faint),
+                backlog => (format!("{backlog} backlog"), palette.faint),
+            },
+            (false, _, _) => (Model::flow_travelling(flow).to_string(), palette.faint),
+        };
+        let lamp = lamp_dot(
+            counts.lamp,
+            format!("flow lamp {} {label}", depot.name),
+            palette,
+        );
+        let open = Self::flow_open(model, &depot.name, &flow.name, &flow.flow_type);
+        let to = Selected::Flow(
+            depot.name.clone(),
+            flow.name.clone(),
+            flow.flow_type.clone(),
+        );
+        div()
+            .id(Self::flow_element_id("flow row", depot, flow))
+            .debug_selector({
+                let (depot, label) = (depot.name.clone(), label.clone());
+                move || format!("flow row {depot} {label}")
+            })
+            .h_7()
+            .px_2()
+            .rounded_md()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .when(open, |el| el.bg(palette.open))
+            .when(!open, |el| el.hover(|style| style.bg(palette.hover)))
+            .on_click(cx.listener(move |this, _, window, cx| this.select(to.clone(), window, cx)))
+            .children(lamp.or_else(|| {
+                Some(
+                    div()
+                        .size(px(8.))
+                        .rounded_full()
+                        .flex_none()
+                        .bg(palette.strong),
+                )
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(rems(TYPE_META))
+                    .child(label),
+            )
+            .when(!right.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_size(rems(TYPE_META))
+                        .text_color(color)
+                        .child(right),
+                )
+            })
+    }
+
+    /// The No flow row of the tree: the beads travelling with no flow,
+    /// with their count and that they have no stages. It stands last,
+    /// and only while any travel.
+    pub(crate) fn no_flow_tree_row(
+        &self,
+        model: &Model,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let travelling = model.unassigned().len();
+        self.tree_row(
+            format!("row {}", model::NO_FLOW),
+            Selected::NoLine,
+            model.no_line_row().is_some_and(|row| row.selected),
+            palette,
+            cx,
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rems(TYPE_LABEL))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(model::NO_FLOW),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(rems(TYPE_META))
+                                .text_color(palette.faint)
+                                .child(travelling.to_string()),
+                        ),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child("beads moving with no stages"),
+                ),
+        )
+    }
+
+    /// One quiet depot's tree row under the Quiet depots fold: its name
+    /// with its backlog where any waits, else that nothing is in
+    /// transit. It opens the depot's board.
+    pub(crate) fn quiet_tree_row(
+        &self,
+        model: &Model,
+        depot: &FlowDepot,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let sub = match Model::depot_backlog(depot) {
+            0 => "nothing in transit".to_string(),
+            backlog => format!("{backlog} backlog"),
+        };
+        self.tree_row(
+            format!("row {}", depot.name),
+            Selected::Line(depot.name.clone()),
+            Self::depot_open(model, &depot.name),
+            palette,
+            cx,
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .size(px(8.))
+                                .rounded_full()
+                                .flex_none()
+                                .bg(palette.strong),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rems(TYPE_LABEL))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(depot.name.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child(sub),
+                ),
+        )
     }
 
     /// One row of the departures board: the expected arrival in
@@ -238,7 +759,7 @@ impl Footplate {
                         move || format!("arrival line {bead}")
                     })
                     .child(match row.line.is_empty() {
-                        true => "no line".to_string(),
+                        true => "no flow".to_string(),
                         false => row.line.clone(),
                     }),
             )
@@ -294,55 +815,67 @@ impl Footplate {
     }
 
     /// The arrivals pane's head: the title with the Panel/Departures
-    /// toggle at its right, then the travelling words and the panel's
-    /// summary where it stands. The words stand full-width under the
-    /// title's row, so the summary holds one line down to the floor.
+    /// toggle at its right, the travelling words under it, and the
+    /// head's stats where it stands on the panel. The stats stand
+    /// full-width under the title's row, wrapping where they cannot
+    /// hold one line down to the floor.
     pub(crate) fn arrivals_head(
         &self,
         model: &Model,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let travelling = model.travelling();
+        let sub = match travelling {
+            0 => "none in transit".to_string(),
+            travelling => format!("{travelling} in transit across all flows"),
+        };
         div()
-            .p_3()
+            .px_4()
+            .py_2p5()
             .border_b_1()
             .border_color(palette.line)
             .flex()
             .flex_col()
-            .gap_0p5()
+            .gap_2()
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .items_start()
+                    .flex_wrap()
+                    .items_center()
                     .justify_between()
                     .gap_2()
                     .child(
                         div()
-                            .id("arrivals head")
-                            .debug_selector(|| "arrivals head".to_string())
-                            .line_height(rems(1.25))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .tooltip(|_, cx| {
-                                cx.new(|_| RailTip(Self::ARRIVALS_TIP.to_string())).into()
-                            })
-                            .child("arrivals"),
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .id("arrivals head")
+                                    .debug_selector(|| "arrivals head".to_string())
+                                    .text_size(rems(TYPE_TITLE))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .tooltip(|_, cx| {
+                                        cx.new(|_| RailTip(Self::ARRIVALS_TIP.to_string())).into()
+                                    })
+                                    .child("Arrivals"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(TYPE_META))
+                                    .text_color(palette.faint)
+                                    .child(sub),
+                            ),
                     )
                     .child(self.arrivals_toggle(model, palette, cx)),
             )
-            .child(
-                div()
-                    .text_sm()
-                    .line_height(rems(1.25))
-                    .text_color(palette.faint)
-                    .child(format!("{} · all lines", model.arrivals_row().line)),
-            )
-            .children(self.panel_summary(model, palette, cx))
+            .children(self.panel_stats(model, palette, cx))
     }
 
-    /// The head's Panel/Departures toggle: two quiet words, the open
-    /// view in the text colour and the other faint, each opening its
-    /// view.
+    /// The head's Panel/Departures toggle: the kit's segmented control,
+    /// each half opening its view.
     pub(crate) fn arrivals_toggle(
         &self,
         model: &Model,
@@ -350,48 +883,34 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let departures = model.departures();
-        let mut toggle = div().flex().flex_row().items_start().gap_3().flex_none();
-        toggle = toggle.child(self.toggle_word("Panel", false, !departures, palette, cx));
-        toggle = toggle.child(self.toggle_word("Departures", true, departures, palette, cx));
-        toggle
-    }
-
-    /// One word of the arrivals toggle: in the text colour where its
-    /// view stands, faint otherwise, opening its view on a click.
-    pub(crate) fn toggle_word(
-        &self,
-        word: &'static str,
-        departures: bool,
-        open: bool,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let what = format!("arrivals {}", word.to_lowercase());
-        div()
-            .id(SharedString::from(what.clone()))
-            .debug_selector(move || what.clone())
-            .text_sm()
-            .line_height(rems(1.25))
-            .text_color(match open {
-                true => palette.text,
-                false => palette.faint,
+        div().flex_none().child(segmented(
+            [
+                ("Panel", false, !departures),
+                ("Departures", true, departures),
+            ]
+            .into_iter()
+            .map(|(word, to, open)| {
+                segment(word.to_string(), open, palette)
+                    .id(SharedString::from(format!(
+                        "arrivals {}",
+                        word.to_lowercase()
+                    )))
+                    .debug_selector(move || format!("arrivals {}", word.to_lowercase()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_departures(to, cx)))
             })
-            .when(open, |el| el.font_weight(FontWeight::SEMIBOLD))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| this.set_departures(departures, cx)))
-            .child(word)
+            .collect(),
+            palette,
+        ))
     }
 
-    /// The panel's summary words: how many beads are being worked and are
-    /// held, each where any are, in quiet words.
-    /// The worked words split by served kind where two or more kinds
-    /// work, and hovering them lists each working group with its seats.
-    /// The waiting words open the decisions mode, as the board's banner
-    /// does: the calls in the accent with the beads to move after them
-    /// in quiet words, or the old yard's one accent line. None where
-    /// nothing is worked, waited or held, and never on the departures
-    /// board, whose banner counts the waits.
-    pub(crate) fn panel_summary(
+    /// The head's stats over the panel: what is worked and what waits
+    /// on the reader to decide and to move, each a pill where any
+    /// stands. The worked pill splits by served kind
+    /// where two or more kinds work, and hovering it lists each working
+    /// group with its seats; the waiting pills open the decisions mode,
+    /// as the board's banner does. Never on the departures board, whose
+    /// banner counts the waits.
+    pub(crate) fn panel_stats(
         &self,
         model: &Model,
         palette: Palette,
@@ -401,78 +920,101 @@ impl Footplate {
             return None;
         }
         let working = model.working_count();
-        let held = model.held_count();
         let (accent, quiet) =
             lines_waits_words(model, |waiting| format!("{waiting} waiting on you"));
-        if working == 0 && held == 0 && accent.is_none() && quiet.is_none() {
+        if working == 0 && accent.is_none() && quiet.is_none() {
             return None;
         }
-        let mut parts: Vec<AnyElement> = Vec::new();
-        if working > 0 {
-            let split = model.working_split();
-            parts.push(
-                div()
-                    .id("panel working")
-                    .debug_selector(|| "panel working".to_string())
-                    .text_color(palette.text)
-                    .when_some(working_tip(&split.groups), |el, tip| {
-                        el.tooltip(move |_, cx| cx.new(|_| RailTip(tip.clone())).into())
-                    })
-                    .child(working_words(working, &split.kinds))
-                    .into_any_element(),
-            );
-        }
-        if accent.is_some() || quiet.is_some() {
-            let mut waits = div()
-                .id("panel waits")
-                .debug_selector(|| "panel waits".to_string())
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1()
-                .cursor_pointer()
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.set_mode(Mode::Decisions, window, cx)),
-                );
-            let both = accent.is_some() && quiet.is_some();
-            if let Some(words) = accent {
-                waits = waits.child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette.text_accent)
-                        .child(words),
-                );
-            }
-            if both {
-                waits = waits.child(div().text_color(palette.faint).child("·"));
-            }
-            if let Some(words) = quiet {
-                waits = waits.child(div().text_color(palette.faint).child(words));
-            }
-            parts.push(waits.into_any_element());
-        }
-        if held > 0 {
-            parts.push(
-                div()
-                    .text_color(palette.faint)
-                    .child(format!("{held} held"))
-                    .into_any_element(),
-            );
-        }
-        let mut line = panel_meta()
-            .debug_selector(|| "panel summary".to_string())
+        let mut stats = div()
+            .debug_selector(|| "panel stats".to_string())
             .flex()
             .flex_row()
             .flex_wrap()
             .items_center()
-            .gap_1();
-        for (n, part) in parts.into_iter().enumerate() {
-            if n > 0 {
-                line = line.child(div().text_color(palette.faint).child("·"));
-            }
-            line = line.child(part);
+            .gap_1p5();
+        if working > 0 {
+            let split = model.working_split();
+            stats = stats.child(
+                Self::stat_pill(
+                    "stat working",
+                    working_words(working, &split.kinds),
+                    false,
+                    palette,
+                )
+                .children(lamp_dot("moving", "stat working dot".to_string(), palette))
+                .when_some(working_tip(&split.groups), |el, tip| {
+                    el.tooltip(move |_, cx| cx.new(|_| RailTip(tip.clone())).into())
+                }),
+            );
         }
-        Some(line)
+        if let Some(words) = accent {
+            stats = stats.child(
+                Self::stat_pill("stat decide", words, true, palette).on_click(
+                    cx.listener(|this, _, window, cx| this.set_mode(Mode::Decisions, window, cx)),
+                ),
+            );
+        }
+        if let Some(words) = quiet {
+            stats = stats.child(
+                Self::stat_pill("stat move", words, false, palette)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.hover))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_mode(Mode::Decisions, window, cx)
+                    })),
+            );
+        }
+        Some(stats)
+    }
+
+    /// One head stat: the numeral semibold with its words, in a pill
+    /// with the strong edge — the accent edge with rust words where the
+    /// stat waits on the reader. The caller gives a pill that opens
+    /// Decide its press, a quiet one its pointer too.
+    fn stat_pill(
+        id: &'static str,
+        words: String,
+        you: bool,
+        palette: Palette,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (count, rest) = match words.split_once(' ') {
+            Some((count, rest)) => (count.to_string(), rest.to_string()),
+            None => (words, String::new()),
+        };
+        let mut pill = div()
+            .id(id)
+            .debug_selector(move || id.to_string())
+            .h_7()
+            .px_2p5()
+            .rounded_full()
+            .border_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .text_size(rems(TYPE_META))
+            .when(you, |el| {
+                el.border_color(palette.accent)
+                    .text_color(palette.text_accent)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.hover))
+            })
+            .when(!you, |el| {
+                el.border_color(palette.strong).text_color(palette.faint)
+            })
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(match you {
+                        true => palette.text_accent,
+                        false => palette.text,
+                    })
+                    .child(count),
+            );
+        if !rest.is_empty() {
+            pill = pill.child(rest);
+        }
+        pill
     }
 
     /// The departures board under the toggle: the served rows flat
@@ -554,13 +1096,12 @@ impl Footplate {
             .child(cell("Remark", BOARD_REMARK))
     }
 
-    /// The arrivals panel: every travelling flow one track — its name
-    /// above its stages, a cell per stage but the backlog's in travel
-    /// order — each track a card of its own, the Elsewhere stubs, the
-    /// beads with no line as their own track, and the quiet tracks
-    /// folded to one row. Every track fits the pane's width: the cells
-    /// share it, wrapping where they cannot, and the panel scrolls only
-    /// down over the tracks.
+    /// The arrivals panel: the legend, then one section per depot
+    /// with beads in transit — each moving flow a track of stations
+    /// with its beads' chips on them, each quiet flow one line of its
+    /// path — and the beads with no flow in their own section. The
+    /// panel scrolls down over the sections; a track scrolls sideways
+    /// past the pane's edge.
     pub(crate) fn panel(
         &self,
         model: &Model,
@@ -568,9 +1109,6 @@ impl Footplate {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let mono = select::mono(cx);
-        // Every track shares the widest flow's columns, the quiet
-        // flows' too, so folding the quiet tracks moves none of them.
-        let columns = panel_columns(model.depots());
         let mut body = div()
             .id("panel")
             .debug_selector(|| "panel".to_string())
@@ -579,32 +1117,26 @@ impl Footplate {
             .min_w_0()
             .overflow_y_scroll()
             .track_scroll(&self.decision)
-            .px_3()
-            .pt_2()
-            .pb_3()
+            .px_4()
+            .py_3()
             .flex()
             .flex_col()
-            .gap_2();
+            .gap_4();
         let mut empty = true;
         for depot in model
             .depots()
             .iter()
             .filter(|depot| depot.travelling > 0 || !depot.error.is_empty())
         {
-            empty = false;
-            body = body.child(self.panel_depot(depot, columns, mono.clone(), palette, cx));
+            if empty {
+                empty = false;
+                body = body.child(self.panel_legend(palette));
+            }
+            body = body.child(self.panel_depot(model, depot, mono.clone(), palette, cx));
         }
         if !model.unassigned().is_empty() {
             empty = false;
-            body = body.child(self.panel_no_line(model, mono.clone(), palette, cx));
-        }
-        if model
-            .depots()
-            .iter()
-            .any(|depot| depot.travelling == 0 && depot.error.is_empty())
-        {
-            empty = false;
-            body = body.child(self.panel_quiet(model, columns, mono.clone(), palette, cx));
+            body = body.child(self.panel_loose(model, palette, cx));
         }
         if empty {
             body = body.child(match model.flows_too_old() {
@@ -615,147 +1147,208 @@ impl Footplate {
         body
     }
 
-    /// One depot's rows on the panel: its error where its flows could
-    /// not be read, one track per flow in the served order, and the
-    /// Elsewhere stub where beads stand there. The rows of one depot
-    /// stand close, so the depots read apart. The rows never shrink:
-    /// squeezed, their cards would spill over the next row, so the
-    /// panel scrolls instead.
+    /// What the tracks' nodes say, each with its word: a crew stage, a
+    /// people stage, crew working, waiting on the reader, the end of
+    /// the flow.
+    pub(crate) fn panel_legend(&self, palette: Palette) -> impl IntoElement + use<> {
+        let mut legend = div()
+            .debug_selector(|| "panel legend".to_string())
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap_x_4()
+            .gap_y_1();
+        for (node, words) in [
+            ("crew", "crew stage"),
+            ("people", "people stage"),
+            ("work", "crew working"),
+            ("you", "waiting on you"),
+            ("end", "end of the flow"),
+        ] {
+            legend = legend.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .child(Self::panel_node(node, palette))
+                    .child(
+                        div()
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.faint)
+                            .child(words),
+                    ),
+            );
+        }
+        legend
+    }
+
+    /// One depot's section on the panel: its head with its transit and
+    /// its flows, its error where its flows could not be read, one
+    /// track per moving flow in the served order, its quiet flows as
+    /// one-liners, and its Elsewhere beads' line where beads stand in
+    /// no stage of its flows. The head opens the depot's board. The
+    /// rows never shrink: squeezed, their cards would spill over the
+    /// next row, so the panel scrolls instead.
     pub(crate) fn panel_depot(
         &self,
+        model: &Model,
         depot: &FlowDepot,
-        columns: usize,
         mono: Option<SharedString>,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let mut rows = div().flex().flex_col().flex_none().gap_1();
+        let mut sub = match depot.travelling {
+            0 => "nothing in transit".to_string(),
+            travelling => format!("{travelling} in transit"),
+        };
+        let flows = flow_words(depot.flows.len());
+        if !flows.is_empty() {
+            sub.push_str(&format!(" · {flows}"));
+        }
+        let to = Selected::Line(depot.name.clone());
+        let mut section = div().flex().flex_col().flex_none().gap_2().child(
+            div()
+                .id(SharedString::from(format!("panel depot {}", depot.name)))
+                .debug_selector({
+                    let depot = depot.name.clone();
+                    move || format!("panel depot {depot}")
+                })
+                .flex()
+                .flex_row()
+                .items_baseline()
+                .gap_2()
+                .cursor_pointer()
+                .hover(|style| style.bg(palette.hover))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.select(to.clone(), window, cx)),
+                )
+                .child(
+                    div()
+                        .text_size(rems(TYPE_SECTION))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(depot.name.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child(sub),
+                ),
+        );
         if !depot.error.is_empty() {
-            rows = rows.child(self.panel_words(depot, depot.error.clone(), palette, cx));
-        }
-        for flow in &depot.flows {
-            rows = rows.child(self.panel_track(depot, flow, columns, mono.clone(), palette, cx));
-        }
-        if depot.flows.is_empty() && depot.error.is_empty() && depot.elsewhere.is_empty() {
-            rows = rows.child(self.panel_words(depot, "None in transit.".into(), palette, cx));
-        }
-        if !depot.elsewhere.is_empty() {
-            rows = rows.child(self.panel_elsewhere(depot, mono, palette, cx));
-        }
-        rows
-    }
-
-    /// One depot's row where its flows draw no track: its name above
-    /// faint words — the error where its flows could not be read, else
-    /// that none is in transit.
-    pub(crate) fn panel_words(
-        &self,
-        depot: &FlowDepot,
-        words: String,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let name = depot.name.clone();
-        panel_card(palette)
-            .debug_selector({
-                let name = name.clone();
-                move || format!("panel words {name}")
-            })
-            .child(self.panel_name(
-                name.clone(),
-                String::new(),
-                None,
-                Selected::Line(name.clone()),
-                format!("panel name {name}"),
-                palette,
-                cx,
-            ))
-            .child(
+            section = section.child(
                 div()
-                    .w_full()
-                    .min_w_0()
-                    .py_2()
-                    .px_2()
                     .text_sm()
                     .text_color(palette.faint)
-                    .child(words),
-            )
+                    .child(depot.error.clone()),
+            );
+        }
+        for flow in Model::moving_flows(depot) {
+            section =
+                section.child(self.panel_track(model, depot, flow, mono.clone(), palette, cx));
+        }
+        let quiet = Model::quiet_flows(depot);
+        if !quiet.is_empty() {
+            section = section.child(self.panel_quiet_flows(depot, quiet, palette, cx));
+        }
+        if !depot.elsewhere.is_empty() {
+            section = section.child(self.panel_elsewhere(depot, palette, cx));
+        }
+        section
     }
 
-    /// One track, a card of its own: its name above a cell per stage
-    /// but the backlog's, left to right in travel order, wrapping where
-    /// the stages cannot fit the card's width.
+    /// One moving flow's track, a card of its own: its head above a
+    /// station per stage but the backlog's, left to right in travel
+    /// order, with the beads' chips on their stations. The head opens
+    /// the flow's list; the card reads rust-edged where any of its
+    /// beads waits on the reader.
     pub(crate) fn panel_track(
         &self,
+        model: &Model,
         depot: &FlowDepot,
         flow: &Flow,
-        columns: usize,
         mono: Option<SharedString>,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let second = match flow.flow_type.is_empty() {
-            true => flow.name.clone(),
-            false => format!("{} · {}", flow.name, flow.flow_type),
-        };
-        let counts = line_counts(flow);
-        let mut stages = div().flex().flex_row().flex_wrap().w_full().min_w_0();
-        for stage in flow.stages.iter().filter(|stage| stage.stage != "backlog") {
-            stages = stages.child(self.panel_cell(
+        let on_you = model.flow_on_you(&depot.name, &flow.name, &flow.flow_type);
+        let selector = format!("{} {}", depot.name, Self::flow_label(depot, flow));
+        let mut stations = div()
+            .id(Self::flow_element_id("panel stations", depot, flow))
+            .flex()
+            .flex_row()
+            .w_full()
+            .min_w_0()
+            .overflow_x_scroll();
+        let stages: Vec<&FlowStage> = flow
+            .stages
+            .iter()
+            .filter(|stage| stage.stage != "backlog")
+            .collect();
+        let last = stages.len().saturating_sub(1);
+        for (at, stage) in stages.iter().enumerate() {
+            stations = stations.child(self.panel_station(
+                model,
                 depot,
                 flow,
                 stage,
-                columns,
+                at == 0,
+                at == last,
                 mono.clone(),
                 palette,
                 cx,
             ));
         }
         panel_card(palette)
+            .id(Self::flow_element_id("panel track", depot, flow))
             .debug_selector({
-                let (depot, flow) = (depot.name.clone(), flow.name.clone());
-                move || format!("panel track {depot} {flow}")
+                let selector = selector.clone();
+                move || format!("panel track {selector}")
             })
-            .min_h(rems(4.))
-            .child(self.panel_name(
-                depot.name.clone(),
-                second,
-                Some(counts),
-                Selected::Line(depot.name.clone()),
-                format!("panel name {} {}", depot.name, flow.name),
-                palette,
-                cx,
-            ))
-            .child(stages)
+            .when(on_you > 0, |el| el.border_color(palette.accent))
+            .child(self.panel_track_head(depot, flow, on_you, palette, cx))
+            .child(stations)
     }
 
-    /// One track's name above its stages: the depot's name with the
-    /// flow's name and type and the line's counts on one line, opening
-    /// the line. The depot stands in the label type, the flow and the
-    /// counts in the meta type; where one line cannot hold them they wrap
-    /// whole, never cut. The counts are words: what is worked and what
-    /// waits, each where any stands, then the backlog, which the track
-    /// has no cell for. The lamp stands before the depot where the line
-    /// burns one, so a line with work under way reads as lit.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn panel_name(
+    /// One track's head above its stations: the flow's name with its
+    /// type where typed, else its source, and at the right who the flow
+    /// waits on with its backlog counted apart. It opens the flow's
+    /// list. Where one line cannot hold them they wrap whole, never cut.
+    pub(crate) fn panel_track_head(
         &self,
-        first: String,
-        second: String,
-        counts: Option<LineCounts>,
-        to: Selected,
-        what: String,
+        depot: &FlowDepot,
+        flow: &Flow,
+        on_you: usize,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let lamp = counts
-            .as_ref()
-            .and_then(|counts| lamp_dot(counts.lamp, format!("{what} lamp"), palette));
-        let mut row = div()
-            .id(SharedString::from(what.clone()))
+        let chip = match flow.flow_type.is_empty() {
+            false => format!("type {}", flow.flow_type),
+            true => flow.source.clone(),
+        };
+        let (status, tone) = flow_status(flow, on_you);
+        let color = match tone {
+            "you" => palette.text_accent,
+            "working" => palette.ok,
+            _ => palette.text,
+        };
+        let counts = line_counts(flow);
+        let selector = format!("{} {}", depot.name, Self::flow_label(depot, flow));
+        let to = Selected::Flow(
+            depot.name.clone(),
+            flow.name.clone(),
+            flow.flow_type.clone(),
+        );
+        div()
+            .id(Self::flow_element_id("panel head", depot, flow))
             .debug_selector({
-                let what = what.clone();
-                move || what.clone()
+                let selector = selector.clone();
+                move || format!("panel head {selector}")
             })
             .w_full()
             .min_w_0()
@@ -764,241 +1357,237 @@ impl Footplate {
             .flex_wrap()
             .items_baseline()
             .gap_2()
-            .py_1p5()
-            .pr_2()
-            .rounded_md()
+            .pb_3()
             .cursor_pointer()
             .hover(|style| style.bg(palette.hover))
             .on_click(cx.listener(move |this, _, window, cx| this.select(to.clone(), window, cx)))
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .children(lamp)
-                    .child(
-                        div()
-                            .debug_selector({
-                                let what = what.clone();
-                                move || format!("{what} depot")
-                            })
-                            .line_height(rems(1.25))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(first),
-                    ),
-            );
-        if !second.is_empty() {
-            row = row.child(
-                panel_meta()
                     .debug_selector({
-                        let what = what.clone();
-                        move || format!("{what} flow")
+                        let selector = selector.clone();
+                        move || format!("panel head {selector} name")
                     })
-                    .text_color(palette.faint)
-                    .child(second),
-            );
-        }
-        if let Some(counts) = counts {
-            let mut words = Vec::new();
-            if counts.working > 0 {
-                words.push(("working", counts.working, palette.text));
-            }
-            if counts.waiting > 0 {
-                words.push(("waiting", counts.waiting, palette.text));
-            }
-            words.push((
-                "backlog",
-                counts.backlog,
-                match counts.backlog {
-                    0 => palette.faint,
-                    _ => palette.text,
-                },
-            ));
-            let mut tally = div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .items_baseline()
-                .gap_x_1();
-            for (n, (part, count, color)) in words.into_iter().enumerate() {
-                if n > 0 {
-                    tally = tally.child(panel_meta().text_color(palette.faint).child("·"));
-                }
-                tally = tally.child(
-                    panel_meta()
+                    .text_size(rems(TYPE_LABEL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(flow.name.clone()),
+            )
+            .when(!chip.is_empty(), |el| {
+                el.child(
+                    div()
                         .debug_selector({
-                            let what = what.clone();
-                            move || format!("{what} {part}")
+                            let selector = selector.clone();
+                            move || format!("panel head {selector} chip")
                         })
-                        .text_color(color)
-                        .child(format!("{count} {part}")),
-                );
-            }
-            row = row.child(tally);
-        }
-        row
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(palette.line)
+                        .px_1()
+                        .text_size(rems(TYPE_CODE))
+                        .text_color(palette.faint)
+                        .child({
+                            let mut chip = div().child(chip);
+                            if let Some(mono) = select::mono(cx) {
+                                chip = chip.font_family(mono);
+                            }
+                            chip
+                        }),
+                )
+            })
+            .child(div().flex_1())
+            .child(
+                div()
+                    .debug_selector({
+                        let selector = selector.clone();
+                        move || format!("panel head {selector} status")
+                    })
+                    .text_size(rems(TYPE_META))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color)
+                    .child(status),
+            )
+            .child(
+                div()
+                    .debug_selector({
+                        let selector = selector.clone();
+                        move || format!("panel head {selector} backlog")
+                    })
+                    .text_size(rems(TYPE_META))
+                    .text_color(palette.faint)
+                    .child(format!("· {} backlog", counts.backlog)),
+            )
     }
 
-    /// One stage's cell: its name with the lamp where one burns (the
-    /// running green where a bead is worked and no fault or turn burns)
-    /// and the buffer stop where the stage is terminal, the track through
-    /// it, and two headcodes, the second reading "+N" where a third bead
-    /// stands on it. The worked beads stand first, so the headcode drawn
-    /// is a worked bead's whenever one is there, and the "+N" says what
-    /// it hides where any of that is worked. Lit only with a bead on it:
-    /// an empty stage stands on its track's card, its name faint, and an
-    /// occupied one steps up to the raised surface. The cells of a track
-    /// share its width, each one of `columns` to the card and never
-    /// narrower than a headcode; a head longer than its cell wraps whole
-    /// onto a second line. Every head stands two lines high with its
-    /// words on the rule, so a head of one line and a head of two put the
-    /// rule at one place: the rules of a row are one straight track, and
-    /// of every track alike, with no row measured for its tallest head.
-    /// A name that wants a third line makes its own cell taller rather
-    /// than run over the row above.
+    /// One stage's station on the track: the node on the track's line
+    /// with its name under it, and the beads' chips under that. The
+    /// line runs through the node row, stopping at the track's ends;
+    /// the stations share the card's width down to their narrowest,
+    /// past which the track scrolls.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn panel_cell(
+    pub(crate) fn panel_station(
         &self,
+        model: &Model,
         depot: &FlowDepot,
         flow: &Flow,
         stage: &FlowStage,
-        columns: usize,
+        first: bool,
+        last: bool,
         mono: Option<SharedString>,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let lit = !stage.beads.is_empty();
-        let lamp = lamp_dot(
-            stage_state(stage),
-            format!("panel lamp {} {} {}", depot.name, flow.name, stage.stage),
-            palette,
-        );
-        let name = panel_stage_name(&stage.stage, stage.human);
-        let stop = stage.terminal.then(|| {
-            buffer_stop(
-                format!("panel stop {} {} {}", depot.name, flow.name, stage.stage),
-                palette,
-            )
-        });
-        let mut cell = div()
+        let selector = format!("{} {}", depot.name, Self::flow_label(depot, flow));
+        // The stations share the card's width down to their narrowest,
+        // past which the track scrolls: `grown`'s width, inlined, since
+        // a station is no column of its own.
+        let station = div()
             .debug_selector({
-                let (depot, flow, stage) =
-                    (depot.name.clone(), flow.name.clone(), stage.stage.clone());
-                move || format!("panel stage {depot} {flow} {stage}")
+                let (selector, stage) = (selector.clone(), stage.stage.clone());
+                move || format!("panel station {selector} {stage}")
             })
-            .flex_none()
-            .flex_basis(relative(1. / columns as f32))
-            .min_w(rems(PANEL_MIN))
-            .pt_1()
-            .rounded_md()
-            .when(lit, |el| el.bg(palette.ground))
+            .flex_1()
+            .w(rems(TRACK_STATION / 16.))
+            .min_w(px(TRACK_STATION))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1p5()
             .child(
-                // Two of `panel_meta`'s lines, 1 rem each, bottom-aligned.
-                // The cell holds the top padding, so it stays out of
-                // this height. A minimum, not a fixed height: a head of
-                // three lines would spill upward out of a fixed box.
                 div()
-                    .min_h(rems(2.))
+                    .w_full()
                     .flex()
-                    .flex_col()
-                    .justify_end()
-                    .px_2()
+                    .flex_row()
+                    .items_center()
+                    .child(div().h(px(2.)).flex_1().rounded_full().bg(match first {
+                        true => rgba(0x00000000),
+                        false => palette.strong,
+                    }))
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .children(lamp)
-                            .child(
-                                panel_meta()
-                                    .debug_selector({
-                                        let (depot, flow, stage) = (
-                                            depot.name.clone(),
-                                            flow.name.clone(),
-                                            stage.stage.clone(),
-                                        );
-                                        move || format!("panel head {depot} {flow} {stage}")
-                                    })
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_color(match lit {
-                                        true => palette.text,
-                                        false => palette.faint,
-                                    })
-                                    .child(name),
-                            )
-                            .children(stop),
-                    ),
+                        Self::panel_node(station_node(stage), palette).debug_selector({
+                            let (selector, stage, node) = (
+                                selector.clone(),
+                                stage.stage.clone(),
+                                station_node(stage).to_string(),
+                            );
+                            move || format!("panel node {selector} {stage} {node}")
+                        }),
+                    )
+                    .child(div().h(px(2.)).flex_1().rounded_full().bg(match last {
+                        true => rgba(0x00000000),
+                        false => palette.strong,
+                    })),
             )
-            .child(panel_track_line(stage.human, lit, palette).debug_selector({
-                let (depot, flow, stage) =
-                    (depot.name.clone(), flow.name.clone(), stage.stage.clone());
-                move || format!("panel rule {depot} {flow} {stage}")
-            }));
-        let mut codes = div().flex().flex_col().px_2().pb_1p5();
+            .child(
+                div()
+                    .debug_selector({
+                        let (selector, stage) = (selector.clone(), stage.stage.clone());
+                        move || format!("panel label {selector} {stage}")
+                    })
+                    .text_size(rems(TYPE_META))
+                    .text_color(match lit {
+                        true => palette.text,
+                        false => palette.faint,
+                    })
+                    .when(lit, |el| el.font_weight(FontWeight::MEDIUM))
+                    .text_center()
+                    .child(panel_stage_name(&stage.stage, false)),
+            );
+        // Full width, so the chips wrap where the station ends and
+        // nowhere sooner: a row that hugs its content wraps early.
+        let mut chips = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .justify_center()
+            .gap_1();
+        let on_you = model.on_you_beads();
+        let me = model.me();
         match worked_first(&stage.beads).as_slice() {
             [] => {}
             [one] => {
-                codes = codes.child(self.panel_headcode(one, mono, palette, cx));
+                chips = chips.child(self.panel_chip(one, &on_you, me, mono, palette, cx));
             }
             [one, two] => {
-                codes = codes.child(self.panel_headcode(one, mono.clone(), palette, cx));
-                codes = codes.child(self.panel_headcode(two, mono, palette, cx));
+                chips = chips.child(self.panel_chip(one, &on_you, me, mono.clone(), palette, cx));
+                chips = chips.child(self.panel_chip(two, &on_you, me, mono, palette, cx));
             }
             [one, hidden @ ..] => {
-                codes = codes.child(self.panel_headcode(one, mono, palette, cx));
-                // The phrases wrap whole, so that a narrow cell breaks
-                // between "+1 working" and "2 waiting" and never inside
-                // either; the dot joins them as the summary's does.
-                let mut more = panel_meta()
-                    .debug_selector({
-                        let (depot, flow, stage) =
-                            (depot.name.clone(), flow.name.clone(), stage.stage.clone());
-                        move || format!("panel more {depot} {flow} {stage}")
-                    })
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .gap_x_1()
-                    .text_color(palette.faint);
-                for (n, words) in more_words(hidden).into_iter().enumerate() {
-                    if n > 0 {
-                        more = more.child("·");
-                    }
-                    // Named by its words, which is how a test reads them.
-                    more = more.child(
-                        div()
-                            .debug_selector({
-                                let (depot, flow, stage, words) = (
-                                    depot.name.clone(),
-                                    flow.name.clone(),
-                                    stage.stage.clone(),
-                                    words.clone(),
-                                );
-                                move || format!("panel more {depot} {flow} {stage} {words}")
-                            })
-                            .whitespace_nowrap()
-                            .child(words),
-                    );
-                }
-                codes = codes.child(more);
+                chips = chips.child(self.panel_chip(one, &on_you, me, mono, palette, cx));
+                chips = chips.child(
+                    div()
+                        .debug_selector({
+                            let (selector, stage) = (selector.clone(), stage.stage.clone());
+                            move || format!("panel more {selector} {stage}")
+                        })
+                        .h(px(20.))
+                        .px_1p5()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(palette.strong)
+                        .bg(palette.ground)
+                        .text_size(rems(TYPE_CODE))
+                        .text_color(palette.text)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(format!("+{}", hidden.len())),
+                );
             }
         }
-        cell = cell.child(codes);
-        cell
+        station.child(chips)
     }
 
-    /// One bead's headcode on the panel: the short handle in its
-    /// marker drawing, in mono, opening the bead. A bead being worked
-    /// carries the running dot at its left, the lamp's own dot, and the
-    /// semibold weight, so that it stands apart from a waiting one by a
-    /// mark and a weight, not by colour; hovering it says which session
-    /// works it, with its group, kind and model.
-    pub(crate) fn panel_headcode(
+    /// A station's node: the plain crew dot, the hollow people ring,
+    /// the working ring, the rust fill waiting on the reader, or the
+    /// end square. The rings are one dot inside another, since the kit
+    /// draws no border widths of its own.
+    fn panel_node(node: &str, palette: Palette) -> gpui::Div {
+        let dot = |fill: gpui::Rgba| {
+            div()
+                .size(px(14.))
+                .rounded_full()
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(fill)
+        };
+        match node {
+            "people" => dot(palette.faint).child(
+                div()
+                    .size(px(10.))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(palette.raised),
+            ),
+            "work" => dot(palette.ok).child(
+                div()
+                    .size(px(8.))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(palette.raised),
+            ),
+            "you" => dot(palette.accent),
+            "end" => div()
+                .size(px(14.))
+                .rounded_sm()
+                .flex_none()
+                .bg(palette.faint),
+            _ => dot(palette.strong),
+        }
+    }
+
+    /// One bead's chip on its station: the short handle in mono,
+    /// opening the bead. A bead waiting on the reader reads rust
+    /// filled; a worked bead reads semibold; a held or stalled bead
+    /// reads red on the plain chip. Hovering a worked chip says which
+    /// session works it, with its group, kind and model.
+    pub(crate) fn panel_chip(
         &self,
         bead: &FlowBead,
+        asked: &std::collections::HashSet<&str>,
+        me: &str,
         mono: Option<SharedString>,
         palette: Palette,
         cx: &mut Context<Self>,
@@ -1006,19 +1595,23 @@ impl Footplate {
         let sel = Selected::Bead(bead.bead.clone());
         let name = bead.bead.clone();
         let tip = worker_words(bead).map(|(tip, _)| tip);
-        let me = self.model.as_ref().map(Model::me).unwrap_or_default();
-        let color = headcode_color(
-            bead.working,
-            &bead.remark,
-            &bead.tone,
-            &bead.held_by,
-            me,
-            palette,
-        );
-        let mut text = panel_meta()
+        let you = chip_you(bead, me, asked);
+        let color = match you {
+            true => palette.on_accent,
+            false => headcode_color(
+                bead.working,
+                &bead.remark,
+                &bead.tone,
+                &bead.held_by,
+                me,
+                palette,
+            ),
+        };
+        let mut text = div()
             .flex_1()
             .min_w_0()
             .truncate()
+            .text_size(rems(TYPE_CODE))
             .text_color(color)
             .when(bead.working, |el| el.font_weight(FontWeight::SEMIBOLD))
             .child(short_bead(&bead.bead));
@@ -1026,162 +1619,249 @@ impl Footplate {
             text = text.font_family(mono);
         }
         div()
-            .id(SharedString::from(format!("panel headcode {name}")))
+            .id(SharedString::from(format!("panel chip {name}")))
             .debug_selector({
                 let name = name.clone();
-                move || format!("panel headcode {name}")
+                move || format!("panel chip {name}")
+            })
+            .h(px(20.))
+            .px_1p5()
+            .rounded_full()
+            .border_1()
+            .border_color(match you {
+                true => palette.accent,
+                false => palette.strong,
+            })
+            .bg(match you {
+                true => palette.accent,
+                false => palette.ground,
             })
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
             .when_some(tip, |el, tip| {
                 el.tooltip(move |_, cx| cx.new(|_| RailTip(tip.clone())).into())
             })
-            .children(lamp_dot(
-                match bead.working {
-                    true => "moving",
-                    false => "none",
-                },
-                format!("panel running {name}"),
-                palette,
-            ))
             .child(text)
     }
 
-    /// The stub under a depot's last track: its Elsewhere beads'
-    /// headcodes on a card, only where beads stand there, under their
-    /// count and wrapping where they cannot fit one row.
-    pub(crate) fn panel_elsewhere(
+    /// The depot's quiet flows as one line each: the name, the path
+    /// of its stages, and its backlog. Each opens the flow's list.
+    pub(crate) fn panel_quiet_flows(
         &self,
         depot: &FlowDepot,
-        mono: Option<SharedString>,
+        quiet: Vec<&Flow>,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let mut codes = div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .gap_2()
+        let mut rows = div()
+            .debug_selector({
+                let depot = depot.name.clone();
+                move || format!("panel quiet flows {depot}")
+            })
             .w_full()
-            .min_w_0();
-        for bead in &depot.elsewhere {
-            codes = codes.child(self.panel_headcode(bead, mono.clone(), palette, cx));
+            .min_w_0()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .rounded_lg()
+            .border_1()
+            .border_color(palette.line)
+            .bg(palette.raised)
+            .overflow_hidden();
+        for (at, flow) in quiet.iter().enumerate() {
+            let label = Self::flow_label(depot, flow);
+            let to = Selected::Flow(
+                depot.name.clone(),
+                flow.name.clone(),
+                flow.flow_type.clone(),
+            );
+            rows = rows.child(
+                div()
+                    .id(Self::flow_element_id("panel quiet", depot, flow))
+                    .debug_selector({
+                        let (depot, label) = (depot.name.clone(), label.clone());
+                        move || format!("panel quiet {depot} {label}")
+                    })
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_row()
+                    .items_baseline()
+                    .gap_3()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.hover))
+                    .when(at > 0, |el| el.border_t_1().border_color(palette.line))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select(to.clone(), window, cx)),
+                    )
+                    .child(
+                        grown(QUIET_NAME)
+                            .flex_none()
+                            .truncate()
+                            .text_size(rems(TYPE_META))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(shorten(&label, QUIET_NAME_CHARS)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.faint)
+                            .child(flow_path(flow)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.faint)
+                            .child(format!("{} backlog", model::backlog_count(flow))),
+                    ),
+            );
         }
-        panel_card(palette)
+        rows
+    }
+
+    /// The depot's Elsewhere beads' line: how many stand in no stage of
+    /// its flows, opening the depot's board, where the board lists
+    /// them. The boards draw no Elsewhere, but without the line beads
+    /// the depot counts would stand nowhere on the panel.
+    pub(crate) fn panel_elsewhere(
+        &self,
+        depot: &FlowDepot,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let to = Selected::Line(depot.name.clone());
+        div()
+            .id(SharedString::from(format!(
+                "panel elsewhere {}",
+                depot.name
+            )))
             .debug_selector({
                 let depot = depot.name.clone();
                 move || format!("panel elsewhere {depot}")
             })
-            .gap_2()
+            .w_full()
+            .min_w_0()
+            .flex_none()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .border_1()
+            .border_color(palette.line)
+            .bg(palette.raised)
+            .flex()
+            .flex_row()
+            .items_baseline()
+            .gap_3()
+            .cursor_pointer()
+            .hover(|style| style.bg(palette.hover))
+            .on_click(cx.listener(move |this, _, window, cx| this.select(to.clone(), window, cx)))
             .child(
-                panel_meta()
-                    .text_color(palette.faint)
-                    .child(format!("Elsewhere · {}", depot.elsewhere.len())),
+                grown(QUIET_NAME)
+                    .flex_none()
+                    .truncate()
+                    .text_size(rems(TYPE_META))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Elsewhere"),
             )
-            .child(codes)
-    }
-
-    /// The beads travelling with no line: their own track at the foot
-    /// of the active ones, its name above their headcodes, because a
-    /// bead with no depot travels no flow and has no stages to stand
-    /// between.
-    pub(crate) fn panel_no_line(
-        &self,
-        model: &Model,
-        mono: Option<SharedString>,
-        palette: Palette,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let mut codes = div().flex().flex_col().px_2().pb_1p5();
-        for bead in model.unassigned() {
-            codes = codes.child(self.panel_headcode(bead, mono.clone(), palette, cx));
-        }
-        panel_card(palette)
-            .debug_selector(|| "panel noline".to_string())
-            .min_h(rems(4.))
-            .child(self.panel_name(
-                "No line".into(),
-                "no depot".into(),
-                None,
-                Selected::NoLine,
-                "panel noline name".into(),
-                palette,
-                cx,
-            ))
             .child(
                 div()
-                    .w_full()
+                    .flex_1()
                     .min_w_0()
-                    .rounded_md()
-                    .bg(palette.ground)
-                    .flex()
-                    .flex_col()
-                    .child(
-                        panel_meta()
-                            .px_2()
-                            .pt_1()
-                            .text_color(palette.text)
-                            .child("travelling"),
-                    )
-                    .child(panel_track_line(false, true, palette))
-                    .child(codes),
+                    .truncate()
+                    .text_size(rems(TYPE_META))
+                    .text_color(palette.faint)
+                    .child(match depot.elsewhere.len() {
+                        1 => "1 bead stands in no stage of these flows".to_string(),
+                        elsewhere => {
+                            format!("{elsewhere} beads stand in no stage of these flows")
+                        }
+                    }),
             )
     }
 
-    /// The quiet tracks folded to one row at the panel's foot: the
-    /// folded names, unfolding to their tracks with the list's Quiet
-    /// fold.
-    pub(crate) fn panel_quiet(
+    /// The beads travelling with no flow: their own section at the
+    /// panel's foot, since a bead with no depot travels no flow and has
+    /// no stages to stand between. Its line says how many, and opens
+    /// their list.
+    pub(crate) fn panel_loose(
         &self,
         model: &Model,
-        columns: usize,
-        mono: Option<SharedString>,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let quiet: Vec<&FlowDepot> = model
-            .depots()
-            .iter()
-            .filter(|depot| depot.travelling == 0 && depot.error.is_empty())
-            .collect();
-        let names: Vec<&str> = quiet.iter().map(|depot| depot.name.as_str()).collect();
-        let open = model.quiet_expanded();
-        // Never shrunk: squeezed, the folded row or the unfolded
-        // tracks would spill over whatever the panel draws last, so
-        // the panel scrolls instead.
-        let mut section = div().flex().flex_col().flex_none().gap_3().child(
-            div()
-                .id("panel quiet")
-                .debug_selector(|| "panel quiet".to_string())
-                .px_2()
-                .py_2()
-                .rounded_md()
-                .flex()
-                .flex_row()
-                .items_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(palette.hover))
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_quiet(cx)))
-                .child(
-                    panel_meta()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(palette.faint)
-                        .child(panel_quiet_head(open, &names)),
-                ),
-        );
-        if open {
-            for depot in quiet {
-                section =
-                    section.child(self.panel_depot(depot, columns, mono.clone(), palette, cx));
+        let travelling = model.unassigned().len();
+        let words = match travelling {
+            1 => "1 bead is moving with no flow, so it has no stage to show.".to_string(),
+            travelling => {
+                format!(
+                    "{travelling} beads are moving with no flow, so they have no stages to show."
+                )
             }
-        }
-        section
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_baseline()
+                    .gap_2()
+                    .child(
+                        div()
+                            .debug_selector(|| "panel loose head".to_string())
+                            .text_size(rems(TYPE_SECTION))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(model::NO_FLOW),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.faint)
+                            .child(format!("{travelling} in transit")),
+                    ),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "panel loose".to_string())
+                    .px_3()
+                    .py_2p5()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(palette.strong)
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_baseline()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(rems(TYPE_BODY))
+                            .text_color(palette.faint)
+                            .child(words),
+                    )
+                    .child(
+                        div()
+                            .id("panel loose show")
+                            .debug_selector(|| "panel loose show".to_string())
+                            .text_size(rems(TYPE_META))
+                            .text_color(palette.link)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.select(Selected::NoLine, window, cx)
+                            }))
+                            .child("Show them"),
+                    ),
+            )
     }
 
     /// The beads that wait on the person reading, above the table:
@@ -1249,7 +1929,7 @@ impl Footplate {
                 .items_center()
                 .justify_center()
                 .text_color(palette.faint)
-                .child("The line is gone.");
+                .child("The depot is gone.");
         };
         let head = div()
             .p_3()
@@ -1343,6 +2023,741 @@ impl Footplate {
                         .child(format!("! {}", model.notice)),
                 )
             })
+    }
+
+    /// One flow's pane, opened from the tree: its crumbs with the
+    /// List/Board toggle, then its list — the stages' strip, the
+    /// grouping line, and its beads grouped by stage with the empty
+    /// stages folded — or its board under the toggle, the depot board's
+    /// columns for this flow alone.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn talk_flow_list(
+        &self,
+        model: &Model,
+        depot: &str,
+        name: &str,
+        flow_type: &str,
+        pane_width: f32,
+        rem: f32,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let pane = div().flex_1().min_w_0().h_full().flex().flex_col();
+        let Some(flow) = model.flow(depot, name, flow_type) else {
+            return pane
+                .items_center()
+                .justify_center()
+                .text_color(palette.faint)
+                .child("The flow is gone.");
+        };
+        let head = self.flow_list_head(model, depot, flow, palette, cx);
+        let mono = select::mono(cx);
+        let now = chrono::Utc::now();
+        let mut list = div()
+            .id("flow list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.decision)
+            .flex()
+            .flex_col();
+        match model.flow_board() {
+            true => {
+                list = list.child(
+                    div()
+                        .p_4()
+                        .flex()
+                        .flex_col()
+                        .child(self.flow_section(flow, &now, mono, palette, cx)),
+                );
+            }
+            false => {
+                list = list.child(self.flow_strip(flow, palette)).child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(palette.line)
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child("Grouped by stage · moving a bead goes through a Decide card"),
+                );
+                for stage in &flow.stages {
+                    list = list.child(self.flow_group(
+                        model,
+                        flow,
+                        stage,
+                        &now,
+                        mono.clone(),
+                        pane_width,
+                        rem,
+                        palette,
+                        cx,
+                    ));
+                }
+                list = list
+                    .child(self.flow_empty_fold(model, depot, flow, pane_width, rem, palette, cx));
+            }
+        }
+        pane.children(self.reconnect_strip(palette))
+            .child(head)
+            .child(list)
+            .when(!model.notice.is_empty(), |el| {
+                el.child(
+                    div()
+                        .px_4()
+                        .py_1()
+                        .text_sm()
+                        .text_color(palette.warn)
+                        .child(format!("! {}", model.notice)),
+                )
+            })
+    }
+
+    /// The flow pane's head: the depot with the flow under it and the
+    /// flow's source, with the List/Board toggle at the right. The
+    /// depot opens the depot's board.
+    pub(crate) fn flow_list_head(
+        &self,
+        model: &Model,
+        depot: &str,
+        flow: &Flow,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let board = model.flow_board();
+        let to = Selected::Line(depot.to_string());
+        div()
+            .px_4()
+            .py_2p5()
+            .border_b_1()
+            .border_color(palette.line)
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_baseline()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "flow depot {depot} {}",
+                                flow.name
+                            )))
+                            .debug_selector({
+                                let (depot, flow) = (depot.to_string(), flow.name.clone());
+                                move || format!("flow depot {depot} {flow}")
+                            })
+                            .text_size(rems(TYPE_BODY))
+                            .text_color(palette.link)
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select(to.clone(), window, cx)
+                            }))
+                            .child(depot.to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(TYPE_BODY))
+                            .text_color(palette.faint)
+                            .child("›"),
+                    )
+                    .child(
+                        div()
+                            .debug_selector({
+                                let (depot, flow) = (depot.to_string(), flow.name.clone());
+                                move || format!("flow head {depot} {flow}")
+                            })
+                            .text_size(rems(TYPE_BODY))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(flow.name.clone()),
+                    )
+                    .when(!flow.source.is_empty(), |el| {
+                        let mut source = div()
+                            .debug_selector({
+                                let (depot, flow) = (depot.to_string(), flow.name.clone());
+                                move || format!("flow source {depot} {flow}")
+                            })
+                            .text_size(rems(TYPE_CODE))
+                            .text_color(palette.faint)
+                            .child(flow.source.clone());
+                        if let Some(mono) = select::mono(cx) {
+                            source = source.font_family(mono);
+                        }
+                        el.child(source)
+                    }),
+            )
+            .child(
+                div().flex_none().child(segmented(
+                    [("List", false, !board), ("Board", true, board)]
+                        .into_iter()
+                        .map(|(word, to, open)| {
+                            segment(word.to_string(), open, palette)
+                                .id(SharedString::from(format!("flow {}", word.to_lowercase())))
+                                .debug_selector(move || format!("flow {}", word.to_lowercase()))
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.set_flow_board(to, cx)),
+                                )
+                        })
+                        .collect(),
+                    palette,
+                )),
+            )
+    }
+
+    /// The flow's stages as a strip: each but the backlog's a knot on
+    /// the track with its name, the stages with beads named with their
+    /// count, the landed end with its served landing rows. It scrolls
+    /// sideways past the pane's edge, and stands still: the stations
+    /// open nothing until the context drawers.
+    pub(crate) fn flow_strip(&self, flow: &Flow, palette: Palette) -> impl IntoElement + use<> {
+        let mut strip = div()
+            .id("flow stations")
+            .debug_selector({
+                let flow = flow.name.clone();
+                move || format!("flow strip {flow}")
+            })
+            .flex()
+            .flex_row()
+            .items_center()
+            .overflow_x_scroll()
+            .px_4()
+            .py_3()
+            .border_b_1()
+            .border_color(palette.line);
+        let stages: Vec<&FlowStage> = flow
+            .stages
+            .iter()
+            .filter(|stage| stage.stage != "backlog")
+            .collect();
+        for (at, stage) in stages.iter().enumerate() {
+            if at > 0 {
+                strip = strip.child(
+                    div()
+                        .w(px(20.))
+                        .h(px(2.))
+                        .mx_1p5()
+                        .flex_none()
+                        .bg(palette.strong),
+                );
+            }
+            let mut label = stage.stage.clone();
+            let mut on = false;
+            if !stage.beads.is_empty() {
+                label.push_str(&format!(" · {}", stage.beads.len()));
+                on = true;
+            }
+            if Self::flow_has_landings_at(flow, &stage.stage) {
+                on = true;
+            }
+            let knot = match station_node(stage) {
+                "end" => div()
+                    .size(px(10.))
+                    .rounded_sm()
+                    .flex_none()
+                    .bg(palette.faint),
+                "work" => div()
+                    .size(px(10.))
+                    .rounded_full()
+                    .flex_none()
+                    .border_1()
+                    .border_color(palette.ok),
+                "people" | "you" if stage.human => div()
+                    .size(px(10.))
+                    .rounded_full()
+                    .flex_none()
+                    .border_1()
+                    .border_color(palette.faint),
+                _ => div()
+                    .size(px(10.))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(palette.strong),
+            };
+            strip = strip.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .items_center()
+                    .gap_1p5()
+                    .child(knot)
+                    .child(
+                        div()
+                            .text_size(rems(TYPE_META))
+                            .text_color(match on {
+                                true => palette.text,
+                                false => palette.faint,
+                            })
+                            .when(on, |el| el.font_weight(FontWeight::MEDIUM))
+                            .child(label),
+                    ),
+            );
+        }
+        strip
+    }
+
+    /// Whether the flow's served landings stand under the stage. They
+    /// all entered merged, so they stand under the stage of that name
+    /// where the flow has one, else under its first terminal stage.
+    fn flow_has_landings_at(flow: &Flow, stage: &str) -> bool {
+        let under = flow
+            .stages
+            .iter()
+            .find(|candidate| candidate.stage == "merged")
+            .or_else(|| flow.stages.iter().find(|candidate| candidate.terminal))
+            .map(|candidate| candidate.stage.as_str());
+        under == Some(stage) && !flow.landings.is_empty()
+    }
+
+    /// One stage's group in the flow's list: its head with its count
+    /// and its group words, then one row per bead — the backlog's with
+    /// where each stands next, the landed end's with what landed under
+    /// it. Nothing where the stage stands empty: the empty fold names
+    /// those. Stages never collapse.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn flow_group(
+        &self,
+        model: &Model,
+        flow: &Flow,
+        stage: &FlowStage,
+        now: &chrono::DateTime<chrono::Utc>,
+        mono: Option<SharedString>,
+        pane_width: f32,
+        rem: f32,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let has_landings = Self::flow_has_landings_at(flow, &stage.stage);
+        if stage.beads.is_empty() && !has_landings {
+            return div().into_any_element();
+        }
+        let words = match stage.stage.as_str() {
+            "backlog" => format!("{} · {}", stage.beads.len(), stage_group_words(stage)),
+            _ if stage.terminal => {
+                let mut parts = Vec::new();
+                if !stage.beads.is_empty() {
+                    parts.push(bead_words(stage.beads.len()));
+                }
+                parts.push("the end of the flow".to_string());
+                parts.join(" · ")
+            }
+            _ => format!("{} · {}", stage.beads.len(), stage_group_words(stage)),
+        };
+        let (stage_budget, words_budget) = flow_group_budgets(
+            pane_width,
+            rem,
+            stage.stage.chars().count(),
+            words.chars().count(),
+        );
+        let stage_name = shorten(&stage.stage, stage_budget);
+        let group_words = shorten(&words, words_budget);
+        let mark: AnyElement = match stage.stage.as_str() {
+            "backlog" => div()
+                .size(px(10.))
+                .rounded_full()
+                .flex_none()
+                .border_1()
+                .border_color(palette.faint)
+                .into_any_element(),
+            _ if stage.terminal => {
+                outcome_glyph(model::Outcome::Approved, ROW_MARK, palette.ok).into_any_element()
+            }
+            _ => lamp_dot(
+                stage_state(stage),
+                format!("flow lamp {} {}", flow.name, stage.stage),
+                palette,
+            )
+            .map(|dot| dot.into_any_element())
+            .unwrap_or_else(|| div().size(px(8.)).flex_none().into_any_element()),
+        };
+        let mut group = div().flex().flex_col().child(
+            div()
+                .debug_selector({
+                    let (flow, stage) = (flow.name.clone(), stage.stage.clone());
+                    move || format!("flow group {flow} {stage}")
+                })
+                .px_4()
+                .py_2()
+                .bg(palette.side)
+                .border_b_1()
+                .border_color(palette.line)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2p5()
+                .child(mark)
+                .child(
+                    div()
+                        .text_size(rems(TYPE_SECTION))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .min_w_0()
+                        .truncate()
+                        .child(stage_name),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child(group_words),
+                ),
+        );
+        for bead in &stage.beads {
+            group = group.child(self.flow_bead_row(
+                model,
+                flow,
+                stage,
+                bead,
+                now,
+                mono.clone(),
+                pane_width,
+                rem,
+                palette,
+                cx,
+            ));
+        }
+        if has_landings {
+            for landing in &flow.landings {
+                group = group.child(self.flow_landing_row(
+                    landing,
+                    now,
+                    mono.clone(),
+                    pane_width,
+                    rem,
+                    palette,
+                    cx,
+                ));
+            }
+        }
+        group.into_any_element()
+    }
+
+    /// One bead's row in its stage's group: its mark, its short id, its
+    /// title, and at the right who works it with how long it has stood
+    /// — the backlog's with the stage past it instead. A click opens
+    /// the bead whole.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn flow_bead_row(
+        &self,
+        model: &Model,
+        flow: &Flow,
+        stage: &FlowStage,
+        bead: &FlowBead,
+        now: &chrono::DateTime<chrono::Utc>,
+        mono: Option<SharedString>,
+        pane_width: f32,
+        rem: f32,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let sel = Selected::Bead(bead.bead.clone());
+        let name = bead.bead.clone();
+        let raw_meta = match stage.stage.as_str() {
+            "backlog" => next_stage(flow)
+                .map(|next| format!("→ {next}"))
+                .unwrap_or_default(),
+            _ => {
+                let mut parts = Vec::new();
+                if !bead.worker.is_empty() {
+                    parts.push(model::worker_session(&bead.worker).to_string());
+                }
+                if !bead.entered_stage_at.is_empty() {
+                    let span = model::waits(&bead.entered_stage_at, now);
+                    if !span.is_empty() {
+                        parts.push(span);
+                    }
+                }
+                if waits_for_seat(bead, stage) {
+                    parts.push("waits for a seat".to_string());
+                }
+                if parts.is_empty() && !bead.remark.is_empty() {
+                    parts.push(bead.remark.clone());
+                }
+                parts.join(" · ")
+            }
+        };
+        let (title_budget, meta_budget) = flow_row_budgets(
+            pane_width,
+            rem,
+            bead.title.chars().count(),
+            raw_meta.chars().count(),
+        );
+        let title = shorten(&bead.title, title_budget);
+        let meta = shorten(&raw_meta, meta_budget);
+        let mark: AnyElement = match stage.stage.as_str() {
+            "backlog" => div()
+                .size(px(10.))
+                .rounded_full()
+                .flex_none()
+                .border_1()
+                .border_color(palette.faint)
+                .into_any_element(),
+            _ if bead.working => lamp_dot("moving", format!("flow mark {name}"), palette)
+                .map(|dot| dot.into_any_element())
+                .unwrap_or_else(|| div().size(px(8.)).flex_none().into_any_element()),
+            _ if chip_you(bead, model.me(), &model.on_you_beads()) => {
+                lamp_dot("turn", format!("flow mark {name}"), palette)
+                    .map(|dot| dot.into_any_element())
+                    .unwrap_or_else(|| div().size(px(8.)).flex_none().into_any_element())
+            }
+            _ => div().size(px(8.)).flex_none().into_any_element(),
+        };
+        let mut id = grown(FLOW_ID)
+            .flex_none()
+            .truncate()
+            .text_size(rems(TYPE_CODE))
+            .text_color(palette.faint)
+            .child(short_bead(&bead.bead));
+        if let Some(mono) = mono {
+            id = id.font_family(mono);
+        }
+        div()
+            .id(SharedString::from(format!("flow row {name}")))
+            .debug_selector({
+                let name = name.clone();
+                move || format!("flow row {name}")
+            })
+            .h(px(40.))
+            .px_4()
+            .border_b_1()
+            .border_color(palette.line)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .cursor_pointer()
+            .hover(|style| style.bg(palette.hover))
+            .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
+            .child(mark)
+            .child(id)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(rems(TYPE_BODY))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(rems(TYPE_META))
+                    .text_color(palette.faint)
+                    .child(meta),
+            )
+    }
+
+    /// One bead that landed under the flow's landed end: its mark, its
+    /// short id, its title, and how long ago it landed. A click opens
+    /// the bead whole, as a card's click does; the Bead call serves
+    /// closed beads.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn flow_landing_row(
+        &self,
+        landing: &FlowLanding,
+        now: &chrono::DateTime<chrono::Utc>,
+        mono: Option<SharedString>,
+        pane_width: f32,
+        rem: f32,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let name = landing.bead.clone();
+        let sel = Selected::Bead(landing.bead.clone());
+        let raw_meta = landed_age(&model::waits(&landing.landed_at, now));
+        let (title_budget, meta_budget) = flow_row_budgets(
+            pane_width,
+            rem,
+            landing.title.chars().count(),
+            raw_meta.chars().count(),
+        );
+        let title = shorten(&landing.title, title_budget);
+        let meta = shorten(&raw_meta, meta_budget);
+        let mut id = grown(FLOW_ID)
+            .flex_none()
+            .truncate()
+            .text_size(rems(TYPE_CODE))
+            .text_color(palette.faint)
+            .child(short_bead(&landing.bead));
+        if let Some(mono) = mono {
+            id = id.font_family(mono);
+        }
+        div()
+            .id(SharedString::from(format!("flow landed {name}")))
+            .debug_selector({
+                let name = name.clone();
+                move || format!("flow landed {name}")
+            })
+            .h(px(40.))
+            .px_4()
+            .border_b_1()
+            .border_color(palette.line)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .cursor_pointer()
+            .hover(|style| style.bg(palette.hover))
+            .on_click(cx.listener(move |this, _, window, cx| this.select(sel.clone(), window, cx)))
+            .child(outcome_glyph(
+                model::Outcome::Approved,
+                ROW_MARK,
+                palette.ok,
+            ))
+            .child(id)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(rems(TYPE_BODY))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(rems(TYPE_META))
+                    .text_color(palette.faint)
+                    .child(meta),
+            )
+    }
+
+    /// The flow's empty stages folded to one row: their count with
+    /// their names, unfolding to a head each. Nothing where every
+    /// stage holds a bead or a landing.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn flow_empty_fold(
+        &self,
+        model: &Model,
+        depot: &str,
+        flow: &Flow,
+        pane_width: f32,
+        rem: f32,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let empty: Vec<&FlowStage> = flow
+            .stages
+            .iter()
+            .filter(|stage| {
+                stage.beads.is_empty() && !Self::flow_has_landings_at(flow, &stage.stage)
+            })
+            .collect();
+        if empty.is_empty() {
+            return div().into_any_element();
+        }
+        let open = model.empty_stages_expanded(depot, &flow.name, &flow.flow_type);
+        let (depot_name, flow_name, flow_type) =
+            (depot.to_string(), flow.name.clone(), flow.flow_type.clone());
+        let count = match empty.len() {
+            1 => "1 empty stage".to_string(),
+            empty => format!("{empty} empty stages"),
+        };
+        let names = empty
+            .iter()
+            .map(|stage| stage.stage.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let (count_budget, names_budget) = flow_empty_budgets(
+            pane_width,
+            rem,
+            count.chars().count(),
+            names.chars().count(),
+        );
+        let count = shorten(&count, count_budget);
+        let names = shorten(&names, names_budget);
+        let mut fold = div().flex().flex_col().child(
+            div()
+                .id(SharedString::from(format!(
+                    "flow empty {depot} {}",
+                    flow.name
+                )))
+                .debug_selector({
+                    let (depot, flow) = (depot.to_string(), flow.name.clone());
+                    move || format!("flow empty {depot} {flow}")
+                })
+                .w_full()
+                .px_4()
+                .py_2()
+                .bg(palette.side)
+                .border_b_1()
+                .border_color(palette.line)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2p5()
+                .cursor_pointer()
+                .hover(|style| style.bg(palette.hover))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_empty_stages(&depot_name, &flow_name, &flow_type, cx)
+                }))
+                .child(fold_chevron(open, palette.faint))
+                .child(
+                    div()
+                        .text_size(rems(TYPE_SECTION))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(count),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rems(TYPE_META))
+                        .text_color(palette.faint)
+                        .child(names),
+                ),
+        );
+        if open {
+            for stage in empty {
+                let stage_name = shorten(
+                    &stage.stage,
+                    flow_empty_stage_budget(pane_width, rem, stage.stage.chars().count()),
+                );
+                fold = fold.child(
+                    div()
+                        .debug_selector({
+                            let (flow, stage) = (flow.name.clone(), stage.stage.clone());
+                            move || format!("flow empty stage {flow} {stage}")
+                        })
+                        .px_4()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(palette.line)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2p5()
+                        .child(div().size(px(10.)).flex_none())
+                        .child(
+                            div()
+                                .text_size(rems(TYPE_SECTION))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .min_w_0()
+                                .truncate()
+                                .child(stage_name),
+                        )
+                        .child(
+                            div()
+                                .text_size(rems(TYPE_META))
+                                .text_color(palette.faint)
+                                .child("empty"),
+                        ),
+                );
+            }
+        }
+        fold.into_any_element()
     }
 
     /// One flow's section: the flow name with its type where typed and
@@ -1972,7 +3387,7 @@ impl Footplate {
                 div()
                     .debug_selector(|| "no line head".to_string())
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(model::NO_LINE),
+                    .child(model::NO_FLOW),
             )
             .child(
                 div()

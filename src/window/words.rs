@@ -1,9 +1,12 @@
 //! The window's words for its rows: what heads and counts say stands
 //! where, and the colours that say what waits and for whom.
 
+use std::collections::HashSet;
+
 use gpui::{Div, Rgba, div, prelude::*, rems};
 
-use crate::api::{Flow, FlowBead, FlowStage};
+use super::panel::waits_head;
+use crate::api::{Flow, FlowBead, FlowDepot, FlowStage};
 use crate::fetch::Seen;
 use crate::model::{
     self, ArrivalDetail, Route, Selected, WorkingGroup, backlog_count, held_by_you, is_held,
@@ -135,23 +138,6 @@ pub(crate) fn worked_first(beads: &[FlowBead]) -> Vec<&FlowBead> {
     worked.into_iter().chain(waiting).collect()
 }
 
-/// What a cell's "+N" says of the beads it draws no headcode for, in the
-/// phrases the cell wraps whole: the number alone where none of them is
-/// worked, and where any is, the worked ones and the waiting ones apart,
-/// "+1 working", "2 waiting". A cell with a worked bead hidden would
-/// otherwise say nothing of it.
-pub(crate) fn more_words(hidden: &[&FlowBead]) -> Vec<String> {
-    let working = hidden.iter().filter(|bead| bead.working).count();
-    if working == 0 {
-        return vec![format!("+{}", hidden.len())];
-    }
-    let mut words = vec![format!("+{working} working")];
-    if hidden.len() > working {
-        words.push(format!("{} waiting", hidden.len() - working));
-    }
-    words
-}
-
 /// What a track's head says of its line: how many of the beads on its
 /// stages but the backlog's a session works and how many none does, the
 /// backlog's own count, and the lamp the line burns. Counts are words: the
@@ -193,8 +179,128 @@ pub(crate) fn flow_words(flows: usize) -> String {
     plural(flows, "", "flow", "flows")
 }
 
+/// The lamp a depot's tree row burns: the worst of its flows' lamps,
+/// fault over turn over moving, as the phones' line cards have it.
+pub(crate) fn depot_lamp(depot: &FlowDepot) -> &'static str {
+    let mut lamp = "none";
+    for flow in &depot.flows {
+        lamp = match (lamp, line_counts(flow).lamp) {
+            ("fault", _) | (_, "fault") => "fault",
+            ("turn", _) | (_, "turn") => "turn",
+            ("moving", _) | (_, "moving") => "moving",
+            _ => "none",
+        };
+    }
+    lamp
+}
+
+/// What a depot's tree row says of its flows: how many move and how
+/// many stand quiet, each where any do. None where the depot governs
+/// no flow at all, whose row says its transit alone.
+pub(crate) fn moving_quiet_words(moving: usize, quiet: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    if moving > 0 {
+        parts.push(plural(moving, "", "flow moving", "flows moving"));
+    }
+    if quiet > 0 {
+        parts.push(plural(quiet, "", "quiet", "quiet"));
+    }
+    match parts.is_empty() {
+        true => None,
+        false => Some(parts.join(", ")),
+    }
+}
+
+/// What a tree row's rust count says: how many wait on the reader.
+pub(crate) fn on_you_words(on_you: usize) -> String {
+    plural(on_you, "", "on you", "on you")
+}
+
+/// What the Depots head says stands under it: the rows with beads.
+pub(crate) fn with_beads_words(rows: usize) -> String {
+    plural(rows, "no beads", "with a bead", "with beads")
+}
+
+/// What a track's head says at its right: who the flow waits on, in
+/// words with the tone they draw in — waiting on the reader where any
+/// of its beads does, working where any is worked, else waiting. The
+/// backlog stands after it, counted apart.
+pub(crate) fn flow_status(flow: &Flow, on_you: usize) -> (String, &'static str) {
+    if on_you > 0 {
+        return (waits_head(on_you), "you");
+    }
+    let counts = line_counts(flow);
+    if counts.working > 0 {
+        return (working_words(counts.working, &[]), "working");
+    }
+    (plural(counts.waiting, "", "waiting", "waiting"), "waiting")
+}
+
+/// Whether the bead's chip on the track reads waiting on the reader:
+/// unworked, with a wait naming them or membership in the model's on-you
+/// set. Held and stalled beads read red on a plain chip instead, as their
+/// headcodes did; worked ones read semibold.
+pub(crate) fn chip_you(bead: &FlowBead, me: &str, on_you: &HashSet<&str>) -> bool {
+    !bead.working && (waits_on_you(&bead.remark, me) || on_you.contains(bead.bead.as_str()))
+}
+
+/// A station's node on the track: the end square where the stage
+/// closes the bead, rust where its lamp burns for a person's turn,
+/// the working ring where a bead is worked, hollow where people
+/// handle the stage, and plain for a crew stage.
+pub(crate) fn station_node(stage: &FlowStage) -> &'static str {
+    if stage.terminal {
+        return "end";
+    }
+    match stage_state(stage) {
+        "fault" | "turn" => "you",
+        "moving" => "work",
+        _ if stage.human => "people",
+        _ => "crew",
+    }
+}
+
+/// A quiet flow's path in one line: its stages but the backlog's in
+/// travel order, the open track first and the ends after it.
+pub(crate) fn flow_path(flow: &Flow) -> String {
+    let mut tread: Vec<&str> = Vec::new();
+    let mut ends: Vec<&str> = Vec::new();
+    for stage in flow.stages.iter().filter(|stage| stage.stage != "backlog") {
+        match stage.terminal {
+            true => ends.push(stage.stage.as_str()),
+            false => tread.push(stage.stage.as_str()),
+        }
+    }
+    let mut path = tread.join(" › ");
+    if !ends.is_empty() {
+        if !path.is_empty() {
+            path.push_str(" › ");
+        }
+        path.push_str(&ends.join(" / "));
+    }
+    path
+}
+
+/// The stage a bead leaving the backlog stands at next: the one after
+/// the backlog in the served order, else the first past it.
+pub(crate) fn next_stage(flow: &Flow) -> Option<&str> {
+    let mut after = false;
+    for stage in &flow.stages {
+        if after && stage.stage != "backlog" {
+            return Some(stage.stage.as_str());
+        }
+        if stage.stage == "backlog" {
+            after = true;
+        }
+    }
+    flow.stages
+        .iter()
+        .find(|stage| stage.stage != "backlog")
+        .map(|stage| stage.stage.as_str())
+}
+
 /// What the bead's quiet back link names: where it was opened from —
-/// the panel or the departures board, the line, or No line.
+/// the panel or the departures board, the depot, the flow, or No flow.
 pub(crate) fn bead_back_name(back: &Selected, departures: bool) -> String {
     match back {
         Selected::Arrivals => match departures {
@@ -202,7 +308,8 @@ pub(crate) fn bead_back_name(back: &Selected, departures: bool) -> String {
             false => "panel".to_string(),
         },
         Selected::Line(line) => line.clone(),
-        Selected::NoLine => "no line".to_string(),
+        Selected::Flow(_, name, _) => name.clone(),
+        Selected::NoLine => "no flow".to_string(),
         _ => model::ARRIVALS.to_string(),
     }
 }

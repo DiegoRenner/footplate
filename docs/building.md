@@ -382,9 +382,9 @@ the hosted way's fields open and filled), `signedout` (the away
 screen of a hosted yard that is signed out), `away` (the away
 screen of a yard at an address that no longer lets the device in,
 with a way's fields open), `arrivals` (the
-arrivals panel open on the arrivals row, with its lamps, headcodes,
-a line with two beads being worked and two waiting for a slot, and quiet
-lines), `departures` (the departures board open under the toggle, with its
+arrivals panel open on the arrivals row, with its tracks, chips,
+a flow with two beads being worked and two waiting for a slot, and the quiet
+depots folded), `departures` (the departures board open under the toggle, with its
 banner), `arrival` (one
 arrival's bead open from the panel, its body holding the whole-text
 Markdown sample), `flow` (yardr's line open on
@@ -445,9 +445,13 @@ old in its place, the open ask's card open), `lines-waiting`
 details at their end, the move back picked and its note typed),
 `lines-help` (the same details on a yard from before the call, which say who
 moves the stage in one line), `lines-panel` (the arrivals panel over that
-yard, its summary line counting the open ask with the three parked beads
+yard, its stats counting the open ask with the three parked beads
 after it), `lines-departures` (that yard's board with its banner, counting
-the same), `keys` (the cheatsheet open over an open card),
+the same), `lines-arrivals` (the arrivals pane over the rich yard: the depot
+tree with its nested flows, the head's stats, each moving flow a track of
+stations with its beads' chips, the quiet flows as one line each),
+`lines-flow` (yardr's default flow open from that tree: its list grouped by
+stage, the empty stages folded), `keys` (the cheatsheet open over an open card),
 `about` (the About card open over the yardmaster's conversation,
 naming footplate's version and the yardr's, with its path), `about-missing`
 (that card with no yardr on the machine), `feedback` (the Feedback form open over

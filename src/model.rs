@@ -45,10 +45,10 @@ pub const YARD: &str = "yard";
 /// The row below the yard row: the beads in transit.
 pub const ARRIVALS: &str = "arrivals";
 
-/// The timetable's row for the beads travelling with no line: it stands
+/// The timetable's row for the beads travelling with no flow: it stands
 /// last, and only while any travel. The details and the back link name
-/// it in lowercase, as the design quotes them (`no line`).
-pub const NO_LINE: &str = "No line";
+/// it in lowercase, as the design quotes them (`no flow`).
+pub const NO_FLOW: &str = "No flow";
 
 /// What a window for the user `me` starts from, read at the seq `head`.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -618,6 +618,9 @@ pub enum Selected {
     Arrivals,
     /// One line's flows, by depot name, in the served order.
     Line(String),
+    /// One flow's list, by depot name, flow name and flow type, grouped
+    /// by stage. It has a row under its depot's in the timetable list.
+    Flow(String, String, String),
     /// The Line window for one depot, by depot name: the depot's flows
     /// read whole through `Line`, with who serves each stage, its rules
     /// and its prompts. It has no row of the list: it opens from the
@@ -648,6 +651,7 @@ impl Selected {
             | Selected::Pairing => Mode::Decisions,
             Selected::Arrivals
             | Selected::Line(_)
+            | Selected::Flow(_, _, _)
             | Selected::LineWindow(_)
             | Selected::NoLine
             | Selected::Bead(_) => Mode::Timetable,
@@ -1686,6 +1690,15 @@ pub struct Model {
     /// Whether the arrivals pane shows the departures board instead of
     /// the panel: the head's toggle, the panel where false.
     departures: bool,
+    /// Whether a flow's pane shows its board instead of its list: the
+    /// head's toggle, the list where false.
+    flow_board: bool,
+    /// The depots whose quiet flows stand unfolded in the timetable
+    /// list, by depot name.
+    quiet_flows_open: HashSet<String>,
+    /// The flows whose empty stages stand unfolded in the flow's list,
+    /// by depot, flow name and flow type.
+    empty_open: HashSet<(String, String, String)>,
     /// One bead whole, by id, as the cards show it: read when a decision
     /// row opens, and again on every event whose bead is one shown.
     beads: HashMap<String, Bead>,
@@ -1765,12 +1778,17 @@ pub struct Model {
     pub notice: String,
 }
 
+/// Where a travelling bead stands: its depot with its flow's name and
+/// type. Elsewhere's beads stand in their depot with no flow, and the
+/// unassigned in none.
+type BeadPlace<'a> = (Option<&'a str>, Option<(&'a str, &'a str)>);
+
 impl Model {
     /// The model of a state just read. `selected` is what was open before
     /// the yard was lost, if any: it stays open when its row is still
     /// there. Else the mode's own default is.
     pub fn new(state: State, mode: Mode, selected: Option<Selected>) -> (Model, Vec<Effect>) {
-        Self::new_returning(state, mode, selected, false, false, false)
+        Self::new_returning(state, mode, selected, false, false, false, false)
     }
 
     /// The model of a state read when returning to a yard. The folded
@@ -1784,8 +1802,15 @@ impl Model {
         decided_expanded: bool,
         quiet_expanded: bool,
         departures: bool,
+        flow_board: bool,
     ) -> (Model, Vec<Effect>) {
-        let mut m = Self::of(state, decided_expanded, quiet_expanded, departures);
+        let mut m = Self::of(
+            state,
+            decided_expanded,
+            quiet_expanded,
+            departures,
+            flow_board,
+        );
         m.mode = mode;
         m.selected = m.row_in(mode, selected);
         m.opened();
@@ -1798,12 +1823,18 @@ impl Model {
     pub fn new_aside(state: State) -> Model {
         Model {
             aside: true,
-            ..Self::of(state, false, false, false)
+            ..Self::of(state, false, false, false, false)
         }
     }
 
     /// What a state just read has, with no row open yet.
-    fn of(state: State, decided_expanded: bool, quiet_expanded: bool, departures: bool) -> Model {
+    fn of(
+        state: State,
+        decided_expanded: bool,
+        quiet_expanded: bool,
+        departures: bool,
+        flow_board: bool,
+    ) -> Model {
         let mut m = Model {
             me: state.me,
             parties: parties(&state.peers),
@@ -1836,6 +1867,7 @@ impl Model {
             decided_expanded,
             quiet_expanded,
             departures,
+            flow_board,
             events_seen: state.head,
             ..Model::default()
         };
@@ -1910,12 +1942,14 @@ impl Model {
         decided_expanded: bool,
         quiet_expanded: bool,
         departures: bool,
+        flow_board: bool,
     ) -> Vec<Effect> {
         self.aside = false;
         self.mode = mode;
         self.decided_expanded |= decided_expanded;
         self.quiet_expanded |= quiet_expanded;
         self.departures |= departures;
+        self.flow_board |= flow_board;
         self.selected = self.row_in(mode, selected);
         self.opened();
         self.open()
@@ -2309,13 +2343,30 @@ impl Model {
             }
             Mode::Timetable => {
                 out.push(Selected::Arrivals);
-                out.extend(
-                    self.flows
-                        .depots
-                        .iter()
-                        .filter(|depot| depot.travelling > 0)
-                        .map(|depot| Selected::Line(depot.name.clone())),
-                );
+                for depot in self
+                    .flows
+                    .depots
+                    .iter()
+                    .filter(|depot| depot.travelling > 0)
+                {
+                    out.push(Selected::Line(depot.name.clone()));
+                    for flow in Self::moving_flows(depot) {
+                        out.push(Selected::Flow(
+                            depot.name.clone(),
+                            flow.name.clone(),
+                            flow.flow_type.clone(),
+                        ));
+                    }
+                    if self.quiet_flows_open.contains(&depot.name) {
+                        for flow in Self::quiet_flows(depot) {
+                            out.push(Selected::Flow(
+                                depot.name.clone(),
+                                flow.name.clone(),
+                                flow.flow_type.clone(),
+                            ));
+                        }
+                    }
+                }
                 if !self.flows.unassigned.is_empty() {
                     out.push(Selected::NoLine);
                 }
@@ -2876,6 +2927,67 @@ impl Model {
         self.departures = departures;
     }
 
+    /// Whether a flow's pane shows its board: the head's toggle, the
+    /// list where false.
+    pub fn flow_board(&self) -> bool {
+        self.flow_board
+    }
+
+    /// The head's toggle sets which flow view stands: the board where
+    /// true, the list where false.
+    pub fn set_flow_board(&mut self, board: bool) {
+        self.flow_board = board;
+    }
+
+    /// Whether the depot's quiet flows stand unfolded in the timetable
+    /// list.
+    pub fn quiet_flows_expanded(&self, depot: &str) -> bool {
+        self.quiet_flows_open.contains(depot)
+    }
+
+    pub fn toggle_quiet_flows(&mut self, depot: &str) {
+        if !self.quiet_flows_open.remove(depot) {
+            self.quiet_flows_open.insert(depot.to_string());
+        }
+    }
+
+    /// The depots whose quiet flows stand unfolded, kept where the yard
+    /// stood when it was left for another.
+    pub fn quiet_flows_open(&self) -> &HashSet<String> {
+        &self.quiet_flows_open
+    }
+
+    /// The flows whose empty stages stand unfolded, kept where the yard
+    /// stood when it was left for another.
+    pub fn empty_open(&self) -> &HashSet<(String, String, String)> {
+        &self.empty_open
+    }
+
+    /// Unfolds the quiet flows of the depots that stood unfolded when
+    /// the yard was left for another.
+    pub fn show_quiet_flows(&mut self, open: &HashSet<String>) {
+        self.quiet_flows_open = open.clone();
+    }
+
+    /// Unfolds the empty stages of the flows that stood unfolded when
+    /// the yard was left for another.
+    pub fn show_empty_open(&mut self, open: &HashSet<(String, String, String)>) {
+        self.empty_open = open.clone();
+    }
+
+    /// Whether the flow's empty stages stand unfolded in its list.
+    pub fn empty_stages_expanded(&self, depot: &str, name: &str, flow_type: &str) -> bool {
+        self.empty_open
+            .contains(&(depot.to_string(), name.to_string(), flow_type.to_string()))
+    }
+
+    pub fn toggle_empty_stages(&mut self, depot: &str, name: &str, flow_type: &str) {
+        let key = (depot.to_string(), name.to_string(), flow_type.to_string());
+        if !self.empty_open.remove(&key) {
+            self.empty_open.insert(key);
+        }
+    }
+
     /// The arrivals board as read: the rows as served, ordered and
     /// remarked.
     pub fn arrival_rows(&self) -> &[Arrival] {
@@ -3072,12 +3184,6 @@ impl Model {
             })
             .collect();
         WorkingSplit { kinds, groups }
-    }
-
-    /// How many of the Flows beads are held or stalled: the red tone,
-    /// the panel's summary beside what is worked and what waits.
-    pub fn held_count(&self) -> usize {
-        self.flow_beads().filter(|bead| bead.tone == "red").count()
     }
 
     /// The yard-wide travelling total the Flows call serves: the open
@@ -3609,6 +3715,129 @@ impl Model {
         &self.flows.unassigned
     }
 
+    /// One flow of a depot as served, when the yard serves it: the name
+    /// with its type, since a depot may govern two flows of one name.
+    pub fn flow(&self, depot: &str, name: &str, flow_type: &str) -> Option<&Flow> {
+        self.depot(depot).and_then(|depot| {
+            depot
+                .flows
+                .iter()
+                .find(|flow| flow.name == name && flow.flow_type == flow_type)
+        })
+    }
+
+    /// How many of the flow's beads stand outside its backlog: what its
+    /// track and its list draw.
+    pub fn flow_travelling(flow: &Flow) -> usize {
+        flow.stages
+            .iter()
+            .filter(|stage| stage.stage != "backlog")
+            .map(|stage| stage.beads.len())
+            .sum()
+    }
+
+    /// The depot's flows with beads outside their backlog, in the served
+    /// order: the panel's tracks.
+    pub fn moving_flows(depot: &FlowDepot) -> Vec<&Flow> {
+        depot
+            .flows
+            .iter()
+            .filter(|flow| Self::flow_travelling(flow) > 0)
+            .collect()
+    }
+
+    /// The depot's flows with nothing outside their backlog, in the
+    /// served order: the panel's one-liners.
+    pub fn quiet_flows(depot: &FlowDepot) -> Vec<&Flow> {
+        depot
+            .flows
+            .iter()
+            .filter(|flow| Self::flow_travelling(flow) == 0)
+            .collect()
+    }
+
+    /// How many beads wait in the depot's backlogs: the quiet rows'
+    /// count.
+    pub fn depot_backlog(depot: &FlowDepot) -> usize {
+        depot.flows.iter().map(backlog_count).sum()
+    }
+
+    /// The beads with an open ask on them.
+    pub fn asked_beads(&self) -> HashSet<&str> {
+        self.open.iter().map(|ask| ask.bead.as_str()).collect()
+    }
+
+    /// Where each travelling bead stands, by bead: its depot with its
+    /// flow's name and type. Elsewhere's beads stand in their depot
+    /// with no flow, and the unassigned in none.
+    fn bead_places(&self) -> HashMap<&str, BeadPlace<'_>> {
+        let mut places = HashMap::new();
+        for depot in &self.flows.depots {
+            for flow in &depot.flows {
+                for stage in &flow.stages {
+                    for bead in &stage.beads {
+                        places.insert(
+                            bead.bead.as_str(),
+                            (
+                                Some(depot.name.as_str()),
+                                Some((flow.name.as_str(), flow.flow_type.as_str())),
+                            ),
+                        );
+                    }
+                }
+            }
+            for bead in &depot.elsewhere {
+                places.insert(bead.bead.as_str(), (Some(depot.name.as_str()), None));
+            }
+        }
+        for bead in &self.flows.unassigned {
+            places.insert(bead.bead.as_str(), (None, None));
+        }
+        places
+    }
+
+    /// The beads waiting on the person reading, by id: the open asks
+    /// with the beads parked for the move, each once. A yard from
+    /// before `Waiting` stands in its Lines waits instead.
+    pub fn on_you_beads(&self) -> HashSet<&str> {
+        match self.waiting_too_old() {
+            true => self
+                .waiting_on_you()
+                .into_iter()
+                .map(|(bead, _)| bead)
+                .collect(),
+            false => {
+                let mut beads = self.asked_beads();
+                beads.extend(self.parked().map(|row| row.bead.as_str()));
+                beads
+            }
+        }
+    }
+
+    /// How many of the beads waiting on the person reading stand in the
+    /// depot: the tree's rust count.
+    pub fn depot_on_you(&self, depot: &str) -> usize {
+        let places = self.bead_places();
+        self.on_you_beads()
+            .into_iter()
+            .filter(|bead| places.get(bead).is_some_and(|(at, _)| *at == Some(depot)))
+            .count()
+    }
+
+    /// How many of the beads waiting on the person reading stand in the
+    /// flow: the tree's rust count.
+    pub fn flow_on_you(&self, depot: &str, name: &str, flow_type: &str) -> usize {
+        let places = self.bead_places();
+        self.on_you_beads()
+            .into_iter()
+            .filter(|bead| {
+                places.get(bead).is_some_and(|(at, flow)| {
+                    *at == Some(depot) && *flow == Some((name, flow_type))
+                })
+            })
+            .count()
+    }
+
     /// How many of the person's beads were added or closed since they
     /// last had Timetable open: the rail's Lines badge.
     pub fn timetable_news(&self) -> usize {
@@ -3665,6 +3894,11 @@ impl Model {
             Some(Selected::Line(name)) if self.depot(name).is_some() => {
                 Selected::Line(name.clone())
             }
+            Some(Selected::Flow(depot, name, flow_type))
+                if self.flow(depot, name, flow_type).is_some() =>
+            {
+                Selected::Flow(depot.clone(), name.clone(), flow_type.clone())
+            }
             Some(Selected::NoLine) if !self.flows.unassigned.is_empty() => Selected::NoLine,
             Some(Selected::Arrivals) => Selected::Arrivals,
             _ => Selected::Arrivals,
@@ -3713,18 +3947,6 @@ impl Model {
         }
     }
 
-    /// The timetable's active lines in the served order: those with
-    /// beads in transit, each with its count. The quiet ones stand
-    /// folded under Quiet.
-    pub fn active_line_rows(&self) -> Vec<Row> {
-        self.flows
-            .depots
-            .iter()
-            .filter(|depot| depot.travelling > 0)
-            .map(|depot| self.line_row(depot))
-            .collect()
-    }
-
     /// The timetable's quiet lines in the served order: those with
     /// nothing in transit. They stand under Quiet while it is unfolded.
     pub fn quiet_rows(&self) -> Vec<Row> {
@@ -3744,7 +3966,7 @@ impl Model {
             return None;
         }
         Some(Row {
-            name: NO_LINE.to_string(),
+            name: NO_FLOW.to_string(),
             line: transit_words(self.flows.unassigned.len()),
             unread: 0,
             selected: matches!(self.selected.as_ref(), Some(Selected::NoLine))
@@ -3839,7 +4061,7 @@ impl Model {
                 r.held_by.clone(),
             ),
             (Some(r), _) => (
-                "no line".to_string(),
+                "no flow".to_string(),
                 r.expected.clone(),
                 r.remark.clone(),
                 r.tone.clone(),
@@ -3853,7 +4075,7 @@ impl Model {
                 found.held_by.clone(),
             ),
             (None, Some((found, None))) => (
-                "no line".to_string(),
+                "no flow".to_string(),
                 found.expected.clone(),
                 found.remark.clone(),
                 found.tone.clone(),
@@ -6120,8 +6342,12 @@ impl Model {
         if let Some(Selected::Conversation(sel)) = &self.selected {
             self.back = Some(sel.clone());
         }
-        if let Some(sel @ (Selected::Arrivals | Selected::Line(_) | Selected::NoLine)) =
-            &self.selected
+        if let Some(
+            sel @ (Selected::Arrivals
+            | Selected::Line(_)
+            | Selected::Flow(_, _, _)
+            | Selected::NoLine),
+        ) = &self.selected
         {
             self.bead_from = Some(sel.clone());
         }
@@ -10043,6 +10269,7 @@ mod tests {
                 Some(Selected::Conversation("assembly".into())),
                 false,
                 false,
+                false,
                 false
             ),
             [page("assembly", 0)]
@@ -10063,7 +10290,7 @@ mod tests {
         // With no row kept it opens as a yard opened for the first time.
         assert!(
             !fresh
-                .back_to(Mode::Chat, None, false, false, false)
+                .back_to(Mode::Chat, None, false, false, false, false)
                 .is_empty()
         );
         assert_eq!(
@@ -10085,6 +10312,7 @@ mod tests {
             Mode::Decisions,
             Some(Selected::Decided("gone".into(), 1)),
             true,
+            false,
             false,
             false,
         );
@@ -12898,16 +13126,71 @@ mod tests {
         assert_eq!(m.selected(), Some(&Selected::Arrivals));
     }
 
-    /// The No line row stands last, only while beads travel with no line,
+    /// A depot's flow opens from the tree by its name with its type.
+    /// The moving flows carry beads outside their backlogs and the
+    /// quiet ones none, and the on-you counts stand per depot and per
+    /// flow. The quiet folds and the flow's board stand shut until set.
+    #[test]
+    fn a_flow_opens_from_the_tree_by_its_name_with_its_type() {
+        use crate::api::Flow;
+        let (mut m, _) = Model::new(yard_without_waiting(), Mode::Timetable, None);
+        let mut flows = flow_view();
+        flows.depots[0].flows[0].stages[1].beads[0].remark = "waits for jo".into();
+        flows.depots[0].flows[0].stages[1].beads[0].tone = "amber".into();
+        m.flows(flows);
+        // Found by its name with its type, since a depot may govern
+        // two flows of one name.
+        assert!(m.flow("yardr", "default", "").is_some());
+        assert!(m.flow("yardr", "default", "task").is_none());
+        assert!(m.flow("yardr", "missing", "").is_none());
+        assert!(m.flow("missing", "default", "").is_none());
+        let names = |flows: Vec<&Flow>| {
+            flows
+                .iter()
+                .map(|flow| flow.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let yardr = m.depot("yardr").unwrap();
+        assert_eq!(names(Model::moving_flows(yardr)), ["default"]);
+        assert!(Model::quiet_flows(yardr).is_empty());
+        let footplate = m.depot("footplate").unwrap();
+        assert!(Model::moving_flows(footplate).is_empty());
+        assert_eq!(names(Model::quiet_flows(footplate)), ["default"]);
+        assert_eq!(
+            Model::flow_travelling(m.flow("yardr", "default", "").unwrap()),
+            2
+        );
+        assert_eq!(Model::depot_backlog(yardr), 0);
+        // The wait names jo alone, so it waits on her in the depot
+        // and in the flow, and nowhere else.
+        assert_eq!(m.depot_on_you("yardr"), 1);
+        assert_eq!(m.flow_on_you("yardr", "default", ""), 1);
+        assert_eq!(m.depot_on_you("footplate"), 0);
+        assert_eq!(m.flow_on_you("footplate", "default", ""), 0);
+        // The folds and the board stand shut until set.
+        assert!(!m.flow_board());
+        m.set_flow_board(true);
+        assert!(m.flow_board());
+        assert!(!m.quiet_flows_expanded("yardr"));
+        m.toggle_quiet_flows("yardr");
+        assert!(m.quiet_flows_expanded("yardr"));
+        m.toggle_quiet_flows("yardr");
+        assert!(!m.quiet_flows_expanded("yardr"));
+        assert!(!m.empty_stages_expanded("yardr", "default", ""));
+        m.toggle_empty_stages("yardr", "default", "");
+        assert!(m.empty_stages_expanded("yardr", "default", ""));
+    }
+
+    /// The No flow row stands last, only while beads travel with no flow,
     /// with how many travel. Opening it needs no call.
     #[test]
-    fn the_no_line_row_stands_last_only_while_unassigned_beads_travel() {
+    fn the_no_flow_row_stands_last_only_while_unassigned_beads_travel() {
         let (mut m, _) = Model::new(yard(&[]), Mode::Timetable, None);
         assert_eq!(m.no_line_row(), None);
         assert_eq!(m.unassigned(), &[]);
         m.flows(flow_view());
         let row = m.no_line_row().unwrap();
-        assert_eq!(row.name, "No line");
+        assert_eq!(row.name, "No flow");
         assert_eq!(row.line, "1 in transit");
         assert!(!row.selected);
         assert_eq!(m.unassigned().len(), 1);
@@ -12915,7 +13198,7 @@ mod tests {
         assert_eq!(m.select(Selected::NoLine), []);
         assert_eq!(m.selected(), Some(&Selected::NoLine));
         assert!(m.no_line_row().unwrap().selected);
-        // Nothing without a line: the row is gone, and the board opens
+        // Nothing without a flow: the row is gone, and the board opens
         // where it stood, read again or over a yard lost.
         let (again, _) = m.resumed(
             State {
@@ -12991,6 +13274,11 @@ mod tests {
         m.flows(flow_view());
         m.select(Selected::Line("yardr".into()));
         m.select(Selected::Bead("yd-zulu".into()));
+        m.step_in(Mode::Timetable, 1);
+        assert_eq!(
+            m.selected(),
+            Some(&Selected::Flow("yardr".into(), "default".into(), "".into()))
+        );
         m.step_in(Mode::Timetable, 1);
         assert_eq!(m.selected(), Some(&Selected::NoLine));
         m.select(Selected::Line("yardr".into()));
@@ -13088,11 +13376,14 @@ mod tests {
         let (mut m, _) = Model::new(yard(&[]), Mode::Timetable, None);
         m.flows(flow_view());
         assert_eq!(
-            m.active_line_rows()
+            m.line_rows()
                 .iter()
                 .map(|r| (r.name.as_str(), r.line.as_str()))
                 .collect::<Vec<_>>(),
-            [("yardr", "2 in transit")]
+            [
+                ("yardr", "2 in transit"),
+                ("footplate", "nothing in transit")
+            ]
         );
         assert_eq!(
             m.quiet_rows()
@@ -13124,12 +13415,14 @@ mod tests {
             false,
             true,
             false,
+            false,
         );
         assert_eq!(model.selected(), Some(&Selected::Line("footplate".into())));
         let (model, _) = Model::new_returning(
             state,
             Mode::Timetable,
             Some(Selected::Line("footplate".into())),
+            false,
             false,
             false,
             false,
@@ -13155,10 +13448,11 @@ mod tests {
             false,
             false,
             true,
+            false,
         );
         assert!(model.departures());
         let (mut m, _) = Model::new(yard(&[]), Mode::Timetable, None);
-        m.back_to(Mode::Timetable, None, false, false, true);
+        m.back_to(Mode::Timetable, None, false, false, true, false);
         assert!(m.departures());
     }
 
@@ -13168,17 +13462,15 @@ mod tests {
     /// backlog count is its `backlog` stages' beads, wherever among
     /// them they stand.
     #[test]
-    fn the_panel_counts_what_is_worked_held_and_waiting() {
+    fn the_panel_counts_what_is_worked_and_waiting() {
         use crate::api::{Flow, FlowStage};
         let (mut m, _) = Model::new(yard_without_waiting(), Mode::Timetable, None);
         let mut flows = flow_view();
         flows.depots[0].flows[0].stages[0].beads[0].working = true;
         flows.depots[0].elsewhere[0].remark = "waits for jo".into();
         flows.depots[0].elsewhere[0].tone = "amber".into();
-        flows.unassigned[0].tone = "red".into();
         m.flows(flows);
         assert_eq!(m.working_count(), 1);
-        assert_eq!(m.held_count(), 2);
         assert_eq!(
             m.waiting_on_you()
                 .iter()
@@ -13506,7 +13798,7 @@ mod tests {
             ..Bead::default()
         });
         let detail = m.arrival_detail("yd-shed").unwrap();
-        assert_eq!(detail.line, "no line");
+        assert_eq!(detail.line, "no flow");
         assert_eq!(detail.expected, "2h–3h");
         // On the board with no depot: `no line` too.
         m.arrivals(board(vec![arrival(
@@ -13516,7 +13808,7 @@ mod tests {
             id: "yd-stray".into(),
             ..Bead::default()
         });
-        assert_eq!(m.arrival_detail("yd-stray").unwrap().line, "no line");
+        assert_eq!(m.arrival_detail("yd-stray").unwrap().line, "no flow");
     }
 
     fn arrival_bead() -> Bead {
@@ -15329,6 +15621,7 @@ mod tests {
         m.back_to(
             Mode::Decisions,
             Some(Selected::Waiting("yd-b".into())),
+            false,
             false,
             false,
             false,

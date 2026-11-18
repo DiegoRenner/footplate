@@ -449,6 +449,43 @@ pub(crate) fn segmented(segments: Vec<gpui::Stateful<Div>>, palette: Palette) ->
     row
 }
 
+/// A fold's chevron, which says that a head opens its rows: Lucide's
+/// chevron-right folded and chevron-down open, drawn with two strokes
+/// at the row mark's size, in the head's own colour. A character would
+/// draw on one desktop and stand in for a missing glyph on the next.
+pub(crate) fn fold_chevron(open: bool, color: Rgba) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let scale = f32::from(bounds.size.width) / 16.;
+            let at = |x: f32, y: f32| {
+                gpui::point(
+                    bounds.origin.x + px(x * scale),
+                    bounds.origin.y + px(y * scale),
+                )
+            };
+            let mut path = gpui::PathBuilder::stroke(px(1.8 * scale));
+            match open {
+                true => {
+                    path.move_to(at(3.5, 6.));
+                    path.line_to(at(8., 10.5));
+                    path.line_to(at(12.5, 6.));
+                }
+                false => {
+                    path.move_to(at(6., 3.5));
+                    path.line_to(at(10.5, 8.));
+                    path.line_to(at(6., 12.5));
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .size(px(super::metrics::ROW_MARK))
+    .flex_none()
+}
+
 /// A dropdown's chevron, which says that a field opens a list: drawn with two
 /// strokes, in the field's own colour. A character would draw on one desktop
 /// and stand in for a missing glyph on the next.

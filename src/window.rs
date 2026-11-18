@@ -1380,7 +1380,7 @@ impl Render for Footplate {
                 .children(self.first_run.clone()),
             (Some(_), Some(model)) if self.reconnecting() => root
                 .child(self.list(model, palette, top, window, cx))
-                .child(self.talk(model, palette, cx))
+                .child(self.talk(model, palette, window, cx))
                 .children(self.talk_drawer(model, palette, cx)),
             (Some(why), _) => match &self.first_run {
                 Some(first_run) => root.child(first_run.clone()),
@@ -1411,7 +1411,7 @@ impl Render for Footplate {
                 .children(self.first_run.clone()),
             (None, Some(model)) => root
                 .child(self.list(model, palette, top, window, cx))
-                .child(self.talk(model, palette, cx))
+                .child(self.talk(model, palette, window, cx))
                 .children(self.talk_drawer(model, palette, cx)),
             (None, None) => root,
         };
@@ -1475,18 +1475,19 @@ mod tests {
     use super::bead::{Button, ROWS_BEFORE_MAIL, bar_top, hover_clock};
     use super::keys::{KeysView, SECONDARY, keys_for};
     use super::metrics::{
-        DRAWER_WIDTH, IMAGE_HEIGHT, IMAGE_MARGIN, INPUT_NAME, INPUT_NOTE, PANEL_MIN, RAIL,
-        SELECT_CHOICE, VOICE_NOTE, drawer_fits,
+        DRAWER_WIDTH, IMAGE_HEIGHT, IMAGE_MARGIN, INPUT_NAME, INPUT_NOTE, RAIL, SELECT_CHOICE,
+        TRACK_STATION, VOICE_NOTE, drawer_fits,
     };
-    use super::panel::{panel_columns, panel_quiet_head, panel_stage_name, quiet_head, waits_head};
+    use super::panel::{panel_stage_name, waits_head};
     use super::rail::{PROBE_AGAIN, post, run_address_of};
     use super::state::{Counts, pairing_failure, rail_counts, waiting};
     use super::ui::shorten;
     use super::words::{
-        LineCounts, answered_words, ask_words, bead_back_name, bead_sub, bead_words,
-        decide_move_words, decide_words, decided_words, flow_words, footplate_words,
-        headcode_color, line_counts, more_words, remark_color, stage_group_words, stage_lamp,
-        stage_state, unread_words, waiting_words, waits_for_seat, worked_first, worker_words,
+        LineCounts, answered_words, ask_words, bead_back_name, bead_sub, bead_words, chip_you,
+        decide_move_words, decide_words, decided_words, depot_lamp, flow_path, flow_status,
+        flow_words, footplate_words, headcode_color, line_counts, moving_quiet_words, next_stage,
+        on_you_words, remark_color, stage_group_words, stage_lamp, stage_state, station_node,
+        unread_words, waiting_words, waits_for_seat, with_beads_words, worked_first, worker_words,
         working_group_words, working_tip, working_words, yardr_place, yardr_words,
     };
     use super::*;
@@ -6148,11 +6149,9 @@ mod tests {
         .to_string()
     }
 
-    /// The flows view the wrapping test draws: a nine-stage release flow
+    /// The flows view the sideways test draws: a nine-stage release flow
     /// that cannot fit the narrow pane on one row, two of its stages
-    /// handled by people so that their heads wrap in the narrow cell
-    /// beside heads that stand on one line, and a one-stage flow beside
-    /// it.
+    /// handled by people, and a one-stage flow beside it.
     fn flows_wrapping() -> String {
         let stages: Vec<Value> = [
             "build",
@@ -17419,12 +17418,12 @@ yardr.dev
         wait(cx, "the decisions mode", |cx| {
             rail_mode(&view, cx) == Mode::Decisions
         });
-        // Back on the panel, the summary stands too, with the parked
-        // bead's quiet words alone.
+        // Back on the panel, the stats stand too, with the parked
+        // bead's quiet pill alone.
         to_timetable(&view, cx);
         click_on(cx, "row arrivals");
         click_on(cx, "arrivals panel");
-        wait(cx, "the panel's quiet words", |cx| drawn(cx, "panel waits"));
+        wait(cx, "the panel's quiet words", |cx| drawn(cx, "stat move"));
     }
 
     /// The banner holds fifty-five waits on its one line: the head
@@ -17476,8 +17475,7 @@ yardr.dev
 
     /// The banner counts what waits: one waits, two wait. Where the
     /// yard serves `Waiting` the calls stand in the accent with the beads
-    /// to move after them in quiet words, each where any are. Quiet
-    /// says folded or open with how many lines stand under it.
+    /// to move after them in quiet words, each where any are.
     #[test]
     fn the_banner_counts_what_waits_on_you() {
         assert_eq!(waits_head(1), "1 waits on you");
@@ -17499,8 +17497,133 @@ yardr.dev
             (None, Some("3 to move".to_string()))
         );
         assert_eq!(decide_move_words(0, 0), (None, None));
-        assert_eq!(quiet_head(false, 1), "▸ Quiet · 1");
-        assert_eq!(quiet_head(true, 5), "▾ Quiet · 5");
+    }
+
+    /// The tree and the tracks word their counts, nodes and paths: how
+    /// many flows move and stand quiet, how many wait on the reader,
+    /// how many rows stand under the Depots head; a
+    /// track's status with its tone; a chip's wait; a station's node;
+    /// a quiet flow's path without its backlog, the ends after the
+    /// open track; and the stage past the backlog.
+    #[test]
+    fn the_tree_and_the_tracks_word_their_counts_nodes_and_paths() {
+        assert_eq!(
+            moving_quiet_words(2, 3),
+            Some("2 flows moving, 3 quiet".to_string())
+        );
+        assert_eq!(moving_quiet_words(1, 0), Some("1 flow moving".to_string()));
+        assert_eq!(moving_quiet_words(0, 1), Some("1 quiet".to_string()));
+        assert_eq!(moving_quiet_words(0, 0), None);
+        assert_eq!(on_you_words(3), "3 on you");
+        assert_eq!(on_you_words(1), "1 on you");
+        assert_eq!(with_beads_words(4), "4 with beads");
+        assert_eq!(with_beads_words(1), "1 with a bead");
+        assert_eq!(with_beads_words(0), "no beads");
+        let bead = |working: bool, remark: &str| FlowBead {
+            bead: "yd-a".to_string(),
+            working,
+            remark: remark.to_string(),
+            ..FlowBead::default()
+        };
+        let stage = |stage: &str, lamp: &str, human: bool, terminal: bool, beads: Vec<FlowBead>| {
+            FlowStage {
+                stage: stage.to_string(),
+                lamp: lamp.to_string(),
+                human,
+                terminal,
+                beads,
+                ..FlowStage::default()
+            }
+        };
+        let flow = Flow {
+            stages: vec![
+                stage("backlog", "none", true, false, vec![bead(false, "")]),
+                stage("new", "none", false, false, vec![bead(true, "")]),
+                stage("review", "turn", false, false, vec![bead(false, "")]),
+            ],
+            ..Flow::default()
+        };
+        // Waiting on the reader first, then working, then waiting.
+        assert_eq!(flow_status(&flow, 3), ("3 wait on you".to_string(), "you"));
+        assert_eq!(flow_status(&flow, 0), ("1 working".to_string(), "working"));
+        let waiting = Flow {
+            stages: vec![stage(
+                "new",
+                "none",
+                false,
+                false,
+                vec![bead(false, ""), bead(false, "")],
+            )],
+            ..Flow::default()
+        };
+        assert_eq!(
+            flow_status(&waiting, 0),
+            ("2 waiting".to_string(), "waiting")
+        );
+        // The depot burns the worst of its flows' lamps.
+        let depot = FlowDepot {
+            flows: vec![flow.clone(), waiting.clone()],
+            ..FlowDepot::default()
+        };
+        assert_eq!(depot_lamp(&depot), "turn");
+        assert_eq!(
+            depot_lamp(&FlowDepot {
+                flows: vec![waiting.clone()],
+                ..FlowDepot::default()
+            }),
+            "none"
+        );
+        // A chip waits on the reader unworked, with a wait naming
+        // them or membership in the model's on-you set; a worked chip
+        // never does.
+        let on_you: HashSet<&str> = ["yd-a"].into_iter().collect();
+        assert!(chip_you(&bead(false, "waits for jo"), "jo", &on_you));
+        assert!(chip_you(&bead(false, ""), "jo", &on_you));
+        assert!(!chip_you(&bead(false, ""), "jo", &HashSet::new()));
+        assert!(!chip_you(
+            &bead(true, "waits for jo"),
+            "jo",
+            &HashSet::new()
+        ));
+        // The end square, the rust fill, the working ring, the hollow
+        // ring, the plain dot.
+        assert_eq!(
+            station_node(&stage("merged", "none", false, true, vec![])),
+            "end"
+        );
+        assert_eq!(
+            station_node(&stage("new", "turn", false, false, vec![bead(false, "")])),
+            "you"
+        );
+        assert_eq!(
+            station_node(&stage("new", "none", false, false, vec![bead(true, "")])),
+            "work"
+        );
+        assert_eq!(
+            station_node(&stage("decide", "none", true, false, vec![])),
+            "people"
+        );
+        assert_eq!(
+            station_node(&stage("new", "none", false, false, vec![])),
+            "crew"
+        );
+        // The path leaves the backlog out, the ends after the open
+        // track.
+        let pathed = Flow {
+            stages: vec![
+                stage("backlog", "none", true, false, vec![]),
+                stage("triage", "none", true, false, vec![]),
+                stage("review", "none", false, false, vec![]),
+                stage("merged", "none", false, true, vec![]),
+                stage("closed", "none", false, true, vec![]),
+            ],
+            ..Flow::default()
+        };
+        assert_eq!(flow_path(&pathed), "triage › review › merged / closed");
+        assert_eq!(flow_path(&waiting), "new");
+        // Past the backlog, else the first past it.
+        assert_eq!(next_stage(&pathed), Some("triage"));
+        assert_eq!(next_stage(&waiting), Some("new"));
     }
 
     /// A remark reads waiting only where it waits on the reader: a
@@ -17822,28 +17945,6 @@ yardr.dev
         assert!(order(&[]).is_empty());
     }
 
-    /// A cell's "+N" says what it hides where any of it is worked: the
-    /// worked and the waiting apart, the waiting left out where none
-    /// waits. Where none of it is worked it is the number alone.
-    #[test]
-    fn a_cell_s_more_says_what_it_hides_where_any_of_it_is_worked() {
-        let hidden = |worked: usize, waiting: usize| -> Vec<String> {
-            let beads: Vec<FlowBead> = (0..worked + waiting)
-                .map(|n| FlowBead {
-                    working: n < worked,
-                    ..FlowBead::default()
-                })
-                .collect();
-            more_words(&beads.iter().collect::<Vec<_>>())
-        };
-        assert_eq!(hidden(0, 1), ["+1"]);
-        assert_eq!(hidden(0, 3), ["+3"]);
-        assert_eq!(hidden(1, 2), ["+1 working", "2 waiting"]);
-        assert_eq!(hidden(2, 0), ["+2 working"]);
-        assert_eq!(hidden(1, 0), ["+1 working"]);
-        assert_eq!(hidden(3, 1), ["+3 working", "1 waiting"]);
-    }
-
     /// A line's head counts what is worked and what waits on its stages
     /// but the backlog's, and the backlog; its lamp is the worst of those
     /// stages': fault over turn over moving, and none where nothing stands.
@@ -17971,26 +18072,24 @@ yardr.dev
         );
     }
 
-    /// The panel's Quiet names its lines, folded or open, with nothing
-    /// in transit under them. The bead's back link names where it came
-    /// from: the panel or departures, the line, or No line.
+    /// The bead's back link names where it came from: the panel or
+    /// departures, the depot, the flow, or No flow.
     #[test]
-    fn the_panel_s_quiet_and_the_bead_s_back_link_name_where() {
-        assert_eq!(
-            panel_quiet_head(false, &["drafts"]),
-            "▸ Quiet · drafts · nothing in transit"
-        );
-        assert_eq!(
-            panel_quiet_head(true, &["drafts", "signalbox"]),
-            "▾ Quiet · drafts, signalbox · nothing in transit"
-        );
+    fn the_bead_s_back_link_names_where_it_came_from() {
         assert_eq!(bead_back_name(&Selected::Arrivals, false), "panel");
         assert_eq!(bead_back_name(&Selected::Arrivals, true), "departures");
         assert_eq!(
             bead_back_name(&Selected::Line("yardr".into()), false),
             "yardr"
         );
-        assert_eq!(bead_back_name(&Selected::NoLine, false), "no line");
+        assert_eq!(
+            bead_back_name(
+                &Selected::Flow("yardr".into(), "default".into(), "".into()),
+                false
+            ),
+            "default"
+        );
+        assert_eq!(bead_back_name(&Selected::NoLine, false), "no flow");
     }
 
     /// The cheatsheet names every key of the open view: the view's own
@@ -18735,8 +18834,7 @@ yardr.dev
                 let model = v.model.as_ref().unwrap();
                 [model.arrivals_row()]
                     .into_iter()
-                    .chain(model.active_line_rows())
-                    .chain(model.quiet_rows())
+                    .chain(model.line_rows())
                     .chain(model.no_line_row())
                     .filter(|row| row.selected)
                     .count()
@@ -18881,8 +18979,8 @@ yardr.dev
         yard.answer("Bead", &bead_shed());
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
-        click_on(cx, "row No line");
-        wait(cx, "No line", |cx| drawn(cx, "no line bead yd-shed"));
+        click_on(cx, "row No flow");
+        wait(cx, "No flow", |cx| drawn(cx, "no line bead yd-shed"));
         click_on(cx, "no line bead yd-shed");
         wait(cx, "the bead", |cx| drawn(cx, "bead back"));
         view.read_with(cx, |v, _| {
@@ -18998,26 +19096,44 @@ yardr.dev
     }
 
     /// The timetable's list holds the arrivals row with the yard-wide
-    /// travelling total, the lines in the served order with their own,
-    /// every served line travelling or not, and No line last only while
-    /// beads travel with none.
+    /// travelling total, the depots in the served order with their own,
+    /// every served depot travelling or not, and No flow last only
+    /// while beads travel with none. Each depot nests its flows under
+    /// it: a depot's row opens the depot's board, a flow's its list.
     #[gpui::test]
-    fn the_timetable_lists_the_lines_with_their_travelling_totals(cx: &mut TestAppContext) {
+    fn the_timetable_lists_the_depots_with_their_flows_nested(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
-        yard.answer("Flows", &flows_board());
+        let mut flows: Value = serde_json::from_str(&flows_board()).unwrap();
+        let mut typed = flows["result"]["depots"][0]["flows"][0].clone();
+        typed["type"] = json!("task");
+        typed["landings"] = json!([]);
+        typed["stages"][0]["beads"][0]["bead"] = json!("yd-task");
+        typed["stages"][0]["beads"][0]["title"] = json!("Task flow bead");
+        typed["stages"][1]["beads"] = json!([]);
+        flows["result"]["depots"][0]["flows"][0]["landings"] = json!([
+            {"bead": "yd-old", "title": "An old landing", "landed_at": "2026-10-08T09:30:00Z"}
+        ]);
+        flows["result"]["depots"][0]["flows"]
+            .as_array_mut()
+            .unwrap()
+            .push(typed);
+        flows["result"]["depots"][0]["travelling"] = json!(3);
+        flows["result"]["travelling"] = json!(4);
+        yard.answer("Flows", &flows.to_string());
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
         cx.run_until_parked();
         assert!(drawn(cx, "row arrivals"));
         assert!(drawn(cx, "row yardr"));
         assert!(drawn(cx, "row footplate"));
-        assert!(!drawn(cx, "row No line"));
+        assert!(!drawn(cx, "row No flow"));
+        assert!(!drawn(cx, "stat landed"));
         view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
-            assert_eq!(model.travelling(), 3);
-            assert_eq!(model.arrivals_row().line, "3 in transit");
+            assert_eq!(model.travelling(), 4);
+            assert_eq!(model.arrivals_row().line, "4 in transit");
             assert_eq!(
                 model
                     .line_rows()
@@ -19025,27 +19141,158 @@ yardr.dev
                     .map(|row| (row.name.clone(), row.line.clone()))
                     .collect::<Vec<_>>(),
                 [
-                    ("yardr".to_string(), "2 in transit".to_string()),
+                    ("yardr".to_string(), "3 in transit".to_string()),
                     ("footplate".to_string(), "1 in transit".to_string()),
                 ]
             );
             assert_eq!(model.no_line_row(), None);
         });
-        // The served order from the top: the board, then the lines.
+        // The served order from the top: the board, then each depot
+        // with its flows under it.
         let arrivals = bounds_of(cx, "row arrivals").top();
         let yardr = bounds_of(cx, "row yardr").top();
+        let flow = bounds_of(cx, "flow row yardr default · depot flow").top();
+        let typed_flow = bounds_of(cx, "flow row yardr default · type task").top();
         let footplate = bounds_of(cx, "row footplate").top();
         assert!(
-            arrivals < yardr && yardr < footplate,
-            "the lines stand out of the served order: {arrivals:?} {yardr:?} {footplate:?}"
+            arrivals < yardr && yardr < flow && flow < typed_flow && typed_flow < footplate,
+            "the tree stands out of the served order: {arrivals:?} {yardr:?} {flow:?} {typed_flow:?} {footplate:?}"
         );
+        // Duplicate names keep their type-specific panel cards too.
+        click_on(cx, "row arrivals");
+        wait(cx, "the panel tracks", |cx| {
+            drawn(cx, "panel track yardr default · depot flow")
+                && drawn(cx, "panel track yardr default · type task")
+        });
+        assert!(!drawn(cx, "stat landed"));
+        // A depot's row opens the depot's board; a flow's opens the
+        // flow's list, grouped by stage.
+        click_on(cx, "row yardr");
+        wait(cx, "the depot", |cx| drawn(cx, "flow head yardr"));
+        click_on(cx, "flow row yardr default · depot flow");
+        wait(cx, "the flow", |cx| drawn(cx, "flow strip default"));
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.model.as_ref().unwrap().selected(),
+                Some(&Selected::Flow("yardr".into(), "default".into(), "".into()))
+            );
+        });
+        assert!(drawn(cx, "flow group default new"));
+        assert!(drawn(cx, "flow group default review"));
+        click_on(cx, "flow row yardr default · type task");
+        wait(cx, "the typed flow", |cx| {
+            view.read_with(cx, |v, _| {
+                v.model.as_ref().unwrap().selected()
+                    == Some(&Selected::Flow(
+                        "yardr".into(),
+                        "default".into(),
+                        "task".into(),
+                    ))
+            }) && drawn(cx, "flow strip default")
+        });
     }
 
-    /// With beads travelling with no line the No line row stands last,
+    /// A flow's list groups its beads by stage: the crumbs with the
+    /// source and the List/Board toggle, the stages' strip, and one
+    /// group per stage with beads — the backlog's with where each
+    /// stands next, the landed end's with what landed under it — with
+    /// the empty stages folded to one row. The board stands under the
+    /// toggle, the flow's columns as the depot's board draws them. A
+    /// row opens the bead whole, and back returns to the flow.
+    #[gpui::test]
+    fn a_flow_s_list_groups_its_beads_by_stage_with_the_empty_folded(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer("Arrivals", &arrivals_board());
+        let mut flows: Value = serde_json::from_str(&flows_panel()).unwrap();
+        flows["result"]["depots"][0]["flows"][0]["landings"] = json!([
+            {"bead": "yd-old1", "title": "First to land",
+             "landed_at": "2026-10-08T09:30:00Z"},
+            {"bead": "yd-old2", "title": "Second to land",
+             "landed_at": "2026-10-08T10:30:00Z"},
+        ]);
+        yard.answer("Flows", &flows.to_string());
+        yard.answer("Bead", &bead_zulu());
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(
+                Selected::Flow("yardr".into(), "default".into(), "".into()),
+                window,
+                cx,
+            )
+        });
+        wait(cx, "the flow", |cx| drawn(cx, "flow strip default"));
+        // The crumbs with the source and the toggle, on the list.
+        assert!(drawn(cx, "flow depot yardr default"));
+        assert!(drawn(cx, "flow head yardr default"));
+        assert!(drawn(cx, "flow source yardr default"));
+        assert!(drawn(cx, "flow list"));
+        assert!(drawn(cx, "flow board"));
+        // One group per stage with beads, the landings under the
+        // landed end, and no empty fold: every stage holds a bead or
+        // a landing.
+        for group in ["backlog", "new", "review", "approved"] {
+            assert!(drawn(cx, &format!("flow group default {group}")), "{group}");
+        }
+        assert!(!drawn(cx, "flow empty yardr default"));
+        for bead in [
+            "yd-b1",
+            "yd-b2",
+            "footplate-p512",
+            "yd-blocked",
+            "yd-extra",
+            "yd-zulu",
+            "yd-work",
+        ] {
+            assert!(drawn(cx, &format!("flow row {bead}")), "{bead}");
+        }
+        assert!(drawn(cx, "flow landed yd-old1"));
+        assert!(drawn(cx, "flow landed yd-old2"));
+        // The board under the toggle, and back to the list.
+        click_on(cx, "flow board");
+        wait(cx, "the board", |cx| drawn(cx, "column default new"));
+        click_on(cx, "flow list");
+        wait(cx, "the list", |cx| drawn(cx, "flow strip default"));
+        // A row opens the bead whole; back returns to the flow.
+        click_on(cx, "flow row yd-zulu");
+        wait(cx, "the bead", |cx| drawn(cx, "bead back"));
+        view.read_with(cx, |v, _| {
+            let model = v.model.as_ref().unwrap();
+            assert_eq!(
+                model.bead_back(),
+                Selected::Flow("yardr".into(), "default".into(), "".into())
+            );
+        });
+        click_on(cx, "bead back");
+        wait(cx, "the flow again", |cx| drawn(cx, "flow strip default"));
+        // The depot's crumb opens the depot's board.
+        click_on(cx, "flow depot yardr default");
+        wait(cx, "the depot", |cx| drawn(cx, "flow head yardr"));
+        // A flow with an empty stage folds it to one row, unfolding
+        // to a head each.
+        view.update_in(cx, |v, window, cx| {
+            v.select(
+                Selected::Flow("yardr".into(), "design".into(), "".into()),
+                window,
+                cx,
+            )
+        });
+        wait(cx, "the flow", |cx| drawn(cx, "flow strip design"));
+        assert!(drawn(cx, "flow group design draft"));
+        assert!(drawn(cx, "flow empty yardr design"));
+        assert!(!drawn(cx, "flow empty stage design critique"));
+        click_on(cx, "flow empty yardr design");
+        wait(cx, "the unfolded stages", |cx| {
+            drawn(cx, "flow empty stage design critique")
+        });
+    }
+
+    /// With beads travelling with no flow the No flow row stands last,
     /// with how many travel; a click opens its plain list, newest change
     /// first, each row drawn as a flow's bead, with no stages or lamps.
     #[gpui::test]
-    fn the_no_line_row_opens_its_plain_list(cx: &mut TestAppContext) {
+    fn the_no_flow_row_opens_its_plain_list(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
@@ -19053,17 +19300,17 @@ yardr.dev
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
         cx.run_until_parked();
-        assert!(drawn(cx, "row No line"));
+        assert!(drawn(cx, "row No flow"));
         view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
             assert_eq!(model.travelling(), 4);
             assert_eq!(model.no_line_row().unwrap().line, "2 in transit");
         });
         let yardr = bounds_of(cx, "row yardr").top();
-        let no_line = bounds_of(cx, "row No line").top();
-        assert!(yardr < no_line, "No line stands above the lines");
-        click_on(cx, "row No line");
-        wait(cx, "No line", |cx| drawn(cx, "no line head"));
+        let no_line = bounds_of(cx, "row No flow").top();
+        assert!(yardr < no_line, "No flow stands above the depots");
+        click_on(cx, "row No flow");
+        wait(cx, "No flow", |cx| drawn(cx, "no line head"));
         view.read_with(cx, |v, _| {
             assert_eq!(
                 v.model.as_ref().unwrap().selected(),
@@ -19080,7 +19327,7 @@ yardr.dev
         }
         let bravo = bounds_of(cx, "no line bead yd-bravo").top();
         let shed = bounds_of(cx, "no line bead yd-shed").top();
-        assert!(bravo < shed, "No line stands out of the served order");
+        assert!(bravo < shed, "No flow stands out of the served order");
         assert!(!drawn(cx, "column default new"));
         assert!(!drawn(cx, "card yd-bravo"));
     }
@@ -19370,7 +19617,7 @@ yardr.dev
     }
 
     /// A bead's details link back to where they were opened from: the
-    /// board, a flow, Elsewhere or No line. The back link names the row,
+    /// board, a flow, Elsewhere or No flow. The back link names the row,
     /// and a click opens it again.
     #[gpui::test]
     fn a_bead_s_details_link_back_to_where_they_came_from(cx: &mut TestAppContext) {
@@ -19397,9 +19644,9 @@ yardr.dev
                 v.model.as_ref().unwrap().selected() == Some(&Selected::Line("yardr".into()))
             })
         });
-        // From No line: back to No line.
-        click_on(cx, "row No line");
-        wait(cx, "No line", |cx| drawn(cx, "no line bead yd-shed"));
+        // From No flow: back to No flow.
+        click_on(cx, "row No flow");
+        wait(cx, "No flow", |cx| drawn(cx, "no line bead yd-shed"));
         yard.answer("Bead", &bead_shed());
         click_on(cx, "no line bead yd-shed");
         wait(cx, "the bead again", |cx| {
@@ -19966,11 +20213,11 @@ yardr.dev
         rows_tile(&view, cx);
     }
 
-    /// The arrivals row opens the panel: one track per travelling
-    /// flow — its name above a cell per stage in travel order — with
-    /// the lamps lit only where beads stand, two headcodes per cell and
-    /// "+N" past that, the Elsewhere stub, No line's own track, and the
-    /// quiet tracks folded to one row. The head carries the summary and
+    /// The arrivals row opens the panel: one track per moving flow —
+    /// its head above a station per stage in travel order — with the
+    /// nodes reading their state, two chips per station and "+N" past
+    /// that, the Elsewhere line, No flow's own section, and the quiet
+    /// depots folded in the list alone. The head carries the stats and
     /// the toggle, on the panel.
     #[gpui::test]
     fn the_arrivals_row_opens_the_panel_of_tracks(cx: &mut TestAppContext) {
@@ -19988,10 +20235,9 @@ yardr.dev
             assert!(!model.departures());
             assert_eq!(model.working_count(), 1);
             assert_eq!(model.waiting_on_you().len(), 2);
-            assert_eq!(model.held_count(), 1);
         });
-        // One track per travelling flow, its name above its stages with
-        // the backlog's count on the name's line, and no stage cell for
+        // One track per moving flow, its head above its stations with
+        // the backlog's count on the head's line, and no station for
         // the backlog.
         for (depot, flow, first) in [
             ("yardr", "default", "new"),
@@ -19999,88 +20245,82 @@ yardr.dev
             ("footplate", "default", "new"),
         ] {
             let track = format!("panel track {depot} {flow}");
-            let name = format!("panel name {depot} {flow}");
-            let backlog = format!("panel name {depot} {flow} backlog");
+            let head = format!("panel head {depot} {flow}");
+            let backlog = format!("panel head {depot} {flow} backlog");
             assert!(drawn(cx, &track), "{track}");
-            assert!(drawn(cx, &name), "{name}");
+            assert!(drawn(cx, &head), "{head}");
             assert!(drawn(cx, &backlog), "{backlog}");
-            let name = bounds_of(cx, &name);
-            let stage = bounds_of(cx, &format!("panel stage {depot} {flow} {first}"));
+            let head = bounds_of(cx, &head);
+            let station = bounds_of(cx, &format!("panel station {depot} {flow} {first}"));
             assert!(
-                name.bottom() <= stage.top() + px(1.),
-                "the name stands beside its stages, not above: {name:?} {stage:?}"
+                head.bottom() <= station.top() + px(1.),
+                "the head stands beside its stations, not above: {head:?} {station:?}"
             );
         }
-        assert!(!drawn(cx, "panel stage yardr default backlog"));
-        // The stages in travel order, sharing the card's width equally
-        // and aligned by place across the tracks.
+        assert!(!drawn(cx, "panel station yardr default backlog"));
+        // The stations in travel order, sharing the card's width
+        // equally.
         for stage in ["new", "review", "approved"] {
-            let cell = format!("panel stage yardr default {stage}");
-            assert!(drawn(cx, &cell), "{cell}");
+            let station = format!("panel station yardr default {stage}");
+            assert!(drawn(cx, &station), "{station}");
         }
-        let new = bounds_of(cx, "panel stage yardr default new");
-        let review = bounds_of(cx, "panel stage yardr default review");
-        let approved = bounds_of(cx, "panel stage yardr default approved");
+        let new = bounds_of(cx, "panel station yardr default new");
+        let review = bounds_of(cx, "panel station yardr default review");
+        let approved = bounds_of(cx, "panel station yardr default approved");
         assert!(
             new.left() < review.left() && review.left() < approved.left(),
-            "the stages stand out of travel order: {new:?} {review:?} {approved:?}"
+            "the stations stand out of travel order: {new:?} {review:?} {approved:?}"
         );
-        for (what, cell) in [("review", &review), ("approved", &approved)] {
+        for (what, station) in [("review", &review), ("approved", &approved)] {
             assert!(
-                (cell.size.width - new.size.width).abs() < px(1.),
-                "the {what} cell shares no width with the new cell: {cell:?} {new:?}"
+                (station.size.width - new.size.width).abs() < px(1.),
+                "the {what} station shares no width with the new station: {station:?} {new:?}"
             );
         }
-        let footplate = bounds_of(cx, "panel stage footplate default new");
-        assert!(
-            (new.left() - footplate.left()).abs() < px(1.),
-            "the first stages stand out of column: {new:?} {footplate:?}"
-        );
-        assert!(
-            (new.size.width - footplate.size.width).abs() < px(1.),
-            "the tracks share no cell width: {new:?} {footplate:?}"
-        );
-        // The lamps: fault and turn burn where beads stand, and no lamp
-        // where none stands, whatever the stage serves.
-        assert!(drawn(cx, "panel lamp yardr default new"));
-        assert!(drawn(cx, "panel lamp yardr default review"));
-        assert!(!drawn(cx, "panel lamp yardr default approved"));
-        assert!(!drawn(cx, "panel lamp yardr design critique"));
-        assert!(!drawn(cx, "panel lamp footplate default new"));
-        // The terminal stage closes its track with a buffer stop; no
-        // other stage carries one.
-        assert!(drawn(cx, "panel stop yardr default approved"));
-        assert!(!drawn(cx, "panel stop yardr default new"));
-        assert!(!drawn(cx, "panel stop yardr default review"));
-        // One headcode and "+N" past two beads; two where two
-        // stand; every other bead on its stage.
-        assert!(drawn(cx, "panel headcode footplate-p512"));
-        assert!(!drawn(cx, "panel headcode yd-blocked"));
-        assert!(!drawn(cx, "panel headcode yd-extra"));
+        // The nodes read their state: the rust fill where the lamp
+        // burns for a person's turn, the working ring where a bead is
+        // worked, the hollow ring on an empty people stage, the plain
+        // dot on an empty crew stage, the end square on a terminal.
+        assert!(drawn(cx, "panel node yardr default new you"));
+        assert!(drawn(cx, "panel node yardr default review you"));
+        assert!(drawn(cx, "panel node yardr default approved end"));
+        assert!(drawn(cx, "panel node yardr design draft people"));
+        assert!(drawn(cx, "panel node yardr design critique people"));
+        assert!(drawn(cx, "panel node footplate default new crew"));
+        assert!(drawn(cx, "panel legend"));
+        // One chip and "+N" past two beads; two where two stand; every
+        // other bead on its station.
+        assert!(drawn(cx, "panel chip footplate-p512"));
+        assert!(!drawn(cx, "panel chip yd-blocked"));
+        assert!(!drawn(cx, "panel chip yd-extra"));
         assert!(drawn(cx, "panel more yardr default new"));
         for bead in ["yd-zulu", "yd-work", "yd-qskt", "footplate-fc47"] {
-            assert!(drawn(cx, &format!("panel headcode {bead}")), "{bead}");
+            assert!(drawn(cx, &format!("panel chip {bead}")), "{bead}");
         }
-        // Elsewhere hangs under its depot's last track; No line has
-        // its own track; the quiet tracks fold to one row.
+        // Elsewhere hangs under its depot's tracks as one line; No flow
+        // has its own section with its line; the quiet depots stand on
+        // no track, folded in the list alone.
         assert!(drawn(cx, "panel elsewhere yardr"));
-        assert!(drawn(cx, "panel headcode yardr-pinned"));
         let design = bounds_of(cx, "panel track yardr design").top();
         let stub = bounds_of(cx, "panel elsewhere yardr").top();
-        let footplate = bounds_of(cx, "panel track footplate default").top();
+        let footplate = bounds_of(cx, "panel depot footplate").top();
         assert!(
             design < stub && stub < footplate,
             "Elsewhere hangs off its depot's last track: {design:?} {stub:?} {footplate:?}"
         );
-        assert!(drawn(cx, "panel noline"));
-        assert!(drawn(cx, "panel headcode yd-shed"));
-        assert!(drawn(cx, "panel quiet"));
+        assert!(drawn(cx, "panel loose show"));
+        assert!(!drawn(cx, "panel chip yd-shed"));
         assert!(!drawn(cx, "panel track drafts default"));
-        // The head: the summary and the toggle, on the panel, with no
+        assert!(drawn(cx, "quiet"));
+        assert!(!drawn(cx, "row drafts"));
+        // The head: the stats and the toggle, on the panel, with no
         // board beneath them.
         assert!(drawn(cx, "arrivals head"));
-        assert!(drawn(cx, "panel summary"));
-        assert!(drawn(cx, "panel waits"));
+        assert!(drawn(cx, "panel stats"));
+        assert!(drawn(cx, "stat working"));
+        assert!(drawn(cx, "stat decide"));
+        assert!(!drawn(cx, "stat move"));
+        assert!(!drawn(cx, "stat landed"));
         assert!(drawn(cx, "arrivals panel"));
         assert!(drawn(cx, "arrivals departures"));
         assert!(!drawn(cx, "waits banner"));
@@ -20099,87 +20339,116 @@ yardr.dev
         });
     }
 
-    /// The panel shows at a glance that a line is moving. A cell draws
-    /// its worked beads first, so the one headcode a crowded cell has
-    /// room for is a worked bead's though the yard lists it last, and
-    /// its "+N" counts what it hides, the worked and the waiting apart;
-    /// the worked headcode wears the running dot and a waiting one none;
-    /// a stage burns the running lamp where a bead is worked; and the
-    /// line's head carries a lamp and what is worked, what waits and the
-    /// backlog, where a line that nothing works carries no lamp and no
-    /// worked words. The served order stays in the model and in the line
-    /// view, whose columns burn the served lamp alone.
+    /// The panel shows at a glance that a flow is moving. A station
+    /// draws its worked beads first, so the one chip a crowded station
+    /// has room for is a worked bead's though the yard lists it last,
+    /// and its "+N" counts what it hides; a station with a bead worked
+    /// reads the working ring, a people stage the hollow one, and an
+    /// empty crew stage the plain dot. The track's head carries the
+    /// name, the status and the backlog, and opens the flow's list; the
+    /// depot's head opens the depot's board. The served order stays in
+    /// the model and in the line view, whose columns burn the served
+    /// lamp alone.
     #[gpui::test]
-    fn the_panel_shows_a_line_is_moving_with_its_worked_beads_first(cx: &mut TestAppContext) {
+    fn the_panel_shows_a_flow_is_moving_with_its_worked_beads_first(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
         yard.answer("Flows", &flows_moving());
+        let mut waiting: Value = serde_json::from_str(&waiting_of(&["yd-qskt"])).unwrap();
+        waiting["result"][0]["stage"] = json!("draft");
+        waiting["result"][0]["group"] = json!("mckean");
+        waiting["result"][0]["actions"][0]["label"] = json!("Move to critique");
+        waiting["result"][0]["actions"][0]["to"] = json!("critique");
+        yard.answer("Waiting", &waiting.to_string());
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
         click_on(cx, "row arrivals");
-        wait(cx, "the panel", |cx| drawn(cx, "panel track yardr default"));
+        wait(cx, "the panel with its parked bead", |cx| {
+            drawn(cx, "panel track yardr default")
+                && view.read_with(cx, |v, _| {
+                    v.model
+                        .as_ref()
+                        .is_some_and(|model| model.on_you_beads().contains("yd-qskt"))
+                })
+        });
         // `new` lists its two waiting beads first and its worked ones
-        // last. Its one headcode is the first worked one, with the
-        // running dot, and the three others stand in the "+N", which
-        // says one of them is worked and two wait.
-        assert!(drawn(cx, "panel headcode yd-run1"));
-        assert!(drawn(cx, "panel running yd-run1"));
+        // last. Its one chip is the first worked one, and the three
+        // others stand in the "+N".
+        assert!(drawn(cx, "panel chip yd-run1"));
         for hidden in ["yd-wait1", "yd-wait2", "yd-run2"] {
-            assert!(!drawn(cx, &format!("panel headcode {hidden}")), "{hidden}");
+            assert!(!drawn(cx, &format!("panel chip {hidden}")), "{hidden}");
         }
         assert!(drawn(cx, "panel more yardr default new"));
-        assert!(drawn(cx, "panel more yardr default new +1 working"));
-        assert!(drawn(cx, "panel more yardr default new 2 waiting"));
-        // `review` draws both its beads, the worked one above the
-        // waiting one it is listed after, and only that one marked.
-        let run = bounds_of(cx, "panel headcode yd-run3");
-        let late = bounds_of(cx, "panel headcode yd-late");
-        assert!(
-            run.bottom() <= late.top() + px(1.),
-            "the worked headcode stands under the waiting one: {run:?} {late:?}"
-        );
-        assert!(drawn(cx, "panel running yd-run3"));
-        assert!(!drawn(cx, "panel running yd-late"));
-        // Three waiting beads stand in "+2" alone, as before.
-        assert!(drawn(cx, "panel headcode footplate-a"));
-        assert!(!drawn(cx, "panel running footplate-a"));
-        assert!(drawn(cx, "panel more footplate default new +2"));
-        assert!(!drawn(cx, "panel more footplate default new 1 waiting"));
-        // A stage burns the running lamp where a bead is worked, and
-        // none where none is or none stands.
-        assert!(drawn(cx, "panel lamp yardr default new"));
-        assert!(drawn(cx, "panel lamp yardr default review"));
-        assert!(!drawn(cx, "panel lamp yardr default approved"));
-        assert!(!drawn(cx, "panel lamp yardr design draft"));
-        assert!(!drawn(cx, "panel lamp footplate default new"));
-        // The head: the lamp, then what is worked, what waits and the
-        // backlog. The line nothing works has no lamp and no worked
-        // words, and counts its waiting bead.
-        for part in ["lamp", "working", "waiting", "backlog"] {
-            let part = format!("panel name yardr default {part}");
+        // `review` draws both its beads, the worked one before the
+        // waiting one it is listed after.
+        assert!(drawn(cx, "panel chip yd-run3"));
+        assert!(drawn(cx, "panel chip yd-late"));
+        assert!(!drawn(cx, "panel more yardr default review"));
+        // Three waiting beads stand as one chip with "+2".
+        assert!(drawn(cx, "panel chip footplate-a"));
+        assert!(drawn(cx, "panel more footplate default new"));
+        assert!(drawn(cx, "panel chip yd-qskt"));
+        view.read_with(cx, |v, _| {
+            let model = v.model.as_ref().unwrap();
+            let on_you = model.on_you_beads();
+            let bead = model
+                .flow("yardr", "design", "")
+                .unwrap()
+                .stages
+                .iter()
+                .flat_map(|stage| &stage.beads)
+                .find(|bead| bead.bead == "yd-qskt")
+                .unwrap();
+            assert!(chip_you(bead, model.me(), &on_you));
+        });
+        // The stations read their state: the working ring where a bead
+        // is worked, the hollow ring on a people stage, the plain dot
+        // on an empty crew stage.
+        assert!(drawn(cx, "panel node yardr default new work"));
+        assert!(drawn(cx, "panel node yardr default review work"));
+        assert!(drawn(cx, "panel node yardr default approved crew"));
+        assert!(drawn(cx, "panel node yardr design draft people"));
+        assert!(drawn(cx, "panel node footplate default new crew"));
+        // The head: the name, the status, the backlog. The depot's head
+        // opens the depot's board; the track's opens the flow's list.
+        for part in ["name", "status", "backlog"] {
+            let part = format!("panel head yardr default {part}");
             assert!(drawn(cx, &part), "{part}");
         }
-        assert!(!drawn(cx, "panel name yardr design lamp"));
-        assert!(!drawn(cx, "panel name yardr design working"));
-        assert!(drawn(cx, "panel name yardr design waiting"));
-        assert!(drawn(cx, "panel name yardr design backlog"));
-        assert!(!drawn(cx, "panel name footplate default lamp"));
-        assert!(!drawn(cx, "panel name footplate default working"));
         // The model keeps the order the yard served.
         view.read_with(cx, |v, _| {
             let stages = &v.model.as_ref().unwrap().depots()[0].flows[0].stages;
             let new: Vec<&str> = stages[1].beads.iter().map(|b| b.bead.as_str()).collect();
             assert_eq!(new, ["yd-wait1", "yd-wait2", "yd-run1", "yd-run2"]);
         });
+        click_on(cx, "panel head yardr default");
+        wait(cx, "the flow", |cx| drawn(cx, "flow strip default"));
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.model.as_ref().unwrap().selected(),
+                Some(&Selected::Flow("yardr".into(), "default".into(), "".into()))
+            );
+        });
+        view.update_in(cx, |v, window, cx| {
+            v.select(
+                Selected::Flow("yardr".into(), "design".into(), "".into()),
+                window,
+                cx,
+            )
+        });
+        wait(cx, "the parked bead in its flow list", |cx| {
+            drawn(cx, "flow strip design") && drawn(cx, "flow mark yd-qskt")
+        });
+        view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+        wait(cx, "the panel", |cx| drawn(cx, "panel track yardr default"));
         // The line view draws the served lamp alone: no lamp on a stage
         // whose own lamp is none, though a bead is worked there.
-        click_on(cx, "panel name yardr default");
+        click_on(cx, "panel depot yardr");
         wait(cx, "the line", |cx| drawn(cx, "column default new"));
         assert!(!drawn(cx, "column default new lamp"));
-        // The narrowest window, at every text size: the cells stand at
-        // their narrowest, and each phrase of the "+N" stands whole on
-        // one line inside its cell, as each part of the head does.
+        // The narrowest window, at every text size: the stations stand
+        // at their narrowest, and the "+N" stands inside its station.
         cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(360.)));
         view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
         wait(cx, "the panel", |cx| drawn(cx, "panel track yardr default"));
@@ -20193,36 +20462,26 @@ yardr.dev
             });
             let rem = f32::from(settings_of(&view, cx).rem());
             drawn(cx, "panel");
-            let cell = bounds_now(cx, "panel stage yardr default new");
-            // At the smallest text the pane has room for wider cells.
+            let station = bounds_now(cx, "panel station yardr default new");
+            // The stations bind at their narrowest and the track
+            // scrolls: never narrower than the floor, never wider than
+            // their grown width where three stand in the floor's pane.
+            let narrow = (TRACK_STATION * rem / 16.).max(TRACK_STATION);
             assert!(
-                text == settings::TEXT_MIN
-                    || (f32::from(cell.size.width) - PANEL_MIN * rem).abs() < 1.,
-                "at {text} px the cell is {cell:?}, not its narrowest"
+                TRACK_STATION - 1. <= f32::from(station.size.width)
+                    && f32::from(station.size.width) <= narrow + 1.,
+                "at {text} px the station is {station:?}, not within its narrowest {narrow}"
             );
-            for phrase in ["+1 working", "2 waiting"] {
-                let at = bounds_now(cx, &format!("panel more yardr default new {phrase}"));
-                assert!(
-                    cell.left() <= at.left() && at.right() <= cell.right(),
-                    "at {text} px {phrase} stands off its cell: {cell:?} {at:?}"
-                );
-                assert!(
-                    f32::from(at.size.height) < rem * 1.5,
-                    "at {text} px {phrase} wraps inside itself: {at:?}"
-                );
-            }
-            for part in ["depot", "flow", "working", "waiting", "backlog"] {
-                let at = bounds_now(cx, &format!("panel name yardr default {part}"));
-                assert!(
-                    f32::from(at.size.height) < rem * 1.5,
-                    "at {text} px the head's {part} is wrapped: {at:?}"
-                );
-            }
+            let more = bounds_now(cx, "panel more yardr default new");
+            assert!(
+                station.left() <= more.left() && more.right() <= station.right(),
+                "at {text} px the +N stands off its station: {station:?} {more:?}"
+            );
         }
     }
 
     /// An unreadable quiet depot stays visible on the panel so its
-    /// error is not folded away as a quiet line.
+    /// error is not folded away with the quiet depots.
     #[gpui::test]
     fn the_panel_keeps_an_unreadable_quiet_depot_visible(cx: &mut TestAppContext) {
         let yard = Yard::start();
@@ -20241,16 +20500,16 @@ yardr.dev
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
         click_on(cx, "row arrivals");
-        wait(cx, "the unreadable line", |cx| {
-            drawn(cx, "panel words drafts")
+        wait(cx, "the unreadable depot", |cx| {
+            drawn(cx, "panel depot drafts")
         });
-        assert!(!drawn(cx, "panel quiet"));
+        assert!(!drawn(cx, "row drafts"));
     }
 
-    /// A headcode's click opens the bead's details, and the quiet back
+    /// A chip's click opens the bead's details, and the quiet back
     /// link names the panel and returns to it.
     #[gpui::test]
-    fn a_headcode_s_click_opens_the_bead_and_back_returns_to_the_panel(cx: &mut TestAppContext) {
+    fn a_chip_s_click_opens_the_bead_and_back_returns_to_the_panel(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
@@ -20259,8 +20518,8 @@ yardr.dev
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
         click_on(cx, "row arrivals");
-        wait(cx, "the panel", |cx| drawn(cx, "panel headcode yd-zulu"));
-        click_on(cx, "panel headcode yd-zulu");
+        wait(cx, "the panel", |cx| drawn(cx, "panel chip yd-zulu"));
+        click_on(cx, "panel chip yd-zulu");
         wait(cx, "the bead", |cx| drawn(cx, "bead back"));
         view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
@@ -20280,46 +20539,100 @@ yardr.dev
         assert!(!drawn(cx, "arrival yd-zulu"));
     }
 
-    /// The panel's quiet tracks fold and unfold with the list's Quiet:
-    /// one row naming the quiet lines, unfolding to their tracks from
-    /// either side.
+    /// The quiet flows fold under their depot in the list and stand
+    /// as one-liners on the panel; the quiet depots fold in the list
+    /// alone, with no track on the panel. Each opens where it stands.
     #[gpui::test]
-    fn the_panel_s_quiet_tracks_fold_with_the_list_s_quiet(cx: &mut TestAppContext) {
+    fn the_quiet_flows_fold_under_their_depot_and_the_quiet_depots_in_the_list(
+        cx: &mut TestAppContext,
+    ) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
-        yard.answer("Flows", &flows_panel());
+        let mut flows: Value = serde_json::from_str(&flows_panel()).unwrap();
+        flows["result"]["depots"][0]["flows"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({"name": "release", "type": "release", "source": "store", "stages": [
+                    {"stage": "backlog", "group": "mckean", "human": true, "lamp": "none",
+                     "beads": [{"bead": "yd-r1", "title": "First to cut",
+                                "expected": "—", "remark": "", "tone": "none",
+                                "working": false}]},
+                    {"stage": "build", "group": "shippers", "human": false, "lamp": "none",
+                     "beads": []},
+                    {"stage": "publish", "group": "", "human": false, "lamp": "none",
+                     "terminal": true, "beads": []},
+                ]}),
+            );
+        flows["result"]["depots"][0]["flows"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({"name": "release", "type": "task", "source": "store", "stages": [
+                    {"stage": "backlog", "group": "mckean", "human": true, "lamp": "none",
+                     "beads": []},
+                    {"stage": "build", "group": "shippers", "human": false, "lamp": "none",
+                     "beads": []},
+                    {"stage": "publish", "group": "", "human": false, "lamp": "none",
+                     "terminal": true, "beads": []},
+                ]}),
+            );
+        yard.answer("Flows", &flows.to_string());
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
         click_on(cx, "row arrivals");
-        wait(cx, "the panel", |cx| drawn(cx, "panel quiet"));
+        wait(cx, "the panel", |cx| {
+            drawn(cx, "panel quiet yardr release · type release")
+                && drawn(cx, "panel quiet yardr release · type task")
+        });
+        // The quiet flow's one line stands on the panel; its list row
+        // waits under its depot's fold.
+        assert!(drawn(cx, "quiet flows yardr"));
+        assert!(!drawn(cx, "flow row yardr release · type release"));
+        assert!(!drawn(cx, "flow row yardr release · type task"));
+        click_on(cx, "quiet flows yardr");
+        wait(cx, "the quiet flow", |cx| {
+            drawn(cx, "flow row yardr release · type release")
+                && drawn(cx, "flow row yardr release · type task")
+        });
+        click_on(cx, "flow row yardr release · type release");
+        wait(cx, "the flow", |cx| drawn(cx, "flow strip release"));
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.model.as_ref().unwrap().selected(),
+                Some(&Selected::Flow(
+                    "yardr".into(),
+                    "release".into(),
+                    "release".into()
+                ))
+            );
+        });
+        click_on(cx, "flow row yardr release · type task");
+        wait(cx, "the typed flow", |cx| {
+            view.read_with(cx, |v, _| {
+                v.model.as_ref().unwrap().selected()
+                    == Some(&Selected::Flow(
+                        "yardr".into(),
+                        "release".into(),
+                        "task".into(),
+                    ))
+            }) && drawn(cx, "flow strip release")
+        });
+        // The quiet depot stands on no track: its fold is the list's
+        // alone, and its row opens the depot's board.
+        view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+        wait(cx, "the panel", |cx| {
+            drawn(cx, "panel quiet yardr release · type release")
+                && drawn(cx, "panel quiet yardr release · type task")
+        });
+        assert!(!drawn(cx, "panel track drafts default"));
         assert!(drawn(cx, "quiet"));
         assert!(!drawn(cx, "row drafts"));
-        assert!(!drawn(cx, "panel track drafts default"));
-        // Unfold from the panel: the tracks stand, and the list's fold
-        // opens too.
-        click_on(cx, "panel quiet");
-        wait(cx, "the quiet tracks", |cx| {
-            drawn(cx, "panel track drafts default")
-        });
-        view.read_with(cx, |v, _| {
-            assert!(v.model.as_ref().unwrap().quiet_expanded());
-        });
-        assert!(drawn(cx, "row drafts"));
-
-        let yard = Yard::start();
-        a_yard_of_jo(&yard);
-        yard.answer("Arrivals", &arrivals_board());
-        yard.answer("Flows", &flows_panel());
-        let (_view, cx) = opened(&yard, &["Shall I land it?"], cx);
-        to_timetable(&_view, cx);
-        // Unfold from the list: the panel draws the tracks unfolded.
         click_on(cx, "quiet");
-        wait(cx, "the quiet lines", |cx| drawn(cx, "row drafts"));
-        click_on(cx, "row arrivals");
-        wait(cx, "the unfolded panel", |cx| {
-            drawn(cx, "panel track drafts default")
-        });
+        wait(cx, "the quiet depots", |cx| drawn(cx, "row drafts"));
+        click_on(cx, "row drafts");
+        wait(cx, "the depot", |cx| drawn(cx, "flow head drafts"));
     }
 
     /// The panel's waiting words open the decisions mode, counting
@@ -20333,133 +20646,23 @@ yardr.dev
         let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
         to_timetable(&view, cx);
         click_on(cx, "row arrivals");
-        wait(cx, "the panel", |cx| drawn(cx, "panel waits"));
+        wait(cx, "the panel", |cx| drawn(cx, "stat decide"));
         view.read_with(cx, |v, _| {
             assert_eq!(v.model.as_ref().unwrap().waiting_on_you().len(), 2);
         });
-        click_on(cx, "panel waits");
+        click_on(cx, "stat decide");
         wait(cx, "the decisions mode", |cx| {
             rail_mode(&view, cx) == Mode::Decisions
         });
     }
 
-    /// One cell of the panel a test holds level: where it stands, and the
-    /// bead whose headcode comes first in it, where a bead stands on it.
-    struct HeldCell {
-        depot: String,
-        flow: String,
-        stage: String,
-        bead: Option<String>,
-    }
-
-    fn held(depot: &str, flow: &str, stage: &str, bead: Option<&str>) -> HeldCell {
-        HeldCell {
-            depot: depot.to_string(),
-            flow: flow.to_string(),
-            stage: stage.to_string(),
-            bead: bead.map(str::to_string),
-        }
-    }
-
-    /// Holds the frame last drawn to a panel whose tracks stand level. In
-    /// each row of a track, the cells that share a top, the rules stand at
-    /// one height, as one straight track, and the first headcodes under
-    /// them start at one height; and every cell of every track stands its
-    /// rule the same depth under its own top, two lines of the head type
-    /// or more, so the rows line up across the tracks as the columns do.
-    /// A cell whose head wants a third line is left out, since it makes
-    /// its own cell taller and its own test holds that: the test platform
-    /// draws every character 0.6 em wide, wider than any font, and wraps
-    /// `contributor` in the narrowest cell where DejaVu does not. Gives
-    /// how many pairs of cells of one row stand a head of one line beside
-    /// a wrapped one: a test asks for some, since with none it held
-    /// nothing the fix is for.
-    fn rules_level(cx: &mut VisualTestContext, rem: f32, cells: &[HeldCell]) -> usize {
-        struct Stands {
-            at: String,
-            track: (String, String),
-            cell: Bounds<Pixels>,
-            head: Bounds<Pixels>,
-            rule: Bounds<Pixels>,
-            code: Option<Bounds<Pixels>>,
-        }
-        let stands: Vec<Stands> = cells
-            .iter()
-            .map(|held| {
-                let at = format!("{} {} {}", held.depot, held.flow, held.stage);
-                Stands {
-                    track: (held.depot.clone(), held.flow.clone()),
-                    cell: bounds_now(cx, &format!("panel stage {at}")),
-                    head: bounds_now(cx, &format!("panel head {at}")),
-                    rule: bounds_now(cx, &format!("panel rule {at}")),
-                    code: held
-                        .bead
-                        .as_ref()
-                        .map(|bead| bounds_now(cx, &format!("panel headcode {bead}"))),
-                    at,
-                }
-            })
-            .collect();
-        let level: Vec<&Stands> = stands
-            .iter()
-            .filter(|s| f32::from(s.head.size.height) < 2.5 * rem)
-            .collect();
-        let depth = |s: &Stands| f32::from(s.rule.top() - s.cell.top());
-        let first = depth(level[0]);
-        for s in &level {
-            assert!(
-                depth(s) >= 2. * rem,
-                "the rule of {} stands under less than two lines of head: {:?} {:?}",
-                s.at,
-                s.cell,
-                s.rule
-            );
-            assert!(
-                (depth(s) - first).abs() < 0.5,
-                "the rule of {} stands {} under its cell's top, where {} stands {first}",
-                s.at,
-                depth(s),
-                level[0].at
-            );
-        }
-        let mut mixed = 0;
-        for (n, a) in level.iter().enumerate() {
-            for b in &level[n + 1..] {
-                if a.track != b.track || (a.cell.top() - b.cell.top()).abs() >= px(1.) {
-                    continue;
-                }
-                assert!(
-                    (a.rule.top() - b.rule.top()).abs() < px(0.5),
-                    "the rules of {} and {} stand on two levels in one row: {:?} {:?}",
-                    a.at,
-                    b.at,
-                    a.rule,
-                    b.rule
-                );
-                if let (Some(one), Some(other)) = (a.code, b.code) {
-                    assert!(
-                        (one.top() - other.top()).abs() < px(0.5),
-                        "the headcodes of {} and {} start on two levels in one row: {one:?} {other:?}",
-                        a.at,
-                        b.at
-                    );
-                }
-                let wrapped = |s: &Stands| f32::from(s.head.size.height) > 1.5 * rem;
-                if wrapped(a) != wrapped(b) {
-                    mixed += 1;
-                }
-            }
-        }
-        mixed
-    }
-
     /// At the narrowest window the panel holds: the tracks stand in
-    /// order down the pane, each fitting the pane's width with its name
-    /// above its stages, and Quiet stands below the fold, reached by
-    /// scrolling down. Nothing runs past the pane's right edge, and the
-    /// rules of a row stand level where a stage of people wraps its head
-    /// beside one that does not. The summary's longer worked line, split
-    /// by kind, holds inside the pane too.
+    /// order down the pane, each fitting the pane's width with its head
+    /// above its stations, and No flow's section stands below the fold,
+    /// reached by scrolling down. Nothing but the tracks' stations runs
+    /// past the pane's right edge: the stations keep their narrowest
+    /// and the track scrolls. The stats' longer worked pill, split by
+    /// kind, holds inside the pane too.
     #[gpui::test]
     fn the_panel_holds_at_the_narrowest_window(cx: &mut TestAppContext) {
         let yard = Yard::start();
@@ -20501,8 +20704,8 @@ yardr.dev
         // The narrowest window the application opens (main.rs).
         cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(360.)));
         view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
-        wait(cx, "the panel", |cx| drawn(cx, "panel quiet"));
-        // The summary's longer worked line splits by kind, with each
+        wait(cx, "the panel", |cx| drawn(cx, "panel loose show"));
+        // The stats' longer worked pill splits by kind, with each
         // working group's seats, and holds inside the pane.
         view.read_with(cx, |v, _| {
             let model = v.model.as_ref().unwrap();
@@ -20524,27 +20727,25 @@ yardr.dev
                 ]
             );
         });
-        let summary = bounds_of(cx, "panel summary");
+        let stats = bounds_of(cx, "panel stats");
         assert!(
-            summary.right() <= px(WINDOW_MIN),
-            "the summary runs past the pane: {summary:?}"
+            stats.right() <= px(WINDOW_MIN),
+            "the stats run past the pane: {stats:?}"
         );
-        // Down the pane: the head, the tracks, the stub, No line and
-        // Quiet stand in order, Quiet below the fold.
+        // Down the pane: the head, the tracks, the stub and No flow's
+        // section stand in order, No flow below the fold.
         let head = bounds_of(cx, "arrivals head");
         let first = bounds_of(cx, "panel track yardr default");
         let second = bounds_of(cx, "panel track yardr design");
         let third = bounds_of(cx, "panel track footplate default");
         let stub = bounds_of(cx, "panel elsewhere yardr");
-        let noline = bounds_of(cx, "panel noline");
-        let quiet = bounds_of(cx, "panel quiet");
+        let loose = bounds_of(cx, "panel loose");
         for (what, top, bottom) in [
             ("the head", &head, &first),
             ("the first track", &first, &second),
             ("the second track", &second, &stub),
             ("the stub", &stub, &third),
-            ("the third track", &third, &noline),
-            ("No line", &noline, &quiet),
+            ("the third track", &third, &loose),
         ] {
             assert!(
                 top.top() <= bottom.top(),
@@ -20552,11 +20753,12 @@ yardr.dev
             );
         }
         assert!(
-            px(360.) <= quiet.top(),
-            "Quiet stands on first paint: {quiet:?}"
+            px(360.) <= loose.top(),
+            "No flow stands on first paint: {loose:?}"
         );
-        // Sideways: every name, backlog count and stage cell stands
-        // inside the pane, and every card stops at its edge.
+        // Sideways: every card and head part stops at the pane's edge,
+        // and every station keeps its narrowest while the track
+        // scrolls past it.
         for (depot, flow, stages) in [
             (
                 "yardr",
@@ -20572,8 +20774,8 @@ yardr.dev
                 "the {depot} {flow} card runs past the pane: {card:?}"
             );
             for part in [
-                format!("panel name {depot} {flow}"),
-                format!("panel name {depot} {flow} backlog"),
+                format!("panel head {depot} {flow}"),
+                format!("panel head {depot} {flow} backlog"),
             ] {
                 let at = bounds_of(cx, &part);
                 assert!(
@@ -20582,42 +20784,21 @@ yardr.dev
                 );
             }
             for stage in stages {
-                let cell = bounds_of(cx, &format!("panel stage {depot} {flow} {stage}"));
+                let station = bounds_of(cx, &format!("panel station {depot} {flow} {stage}"));
                 assert!(
-                    cell.right() <= px(WINDOW_MIN),
-                    "the {depot} {flow} {stage} cell runs past the pane: {cell:?}"
+                    TRACK_STATION - 1. <= f32::from(station.size.width),
+                    "the {depot} {flow} {stage} station squeezes past its narrowest: {station:?}"
                 );
             }
         }
-        // Level: in every row the rules stand at one height, whether
-        // the heads wrapped (`decide · people`, `draft · people`) or not.
-        // `new` draws its worked bead, listed third, as its one headcode.
-        let rem = f32::from(settings_of(&view, cx).rem());
-        let mixed = rules_level(
-            cx,
-            rem,
-            &[
-                held("yardr", "default", "new", Some("yd-extra")),
-                held("yardr", "default", "decide", None),
-                held("yardr", "default", "review", Some("yd-zulu")),
-                held("yardr", "default", "approved", None),
-                held("yardr", "design", "draft", Some("yd-qskt")),
-                held("yardr", "design", "critique", None),
-                held("footplate", "default", "new", Some("footplate-fc47")),
-            ],
-        );
-        assert!(
-            0 < mixed,
-            "no row stands a head of one line beside a wrapped one"
-        );
     }
 
-    /// At the narrowest window no track's cells run past the pane's right
-    /// edge, and a flow too long to fit wraps: its later stages continue
-    /// on a row below, starting under the first stage's column, with the
-    /// rules of every row on one level.
+    /// At the narrowest window a flow too long to fit scrolls
+    /// sideways: its stations stand on one row at their narrowest, the
+    /// last past the pane's edge, while the card stops at it and a
+    /// short track stands whole inside.
     #[gpui::test]
-    fn the_panel_fits_its_tracks_and_wraps_a_long_flow(cx: &mut TestAppContext) {
+    fn the_panel_s_tracks_scroll_a_long_flow_sideways(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
@@ -20640,62 +20821,50 @@ yardr.dev
             "done",
             "closed",
         ];
-        // Every cell stands inside the pane, the long flow's and the
+        // Every station keeps its narrowest, the long flow's and the
         // short one's.
         for stage in stages {
-            let cell = bounds_of(cx, &format!("panel stage yardr release {stage}"));
+            let station = bounds_of(cx, &format!("panel station yardr release {stage}"));
             assert!(
-                cell.right() <= px(WINDOW_MIN),
-                "the {stage} cell runs past the pane: {cell:?}"
+                TRACK_STATION - 1. <= f32::from(station.size.width),
+                "the {stage} station squeezes past its narrowest: {station:?}"
             );
         }
-        let small = bounds_of(cx, "panel stage yardr default new");
+        // The long flow stands on one row, its last station past the
+        // pane's edge; the card stops at it.
+        let first = bounds_of(cx, "panel station yardr release build");
+        let last = bounds_of(cx, "panel station yardr release closed");
+        assert!(
+            (first.top() - last.top()).abs() < px(1.),
+            "the long flow wraps to another row: {first:?} {last:?}"
+        );
+        assert!(
+            px(WINDOW_MIN) < last.right(),
+            "the long flow stands inside the pane, scrolling nowhere: {last:?}"
+        );
+        let card = bounds_of(cx, "panel track yardr release");
+        assert!(
+            card.right() <= px(WINDOW_MIN),
+            "the long card runs past the pane: {card:?}"
+        );
+        let small = bounds_of(cx, "panel station yardr default new");
         assert!(
             small.right() <= px(WINDOW_MIN),
             "the short track runs past the pane: {small:?}"
         );
-        // The long flow wraps: its last stage stands below its first,
-        // starting under the first stage's column.
-        let first = bounds_of(cx, "panel stage yardr release build");
-        let last = bounds_of(cx, "panel stage yardr release closed");
-        assert!(
-            first.top() < last.top(),
-            "the long flow stands on one row: {first:?} {last:?}"
-        );
-        assert!(
-            (first.left() - last.left()).abs() < px(1.),
-            "the wrapped row starts off the first column: {first:?} {last:?}"
-        );
-        // Every row of the wrapped track stands its rules on one level,
-        // the first two rows where a head of people wraps beside one that
-        // stands on a line.
-        let rem = f32::from(settings_of(&view, cx).rem());
-        let mut cells: Vec<HeldCell> = stages
-            .iter()
-            .map(|stage| {
-                let bead = (*stage == "build").then_some("yd-ship");
-                held("yardr", "release", stage, bead)
-            })
-            .collect();
-        cells.push(held("yardr", "default", "new", Some("yd-small")));
-        let mixed = rules_level(cx, rem, &cells);
-        assert!(
-            0 < mixed,
-            "no row stands a head of one line beside a wrapped one"
-        );
     }
 
-    /// The No line card holds its headcodes: with beads travelling with
-    /// no line and quiet depots folded, each headcode stands inside the
-    /// card and the card ends above the Quiet row, at every text size;
-    /// a line's track with three beads on one stage, two of them worked,
-    /// holds its headcode and its "+1 working · 1 waiting" alike. The
-    /// panel scrolls over its tracks instead of squeezing them, so
-    /// nothing draws over the row below. With the quiet depots unfolded
-    /// the Quiet row still stands below the card, with the quiet tracks
-    /// under it.
+    /// The No flow section holds its line at the panel's foot: with
+    /// beads travelling with no flow, its box and its line stand whole
+    /// below the last track at every text size, and its line opens
+    /// their list; a flow's track with three beads on one stage, two
+    /// of them worked, holds its chip and its "+N" inside the station
+    /// alike. The panel scrolls over its sections instead of squeezing
+    /// them, so nothing draws over the row below. With the quiet
+    /// depots unfolded the panel stands as it stood: their fold is the
+    /// list's alone.
     #[gpui::test]
-    fn the_no_line_card_holds_its_headcodes_above_the_quiet_row(cx: &mut TestAppContext) {
+    fn the_no_flow_section_holds_its_line_at_the_panel_s_foot(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
@@ -20704,69 +20873,44 @@ yardr.dev
         to_timetable(&view, cx);
         cx.run_until_parked();
         // The narrowest window the application opens (main.rs): the
-        // five tracks, the No line card and the Quiet row cannot all
-        // fit its panel, so a column that shrinks its children
-        // squeezes them and the headcodes spill over the next row.
+        // tracks and the No flow section cannot all fit its panel, so
+        // a column that shrinks its children squeezes them and the
+        // chips spill over the next row.
         cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(360.)));
         view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
-        wait(cx, "the panel", |cx| drawn(cx, "panel noline"));
-        // One frame, read whole: a redraw per headcode would draw the
-        // window again for each. The card holds its headcodes and ends
-        // above the Quiet row, folded or unfolded alike.
+        wait(cx, "the panel", |cx| drawn(cx, "panel loose show"));
+        // One frame, read whole: a redraw per chip would draw the
+        // window again for each.
         let held = |cx: &mut VisualTestContext, text: u8| {
             drawn(cx, "panel");
-            let card = bounds_now(cx, "panel noline");
-            for bead in ["yd-drifter", "yd-stray"] {
-                let code = bounds_now(cx, &format!("panel headcode {bead}"));
+            let loose = bounds_now(cx, "panel loose");
+            let show = bounds_now(cx, "panel loose show");
+            assert!(
+                loose.left() <= show.left()
+                    && show.right() <= loose.right()
+                    && loose.top() <= show.top()
+                    && show.bottom() <= loose.bottom(),
+                "at {text} px the line stands off the No flow box: {loose:?} {show:?}"
+            );
+            // The last track ends above the section.
+            let last = bounds_now(cx, "panel track gamma default");
+            assert!(
+                last.bottom() <= loose.top(),
+                "at {text} px the last track runs over the No flow section: {last:?} {loose:?}"
+            );
+            // A flow's track with three beads on one stage, two of them
+            // worked: its chip and its "+N" stand inside the station.
+            let station = bounds_now(cx, "panel station yardr default new");
+            for chip in ["panel chip yd-first", "panel more yardr default new"] {
+                let at = bounds_now(cx, chip);
                 assert!(
-                    card.left() <= code.left()
-                        && code.right() <= card.right()
-                        && card.top() <= code.top()
-                        && code.bottom() <= card.bottom(),
-                    "at {text} px the {bead} headcode stands off the No line card: {card:?} {code:?}"
+                    station.left() <= at.left() + px(1.)
+                        && at.right() <= station.right() + px(1.)
+                        && station.top() <= at.top() + px(1.)
+                        && at.bottom() <= station.bottom() + px(1.),
+                    "at {text} px {chip} stands off its station: {station:?} {at:?}"
                 );
             }
-            let quiet = bounds_now(cx, "panel quiet");
-            assert!(
-                card.bottom() <= quiet.top(),
-                "at {text} px the No line card runs over the Quiet row: {card:?} {quiet:?}"
-            );
-            // A line's track with three beads on one stage, two of them
-            // worked: its headcode and its "+1 working · 1 waiting" stand
-            // inside the track's card, each phrase whole on one line
-            // inside its cell, the second under the first where the
-            // two cannot stand side by side.
-            let track = bounds_now(cx, "panel track yardr default");
-            let code = bounds_now(cx, "panel headcode yd-first");
-            assert!(
-                track.left() <= code.left()
-                    && code.right() <= track.right()
-                    && track.top() <= code.top()
-                    && code.bottom() <= track.bottom(),
-                "at {text} px the headcode stands off its track: {track:?} {code:?}"
-            );
-            let more = bounds_now(cx, "panel more yardr default new");
-            assert!(
-                track.left() <= more.left()
-                    && more.right() <= track.right()
-                    && track.top() <= more.top()
-                    && more.bottom() <= track.bottom(),
-                "at {text} px the +1 working · 1 waiting stands off its track: {track:?} {more:?}"
-            );
-            let cell = bounds_now(cx, "panel stage yardr default new");
-            let rem = f32::from(settings_of(&view, cx).rem());
-            for phrase in ["+1 working", "1 waiting"] {
-                let at = bounds_now(cx, &format!("panel more yardr default new {phrase}"));
-                assert!(
-                    cell.left() <= at.left() && at.right() <= cell.right(),
-                    "at {text} px phrase {phrase} of the +N stands off its cell: {cell:?} {at:?}"
-                );
-                assert!(
-                    f32::from(at.size.height) < rem * 1.5,
-                    "at {text} px phrase {phrase} of the +N wraps inside itself: {at:?}"
-                );
-            }
-            quiet
         };
         for text in [settings::TEXT_MIN, settings::TEXT, settings::TEXT_MAX] {
             view.update(cx, |v, cx| {
@@ -20778,10 +20922,27 @@ yardr.dev
             });
             held(cx, text);
         }
-        // Unfolded, as mckean's shot has it: the Quiet row still
-        // stands below the card, with the quiet tracks under it. The
-        // fold is toggled through the model: the row stands scrolled
-        // out of this narrow window, where no click reaches it.
+        // The line opens their list: short words and a tall window,
+        // so it stands on first paint where a click reaches it.
+        view.update(cx, |v, cx| {
+            let set = Settings {
+                text: settings::TEXT_MIN,
+                ..v.settings.clone()
+            };
+            v.set(set, cx)
+        });
+        cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(1600.)));
+        view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+        wait(cx, "the panel", |cx| drawn(cx, "panel loose show"));
+        click_on(cx, "panel loose show");
+        wait(cx, "No flow", |cx| drawn(cx, "no line head"));
+        cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(360.)));
+        view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+        wait(cx, "the panel", |cx| drawn(cx, "panel loose show"));
+        // Unfolded: the quiet depots stand on no track, and the panel
+        // stands as it stood. The fold is toggled through the model:
+        // the row stands scrolled out of this narrow window, where no
+        // click reaches it.
         view.update(cx, |v, cx| {
             v.change(cx, |m| {
                 m.toggle_quiet();
@@ -20796,15 +20957,11 @@ yardr.dev
                 };
                 v.set(set, cx)
             });
-            let quiet = held(cx, text);
-            for track in ["panel track drafts default", "panel track reports default"] {
-                let card = bounds_now(cx, track);
-                assert!(
-                    quiet.bottom() <= card.top(),
-                    "at {text} px unfolded {track} stands over the Quiet row: {quiet:?} {card:?}"
-                );
-            }
+            held(cx, text);
         }
+        view.read_with(cx, |v, _| {
+            assert!(v.model.as_ref().unwrap().quiet_expanded());
+        });
     }
 
     /// The departures board holds its rows: with the cap's fifteen
@@ -20971,57 +21128,12 @@ yardr.dev
         }
     }
 
-    /// The rules stand level at the narrowest window, at a laptop's and
-    /// at a wide one: with this yard's own flows, whose stages of people
-    /// and hyphenated names wrap where `new` and `review` do not, every
-    /// row of every track stands its rules at one height, as one straight
-    /// track, and the headcodes under them start at one height too.
+    /// A label that wraps, which none of this yard's names does in a
+    /// wide station, stays inside its station: its words stand whole
+    /// between the node and the chips, never up over the node row, and
+    /// the chip stands under them inside the station.
     #[gpui::test]
-    fn the_panel_s_rules_stand_level_in_every_row_at_every_window_width(cx: &mut TestAppContext) {
-        let yard = Yard::start();
-        a_yard_of_jo(&yard);
-        yard.answer("Arrivals", &arrivals_board());
-        yard.answer("Flows", &flows_this_yard());
-        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
-        to_timetable(&view, cx);
-        cx.run_until_parked();
-        let rem = f32::from(settings_of(&view, cx).rem());
-        // Every stage of every flow, with the bead `flows_this_yard`
-        // stands on it.
-        let mut cells = Vec::new();
-        for (depot, flows) in &this_yard() {
-            for flow in flows {
-                for (stage, ..) in flow.stages.iter().filter(|(stage, ..)| stage != "backlog") {
-                    let bead = format!("{depot}-{}-{stage}", flow.name);
-                    cells.push(held(depot, &flow.name, stage, Some(&bead)));
-                }
-            }
-        }
-        // The narrowest window the application opens (main.rs), a
-        // laptop's, and a wide one.
-        for (width, height) in [(WINDOW_MIN, 360.), (950., 700.), (1200., 800.)] {
-            cx.simulate_resize(gpui::size(px(width), px(height)));
-            view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
-            wait(cx, "the panel", |cx| {
-                drawn(cx, "panel track yardr yardr.train")
-            });
-            // One frame, read whole: a redraw per cell would draw this
-            // many-tracked window hundreds of times.
-            drawn(cx, "panel");
-            let mixed = rules_level(cx, rem, &cells);
-            assert!(
-                0 < mixed,
-                "at {width} wide no row stands a head of one line beside a wrapped one"
-            );
-        }
-    }
-
-    /// A head that wants three lines, which none of this yard's names
-    /// does at the narrowest cell, makes its own cell taller: its words
-    /// stand whole between its cell's top and its rule, never up over the
-    /// row above, and the headcode stands under the rule.
-    #[gpui::test]
-    fn a_head_of_three_lines_makes_its_cell_taller_and_runs_over_nothing(cx: &mut TestAppContext) {
+    fn a_label_that_wraps_stays_inside_its_station(cx: &mut TestAppContext) {
         let yard = Yard::start();
         a_yard_of_jo(&yard);
         yard.answer("Arrivals", &arrivals_board());
@@ -21032,11 +21144,13 @@ yardr.dev
         };
         yard.answer(
             "Flows",
-            &json!({"result": {"travelling": 2, "depots": [
-                {"name": "yardr", "kind": "git", "travelling": 2, "flows": [
+            &json!({"result": {"travelling": 4, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 4, "flows": [
                     {"name": "default", "type": "", "source": "store", "stages": [
                         on("new", false, "yd-short"),
-                        on("review-security", true, "yd-long"),
+                        on("review-security-gate", true, "yd-long"),
+                        on("approved", false, "yd-seal"),
+                        on("done", false, "yd-done"),
                     ]},
                 ], "elsewhere": []},
             ], "unassigned": []}})
@@ -21049,53 +21163,26 @@ yardr.dev
         view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
         wait(cx, "the panel", |cx| drawn(cx, "panel track yardr default"));
         let rem = f32::from(settings_of(&view, cx).rem());
-        let cell = bounds_of(cx, "panel stage yardr default review-security");
-        let head = bounds_now(cx, "panel head yardr default review-security");
-        let rule = bounds_now(cx, "panel rule yardr default review-security");
-        let code = bounds_now(cx, "panel headcode yd-long");
+        let station = bounds_of(cx, "panel station yardr default review-security-gate");
+        let label = bounds_now(cx, "panel label yardr default review-security-gate");
+        let node = bounds_now(cx, "panel node yardr default review-security-gate people");
+        let chip = bounds_now(cx, "panel chip yd-long");
         assert!(
-            2.5 * rem < f32::from(head.size.height),
-            "the head wraps to three lines: {head:?}"
+            1.5 * rem < f32::from(label.size.height),
+            "the label stands on one line, truncated: {label:?}"
         );
         assert!(
-            cell.top() <= head.top(),
-            "the head runs up over the row above: {cell:?} {head:?}"
+            station.top() <= label.top(),
+            "the label runs up over the node row: {station:?} {label:?}"
         );
         assert!(
-            head.bottom() <= rule.top(),
-            "the head runs down past its rule: {head:?} {rule:?}"
+            node.bottom() <= label.top(),
+            "the label runs up over its node: {node:?} {label:?}"
         );
         assert!(
-            rule.bottom() <= code.top() && code.bottom() <= cell.bottom(),
-            "the headcode stands off its cell: {rule:?} {code:?} {cell:?}"
+            label.bottom() <= chip.top() && chip.bottom() <= station.bottom(),
+            "the chip stands off its station: {label:?} {chip:?} {station:?}"
         );
-    }
-
-    /// The tracks share the columns of the flow with the most stages:
-    /// each other stage one column, the backlog never one, and one where
-    /// no flow has a stage, so the cards still divide.
-    #[test]
-    fn the_tracks_share_the_columns_of_the_flow_with_the_most_stages() {
-        let depot = |stages: &[&str]| FlowDepot {
-            flows: vec![Flow {
-                stages: stages
-                    .iter()
-                    .map(|name| FlowStage {
-                        stage: name.to_string(),
-                        ..FlowStage::default()
-                    })
-                    .collect(),
-                ..Flow::default()
-            }],
-            ..FlowDepot::default()
-        };
-        assert_eq!(panel_columns(&[]), 1);
-        // The backlog is never a column.
-        assert_eq!(panel_columns(&[depot(&["backlog"])]), 1);
-        assert_eq!(panel_columns(&[depot(&["backlog", "a"])]), 1);
-        // The widest flow decides, whichever depot holds it.
-        let wide = depot(&["backlog", "a", "b", "c", "d", "e"]);
-        assert_eq!(panel_columns(&[depot(&["a", "b"]), wide]), 5);
     }
 
     #[test]
@@ -21122,16 +21209,16 @@ yardr.dev
         for width in [WINDOW_MIN, 1920.] {
             cx.simulate_resize(gpui::size(px(width), px(900.)));
             view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
-            wait(cx, "the panel", |cx| drawn(cx, "panel quiet"));
+            wait(cx, "the panel", |cx| drawn(cx, "panel loose show"));
             let panel = bounds_of(cx, "panel");
-            // The body's side padding, 12 pixels each side.
-            let wanted = panel.size.width - px(24.);
+            // The body's side padding, 16 pixels each side.
+            let wanted = panel.size.width - px(32.);
             for track in [
                 "panel track yardr default",
                 "panel track yardr design",
                 "panel track footplate default",
                 "panel elsewhere yardr",
-                "panel noline",
+                "panel loose",
             ] {
                 let card = bounds_of(cx, track);
                 assert!(
@@ -21146,12 +21233,12 @@ yardr.dev
         }
     }
 
-    /// No name on the panel is cut at any text size: each depot, flow
-    /// line and backlog count stands whole on its track's name row, and
-    /// each stage head stands whole on one line or wraps whole onto a
-    /// second, never truncated. The cells are in rems, so they grow with
-    /// the text as the words do; in pixels they cut the words at the
-    /// larger sizes.
+    /// No name on the panel is cut at any text size: each track head's
+    /// parts stand inside the card, wrapping whole onto more lines
+    /// where one cannot hold them, and each station's label stands
+    /// inside its station, wrapping whole where it must. The stations
+    /// grow with the text as the words do; in pixels they would cut
+    /// the words at the larger sizes.
     #[gpui::test]
     fn the_panel_holds_this_yard_s_longest_names_at_every_text_size(cx: &mut TestAppContext) {
         let yard = Yard::start();
@@ -21172,85 +21259,37 @@ yardr.dev
                 };
                 v.set(set, cx)
             });
-            let rem = f32::from(settings_of(&view, cx).rem());
             // One frame, read whole: a redraw per name would draw this
             // many-tracked window hundreds of times.
             drawn(cx, "panel");
-            // The small words are three quarters of a rem. The depot's
-            // name is seven eighths of one, and bold, which DejaVu draws
-            // about a seventh wider than its regular: held at that size
-            // and a seventh more.
-            let small = 0.75 * rem;
-            let bold = 0.875 * rem * 8. / 7.;
             for (depot, flows) in &this_yard() {
                 for flow in flows {
-                    let (name, flow_type) = (&flow.name, &flow.flow_type);
-                    let line = match flow_type.is_empty() {
-                        true => name.to_string(),
-                        false => format!("{name} · {flow_type}"),
-                    };
-                    let backlogged = flow
-                        .stages
-                        .iter()
-                        .filter(|(stage, ..)| stage == "backlog")
-                        .count();
-                    let backlog = format!("{backlogged} backlog");
-                    // Every stage but the backlog stands a waiting bead
-                    // and burns a lamp, so the head says how many wait,
-                    // with the lamp before the depot.
-                    let waiting = flow.stages.len() - backlogged;
-                    let waits = format!("{waiting} waiting");
-                    // The name's words stand on one line each: a wrapped
-                    // word would be two lines high. They hug their text,
-                    // so the test platform's wide font sizes their boxes,
-                    // and holding those against DejaVu says nothing; the
-                    // row is held instead, as DejaVu draws it, against
-                    // the card it stands in.
-                    for part in ["depot", "flow", "waiting", "backlog"] {
-                        let at = bounds_now(cx, &format!("panel name {depot} {name} {part}"));
+                    let name = &flow.name;
+                    let card = bounds_now(cx, &format!("panel track {depot} {name}"));
+                    // The head's parts stand inside the card: a part
+                    // past its edge would be cut. Every flow here is
+                    // typed or sourced, so the chip stands on each.
+                    for part in ["name", "chip", "status", "backlog"] {
+                        let at = bounds_now(cx, &format!("panel head {depot} {name} {part}"));
                         assert!(
-                            f32::from(at.size.height) < rem * 1.5,
-                            "at {text} px the {part} is wrapped in {depot} {name}: {at:?}"
+                            card.left() <= at.left() && at.right() <= card.right(),
+                            "at {text} px the head's {part} runs past its card in {depot} {name}: {at:?} {card:?}"
                         );
                     }
-                    let card = bounds_now(cx, &format!("panel track {depot} {name}"));
-                    let available = f32::from(card.size.width) - 1.5 * rem - 2.;
-                    // The row's two gaps and the counts' two (half a rem
-                    // each, a quarter), the dot between the counts, and
-                    // the lamp with its gap.
-                    let wide = dejavu_width(depot, bold)
-                        + dejavu_width(&line, small)
-                        + dejavu_width(&waits, small)
-                        + dejavu_width(&backlog, small)
-                        + dejavu_width("·", small)
-                        + 1.5 * rem
-                        + 0.75 * rem;
-                    assert!(
-                        wide <= available,
-                        "at {text} px the name overflows its card in {depot} {name}: {wide} wide in {card:?}"
-                    );
-                    for (stage, human, _) in
-                        flow.stages.iter().filter(|(stage, ..)| stage != "backlog")
-                    {
-                        // A head stands on one line or wraps whole onto
-                        // a second, never more and never cut.
-                        let head = bounds_now(cx, &format!("panel head {depot} {name} {stage}"));
+                    for (stage, ..) in flow.stages.iter().filter(|(stage, ..)| stage != "backlog") {
+                        // A label stands inside its station, on one
+                        // line or wrapped whole: past its edges it
+                        // would be cut.
+                        let station =
+                            bounds_now(cx, &format!("panel station {depot} {name} {stage}"));
+                        let label = bounds_now(cx, &format!("panel label {depot} {name} {stage}"));
                         assert!(
-                            f32::from(head.size.height) < rem * 2.5,
-                            "at {text} px the head wraps past two lines in {depot} {name} {stage}: {head:?}"
+                            station.left() <= label.left()
+                                && label.right() <= station.right()
+                                && station.top() <= label.top()
+                                && label.bottom() <= station.bottom(),
+                            "at {text} px the label stands off its station in {depot} {name} {stage}: {label:?} {station:?}"
                         );
-                        // At the largest text this yard's longest heads
-                        // wrap: a truncated head would stand one line
-                        // high with its words past its box.
-                        if text == settings::TEXT_MAX
-                            && (matches!(stage.as_str(), "contributor" | "review-security")
-                                || (*human && stage == "approved"))
-                        {
-                            assert!(
-                                f32::from(head.size.height) > rem * 1.5,
-                                "at {text} px the longest head stands one line high, truncated, in {depot} {name} {stage}: {head:?}"
-                            );
-                        }
                     }
                 }
             }
@@ -38041,7 +38080,7 @@ yardr.dev
         to_timetable(&view, cx);
         click_on(cx, "row arrivals");
         wait(cx, "the panel", |cx| {
-            drawn(cx, "panel headcode bead-p") && drawn(cx, "panel waits")
+            drawn(cx, "panel chip bead-p") && drawn(cx, "stat decide")
         });
         // What waits on jo is the question with the two parked beads
         // after it, as the panel's summary and the board's banner count
@@ -38060,7 +38099,7 @@ yardr.dev
         // Found on the panel, or in its line, the details hold the same keys
         // for the moves, and the back link leads to where the bead was
         // opened from.
-        click_on(cx, "panel headcode bead-p");
+        click_on(cx, "panel chip bead-p");
         wait(cx, "the bead from the panel", |cx| {
             has_bead(&view, cx, "bead-p")
                 && open_row(&view, cx) == Some(Selected::Bead("bead-p".into()))
@@ -38201,8 +38240,8 @@ yardr.dev
         // A bead with no line is found in No line, and its block is the
         // same; the yard's words for a refusal stand on it, and the back
         // link leads to No line.
-        click_on(cx, "row No line");
-        wait(cx, "No line", |cx| drawn(cx, "no line bead bead-q"));
+        click_on(cx, "row No flow");
+        wait(cx, "No flow", |cx| drawn(cx, "no line bead bead-q"));
         click_on(cx, "no line bead bead-q");
         wait(cx, "the bead", |cx| {
             has_bead(&view, cx, "bead-q") && drawn(cx, "waiting move bead-q 1")
@@ -38348,8 +38387,8 @@ yardr.dev
             assert!(!drawn(cx, &format!("stage help {bead}")), "{bead}");
             assert!(!drawn(cx, &format!("waiting move {bead} 1")), "{bead}");
         }
-        click_on(cx, "row No line");
-        wait(cx, "No line", |cx| drawn(cx, "no line bead bead-q"));
+        click_on(cx, "row No flow");
+        wait(cx, "No flow", |cx| drawn(cx, "no line bead bead-q"));
         click_on(cx, "no line bead bead-q");
         wait(cx, "bead-q", |cx| {
             has_bead(&view, cx, "bead-q") && drawn(cx, "bead title bead-q")

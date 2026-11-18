@@ -146,6 +146,13 @@ pub(crate) struct Place {
     /// Which arrivals view stood: the departures board where true, the
     /// panel where false, as the head's toggle sets it.
     pub(crate) departures: bool,
+    /// Which flow view stood: the board where true, the list where
+    /// false, as the head's toggle sets it.
+    pub(crate) flow_board: bool,
+    /// The depots whose quiet flows stood unfolded in the list.
+    pub(crate) quiet_flows: HashSet<String>,
+    /// The flows whose empty stages stood unfolded in their list.
+    pub(crate) empty_open: HashSet<(String, String, String)>,
     /// The history's chip and the folded rows standing open, as the
     /// folded history itself is kept.
     pub(crate) decided_chip: Option<Outcome>,

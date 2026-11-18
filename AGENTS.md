@@ -38,7 +38,7 @@ The window, its state and the yard:
   The rest is in `src/window/`:
   - `src/window/arrivals.rs`: the timetable's views: the arrivals pane with
     its panel of tracks and departures board, the lines' flows, and the
-    beads that travel with no line.
+    beads that travel with no flow.
   - `src/window/ask.rs`: the words and keys of an ask's card: its heads and
     counts (a section head, and the one that folds its rows), its buttons,
     and the texts a run or a setup holds.

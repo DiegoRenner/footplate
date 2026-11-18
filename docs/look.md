@@ -185,3 +185,65 @@ its label. A run ask's command stands in a block on the side ground
 with Copy as a link word beside it, returning the plain command; a
 setup ask's taken account is outlined, as a lever is, and its Approve
 is the card's one fill likewise.
+
+## Lines
+
+The timetable's list is the depot tree. The Arrivals row carries the
+yard-wide total at its right (`N · all depots`); under the Depots
+head, which counts its rows with beads (`N with beads`), each active
+depot stands with its lamp, its name, and at the right how many wait
+on the reader in rust, else its travelling total — under it its
+transit with its moving and quiet flows (`4 in transit · 2 flows
+moving, 3 quiet`). Each moving flow nests under its depot with its
+lamp and its count (rust where any waits on the reader, else what is
+worked, else its travelling total); the quiet flows fold under `N
+quiet flows`. The No flow row stands last while beads travel with
+none, the quiet depots folded under Quiet depots (`N · nothing
+moving`). A depot's row opens the depot's board, a flow's its list.
+
+The arrivals head is `Arrivals` in the title role with `N in transit
+across all flows` under it and the Panel/Departures segmented control
+at its right, then the stats, each a 28-high pill only where any
+stands: what is worked (the running dot before it, split by kind
+where two or more work, the working groups with their seats on
+hover), what waits to decide in rust with the accent edge and to move
+after it, each opening Decide. The departures board under the toggle
+keeps its columns: Expected, Bead, Platform, Line, Remark.
+
+The panel opens with the legend of the five nodes, then one section
+per depot with beads in transit. Each moving flow is a track: its
+head above its stations — the flow's name with its type (`type X`)
+or source chip, who it waits on with its backlog counted apart — one
+station per stage but the backlog's in travel order, each a node on
+the track's line with its name and its beads' chips under it (two,
+then `+N`). The card reads rust-edged where any of its beads waits
+on the reader. Each quiet flow is one line of its path (`a › b › T1
+/ T2`, the backlog left out) with its backlog; the Elsewhere line
+stands where beads stand in no stage of the depot's flows. The beads
+travelling with no flow stand in their own section with its line,
+which opens their list. Stations share the card's width down to 82
+(`TRACK_STATION`), past which the track scrolls sideways.
+
+A station's node is 14 wide: the plain crew dot, the hollow people
+ring, the working ring, the rust fill waiting on the reader, the end
+square. A bead's chip is a 20-high pill with its short handle in
+mono: rust filled where it waits on the reader, semibold where
+worked, red where held or stalled. A quiet flow's name holds 150
+(`QUIET_NAME`) with its path past it.
+
+A flow's pane opens with the depot, the flow under it and the flow's
+source, with the List/Board toggle at the right. Under it the
+stages' strip — each but the backlog's a 10-wide knot on the track
+with its name and the stages with beads named with their count —
+scrolling sideways past the pane's edge; `Grouped by stage · moving a
+bead goes through a Decide card`; then one group per stage with beads,
+each head with its count and its group words, the backlog's rows with
+the stage past them (`→ next`), and the served landing rows under the
+flow's landed end with their elapsed time. Empty stages fold to one
+row naming them. A row is 40 high: the
+mark (the working dot, the rust dot, the backlog's ring, the landed
+check), the short id in mono (`FLOW_ID`), the title, and at the
+right who works it with how long it has stood. The board under the
+toggle is the depot board's columns for the one flow. In a narrow pane,
+long titles, stage names, group words and metadata end with an ellipsis;
+their character budgets grow with the pane so the text stays inside it.

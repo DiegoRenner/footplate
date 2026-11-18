@@ -47,7 +47,7 @@ use super::firstrun::{Ended, FirstRun};
 use super::keys::{KeysView, SECONDARY, keys_for};
 use super::metrics::{
     DRAWER_WIDTH, HEAD_INSET, INPUT_KEPT, INPUT_NAME, INPUT_NOTE, LIST, MAIL_NEAR_TOP, RAIL,
-    RAIL_LABEL, RAIL_TILE, VOICE_LABEL, VOICE_NOTE, grown,
+    RAIL_LABEL, RAIL_TILE, VOICE_LABEL, VOICE_NOTE, grown, list_cap, pane_width,
 };
 use super::rail::{PROBE_AGAIN, Picture, Probe, RailTip, Unsent, ViewUp, reaches, run_address_of};
 #[cfg(debug_assertions)]
@@ -976,10 +976,13 @@ impl Footplate {
             kept.decided_expanded,
             kept.quiet_expanded,
             kept.departures,
+            kept.flow_board,
         );
         model.expand(&kept.expanded);
         model.show_texts(&kept.texts);
         model.fold_waiting(kept.waiting_folded);
+        model.show_quiet_flows(&kept.quiet_flows);
+        model.show_empty_open(&kept.empty_open);
         model.set_decided_chip(kept.decided_chip);
         model.show_folds(&kept.decided_folds);
         // The filter's field is the window's, not the yard's: what is
@@ -1215,6 +1218,7 @@ impl Footplate {
                         kept.decided_expanded,
                         kept.quiet_expanded,
                         kept.departures,
+                        kept.flow_board,
                     ),
                 };
                 model.fold_waiting(kept.waiting_folded);
@@ -2126,8 +2130,9 @@ impl Footplate {
             Selected::Conversation(_) | Selected::Yard if self.bottom_pending => px(0.),
             Selected::Conversation(_) => self.mail_above_newest(),
             Selected::Yard => self.conversation.max_offset().height + self.conversation.offset().y,
-            // The board, the lines, No line, the grants, the teammates,
-            // the pairing and the bead read from the top, as a card does.
+            // The board, the lines, the flows, No line, the grants,
+            // the teammates, the pairing and the bead read from the top,
+            // as a card does.
             Selected::Decision(_)
             | Selected::Waiting(_)
             | Selected::Decided(_, _)
@@ -2136,6 +2141,7 @@ impl Footplate {
             | Selected::Pairing
             | Selected::Arrivals
             | Selected::Line(_)
+            | Selected::Flow(_, _, _)
             | Selected::LineWindow(_)
             | Selected::NoLine
             | Selected::Bead(_) => px(0.) - self.decision.offset().y,
@@ -2150,6 +2156,11 @@ impl Footplate {
         kept.waiting_folded = model.is_some_and(Model::waiting_folded);
         kept.quiet_expanded = model.is_some_and(Model::quiet_expanded);
         kept.departures = model.is_some_and(Model::departures);
+        kept.flow_board = model.is_some_and(Model::flow_board);
+        kept.quiet_flows = model
+            .map(|m| m.quiet_flows_open().clone())
+            .unwrap_or_default();
+        kept.empty_open = model.map(|m| m.empty_open().clone()).unwrap_or_default();
         kept.decided_chip = model.and_then(|m| m.decided_chip());
         kept.decided_folds = model.map(|m| m.decided_folds().clone()).unwrap_or_default();
         kept
@@ -2174,11 +2185,12 @@ impl Footplate {
             | Selected::Waiting(bead)
             | Selected::Decided(bead, _)
             | Selected::Bead(bead) => model.has_bead(bead),
-            // The board's, a line's, No line's, the grants', the
-            // teammates' and the pairing's rows came with the state:
-            // they are whole at once.
+            // The board's, a line's, a flow's, No line's, the
+            // grants', the teammates' and the pairing's rows came with
+            // the state: they are whole at once.
             Selected::Arrivals
             | Selected::Line(_)
+            | Selected::Flow(_, _, _)
             | Selected::LineWindow(_)
             | Selected::NoLine
             | Selected::Grants
@@ -2237,6 +2249,7 @@ impl Footplate {
             | Selected::Pairing
             | Selected::Arrivals
             | Selected::Line(_)
+            | Selected::Flow(_, _, _)
             | Selected::LineWindow(_)
             | Selected::NoLine
             | Selected::Bead(_) => {
@@ -2325,6 +2338,7 @@ impl Footplate {
                 | Selected::Pairing
                 | Selected::Arrivals
                 | Selected::Line(_)
+                | Selected::Flow(_, _, _)
                 | Selected::LineWindow(_)
                 | Selected::NoLine
                 | Selected::Bead(_),
@@ -2702,13 +2716,15 @@ impl Footplate {
                 }
             }
             // Nothing is typed on the yard row, the grants, the
-            // teammates, the pairing, the board, a line or No line.
+            // teammates, the pairing, the board, a line, a flow or
+            // No line.
             Selected::Yard
             | Selected::Grants
             | Selected::Teammates
             | Selected::Pairing
             | Selected::Arrivals
             | Selected::Line(_)
+            | Selected::Flow(_, _, _)
             | Selected::LineWindow(_)
             | Selected::NoLine => {}
         }
@@ -6676,7 +6692,7 @@ impl Footplate {
         // its full 352; at the floor it narrows to 270 to keep the
         // pane. metrics::LIST says why 352.
         let rem = f32::from(window.rem_size());
-        let cap = (f32::from(window.viewport_size().width) - RAIL - 290. * rem / 16.).max(160.);
+        let cap = list_cap(window.viewport_size().width, rem);
         div()
             .w(rems(LIST / 16.))
             .max_w(px(cap))
@@ -6999,6 +7015,7 @@ impl Footplate {
         &self,
         model: &Model,
         palette: Palette,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         match model.selected() {
@@ -7010,6 +7027,18 @@ impl Footplate {
             Some(Selected::Line(line)) => {
                 self.talk_flow(model, line, palette, cx).into_any_element()
             }
+            Some(Selected::Flow(depot, name, flow_type)) => self
+                .talk_flow_list(
+                    model,
+                    depot,
+                    name,
+                    flow_type,
+                    pane_width(window.viewport_size().width, f32::from(window.rem_size())),
+                    f32::from(window.rem_size()),
+                    palette,
+                    cx,
+                )
+                .into_any_element(),
             Some(Selected::LineWindow(depot)) => self
                 .talk_line_window(model, depot, palette, cx)
                 .into_any_element(),
@@ -7296,9 +7325,13 @@ fn shot_selected() -> Option<Selected> {
         | Ok("departures")
         | Ok("old-lines")
         | Ok("lines-panel")
-        | Ok("lines-departures") => return Some(Selected::Arrivals),
+        | Ok("lines-departures")
+        | Ok("lines-arrivals") => return Some(Selected::Arrivals),
         Ok("arrival") => return Some(Selected::Bead("yd-zulu".into())),
         Ok("flow") => return Some(Selected::Line("yardr".into())),
+        Ok("lines-flow") => {
+            return Some(Selected::Flow("yardr".into(), "default".into(), "".into()));
+        }
         Ok("line-window") | Ok("line-edit") | Ok("line-sent") | Ok("line-picker")
         | Ok("line-refused") | Ok("line-pack") => {
             return Some(Selected::LineWindow("yardr".into()));
