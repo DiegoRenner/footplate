@@ -11,9 +11,9 @@ use super::Footplate;
 use super::ask::section_head;
 use super::metrics::{
     BACKLOG_TITLES, BOARD_BEAD, BOARD_EXPECTED, BOARD_LINE, BOARD_PLATFORM, BOARD_REMARK, FLOW_ID,
-    LINE_COLUMN, LINE_HEAD, QUIET_NAME, QUIET_NAME_CHARS, ROW_MARK, TRACK_STATION,
-    flow_empty_budgets, flow_empty_stage_budget, flow_group_budgets, flow_quiet_path_budget,
-    flow_row_budgets, flow_strip_overflows, grown, panel_head_name_budget,
+    LINE_COLUMN, LINE_HEAD, PANEL_HEAD_NAME_FLOOR, QUIET_NAME, QUIET_NAME_CHARS, ROW_MARK,
+    TRACK_STATION, flow_empty_budgets, flow_empty_stage_budget, flow_group_budgets,
+    flow_quiet_path_budget, flow_row_budgets, flow_strip_overflows, grown, panel_head_name_budget,
 };
 use super::panel::{
     buffer_stop, column_rule, lines_too_old, panel_card, panel_stage_name, waits_head,
@@ -1350,6 +1350,8 @@ impl Footplate {
     /// waits on with its backlog counted apart. It opens the flow's
     /// list. The head holds one line: the name ends in an ellipsis past
     /// its budget, and the chip with the meta stands whole at the right.
+    /// Where the budget with the chip falls below the name's floor, the
+    /// chip yields instead, and the name is budgeted without it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn panel_track_head(
         &self,
@@ -1373,17 +1375,27 @@ impl Footplate {
         };
         let counts = line_counts(flow);
         let backlog = format!("· {} backlog", counts.backlog);
-        let name = shorten(
-            &flow.name,
-            panel_head_name_budget(
-                pane_width,
-                rem,
-                flow.name.chars().count(),
-                chip.chars().count(),
-                status.chars().count(),
-                backlog.chars().count(),
-            ),
+        let name_len = flow.name.chars().count();
+        let status_len = status.chars().count();
+        let backlog_len = backlog.chars().count();
+        let mut budget = panel_head_name_budget(
+            pane_width,
+            rem,
+            name_len,
+            chip.chars().count(),
+            status_len,
+            backlog_len,
         );
+        // The name identifies where the chip classifies: where the budget
+        // with the chip falls below the floor and the name is cut, the
+        // chip yields and the name is budgeted without it. A short name
+        // already whole keeps its chip.
+        let mut show_chip = !chip.is_empty();
+        if show_chip && budget < PANEL_HEAD_NAME_FLOOR && budget < name_len {
+            budget = panel_head_name_budget(pane_width, rem, name_len, 0, status_len, backlog_len);
+            show_chip = false;
+        }
+        let name = shorten(&flow.name, budget);
         let selector = format!("{} {}", depot.name, Self::flow_label(depot, flow));
         let to = Selected::Flow(
             depot.name.clone(),
@@ -1419,7 +1431,7 @@ impl Footplate {
                     .font_weight(FontWeight::MEDIUM)
                     .child(name),
             )
-            .when(!chip.is_empty(), |el| {
+            .when(show_chip, |el| {
                 el.child(
                     div()
                         .debug_selector({

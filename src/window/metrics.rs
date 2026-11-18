@@ -307,6 +307,13 @@ pub(crate) fn flow_quiet_path_budget(
     before_ellipsis(path_len, visible)
 }
 
+/// The fewest readable chars a track head's flow name keeps: where the
+/// budget with the chip falls below this and the name is cut, the chip
+/// yields and the name is budgeted without it, since the name identifies
+/// where the chip classifies. Four names the flow where an ellipsis
+/// alone would not.
+pub(crate) const PANEL_HEAD_NAME_FLOOR: usize = 4;
+
 /// The chars before an ellipsis in a track head's flow name: the room past
 /// the panel's and the card's padding, the row's gaps, the chip and the
 /// meta, which stand whole — the head holds one line, and the name is what
@@ -577,8 +584,9 @@ mod tests {
             "3 backlog".len(),
         );
         assert_eq!(shorten(path, budget), path);
-        // Arrivals at 624: the head's name gives its room to the meta,
-        // which stands whole, and stands whole where the pane holds it.
+        // Arrivals at 624: the head's name with the chip falls below
+        // its floor, so the chip yields and the name is budgeted without
+        // it, holding the floor; the meta stands whole throughout.
         let budget = panel_head_name_budget(
             pane_width(px(624.), 16.),
             16.,
@@ -587,7 +595,19 @@ mod tests {
             "2 wait on you".len(),
             "· 2 backlog".chars().count(),
         );
-        assert_eq!(shorten("default", budget), "…");
+        assert!(budget < PANEL_HEAD_NAME_FLOOR);
+        let budget = panel_head_name_budget(
+            pane_width(px(624.), 16.),
+            16.,
+            "default".len(),
+            0,
+            "2 wait on you".len(),
+            "· 2 backlog".chars().count(),
+        );
+        assert!(budget >= PANEL_HEAD_NAME_FLOOR);
+        assert_eq!(shorten("default", budget), "defa…");
+        // At 960 the budget with the chip holds the name whole, so the
+        // chip stands.
         let budget = panel_head_name_budget(
             pane_width(px(960.), 16.),
             16.,
@@ -596,6 +616,7 @@ mod tests {
             "2 wait on you".len(),
             "· 2 backlog".chars().count(),
         );
+        assert!(budget >= PANEL_HEAD_NAME_FLOOR);
         assert_eq!(shorten("default", budget), "default");
         // The flow list: the nine-stage track runs past the narrow pane
         // and the one-stage one stands whole; at 960 the five-stage track

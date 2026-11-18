@@ -21352,6 +21352,34 @@ yardr.dev
         }
     }
 
+    /// At the narrowest window a track's head still names its flow:
+    /// where the name with the type chip would fall below its floor, the
+    /// chip yields and the name is budgeted without it; where the pane
+    /// holds both, the chip stands with the name whole. A window keeps
+    /// the selector of what it has drawn, so each width has a window of
+    /// its own to say what is not drawn.
+    #[gpui::test]
+    fn the_panel_s_head_yields_its_chip_to_keep_the_name_readable(cx: &mut TestAppContext) {
+        for (wide, chip) in [(WINDOW_MIN, false), (960., true)] {
+            let yard = Yard::start();
+            a_yard_of_jo(&yard);
+            yard.answer("Arrivals", &arrivals_board());
+            yard.answer("Flows", &flows_panel());
+            let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+            to_timetable(&view, cx);
+            cx.run_until_parked();
+            cx.simulate_resize(gpui::size(px(wide), px(360.)));
+            view.update_in(cx, |v, window, cx| v.select(Selected::Arrivals, window, cx));
+            wait(cx, "the panel", |cx| drawn(cx, "panel loose show"));
+            assert!(drawn(cx, "panel head yardr default name"));
+            assert_eq!(
+                drawn(cx, "panel head yardr default chip"),
+                chip,
+                "the chip at {wide} wide"
+            );
+        }
+    }
+
     /// At the narrowest window a flow too long to fit scrolls
     /// sideways: its stations stand on one row at their narrowest, the
     /// last past the pane's edge, while the card stops at it and a
