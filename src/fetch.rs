@@ -1617,7 +1617,9 @@ mod tests {
             "sleep 30 & echo $! > {}; echo {at}; exit 0",
             pid_file.display()
         ));
-        let found = login_shell(&background, Duration::from_millis(500));
+        let asked = Instant::now();
+        let found = login_shell(&background, Duration::from_secs(60));
+        let waited = asked.elapsed();
         let pid: i32 = fs::read_to_string(pid_file)
             .unwrap()
             .trim()
@@ -1627,6 +1629,9 @@ mod tests {
         // this test's child by pid so it does not outlive the test.
         // SAFETY: the pid came from this test's shell's `$!` output.
         unsafe { libc::kill(pid, libc::SIGKILL) };
+        // The sleep holds the pipe for 30 s, so an answer within 10 s proves
+        // the shell was heard without waiting for the pipe to close.
+        assert!(waited < Duration::from_secs(10));
         assert_eq!(found, Some(there.clone()));
         assert_eq!(ask("exit 1"), None);
         assert_eq!(ask(&format!("echo {at}; exit 1")), None);
@@ -1684,15 +1689,18 @@ mod tests {
         assert_eq!(machine.yardr(), Err(NOT_THERE.to_string()));
         assert!(asked.elapsed() < Duration::from_secs(10));
 
-        // What it started went with it.
-        let sleep: i32 = fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
-        // SAFETY: signal 0 only asks whether the process is there.
-        let alive = || unsafe { libc::kill(sleep, 0) } == 0;
-        let stopped = Instant::now();
-        while alive() && stopped.elapsed() < Duration::from_secs(10) {
-            thread::sleep(Duration::from_millis(10));
+        // What it started went with it. No file means the shell was killed
+        // before its echo line; what it had started died in its killed group.
+        if let Ok(line) = fs::read_to_string(&pid) {
+            let sleep: i32 = line.trim().parse().unwrap();
+            // SAFETY: signal 0 only asks whether the process is there.
+            let alive = || unsafe { libc::kill(sleep, 0) } == 0;
+            let stopped = Instant::now();
+            while alive() && stopped.elapsed() < Duration::from_secs(10) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!alive());
         }
-        assert!(!alive());
     }
 
     /// The installer's failures are its own words, or why it was not run,
