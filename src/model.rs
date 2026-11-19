@@ -8485,11 +8485,21 @@ pub fn line_outcome_words(outcome: &LineOutcome) -> String {
 /// (repo (directory) /home/jo/notes)`, and a typed flow as
 /// `task · default (store)`.
 pub fn line_flow_words(flow: &LineFlow) -> String {
-    let name = line_flow_heading(flow);
     match flow.directory.is_empty() {
-        true => format!("{name} ({})", flow.source),
-        false => format!("{name} ({} {})", flow.source, flow.directory),
+        true => {
+            let name = line_flow_heading(flow);
+            format!("{name} ({})", flow.source)
+        }
+        false => line_flow_dir_words(flow, &flow.directory),
     }
+}
+
+/// One directory flow's picker words over its directory already cut to
+/// its budget: the caller shortens it, and the name, source and brackets
+/// stand whole. [`line_flow_words`] over the directory whole.
+pub fn line_flow_dir_words(flow: &LineFlow, dir: &str) -> String {
+    let name = line_flow_heading(flow);
+    format!("{name} ({} {})", flow.source, dir)
 }
 
 /// A flow's picker identity: its type, name, source and directory keep
@@ -16446,6 +16456,18 @@ mod tests {
                 ..Default::default()
             }),
             "default (repo (directory) /home/jo/notes)"
+        );
+        assert_eq!(
+            line_flow_dir_words(
+                &LineFlow {
+                    name: "default".into(),
+                    source: "repo (directory)".into(),
+                    directory: "/home/jo/notes".into(),
+                    ..Default::default()
+                },
+                "…",
+            ),
+            "default (repo (directory) …)"
         );
 
         let line_state = || {

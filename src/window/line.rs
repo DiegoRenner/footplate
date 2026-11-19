@@ -20,13 +20,14 @@ use gpui::{
 
 use super::Footplate;
 use super::ask::card_button;
+use super::metrics::{LINE_TRACK_CELL, line_flow_dir_budget, line_track_overflows};
 use super::panel::{buffer_stop, panel_track_line};
 use super::ui::{field, shorten, small_button};
 use crate::api::{Event, LineFlow, LinePrompt, LineStage};
 use crate::input;
 use crate::model::{self, EditNow, Model, PromptOwner, Selected};
 use crate::select;
-use crate::theme::Palette;
+use crate::theme::{Palette, TYPE_META};
 
 /// What the editor says before Send, which is design yardr-y1cn's two
 /// costs of filing by mail. The mail is the filing, so the text stays in
@@ -531,6 +532,8 @@ impl Footplate {
         &self,
         model: &Model,
         depot: &str,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -661,8 +664,23 @@ impl Footplate {
                         false => format!("{} {name} {source}", named.flow_type),
                     };
                     let selector = format!("line flow {selector}");
+                    // A directory flow's button ends its path in an
+                    // ellipsis past the row's room; the rest stands whole.
+                    let words = match named.directory.is_empty() {
+                        true => model::line_flow_words(named),
+                        false => {
+                            let whole = model::line_flow_words(named);
+                            let budget = line_flow_dir_budget(
+                                pane_width,
+                                rem,
+                                whole.chars().count(),
+                                named.directory.chars().count(),
+                            );
+                            model::line_flow_dir_words(named, &shorten(&named.directory, budget))
+                        }
+                    };
                     flow_row = flow_row.child(
-                        small_button(model::line_flow_words(named), palette)
+                        small_button(words, palette)
                             .id(SharedString::from(selector.clone()))
                             .debug_selector({
                                 let selector = selector.clone();
@@ -680,7 +698,7 @@ impl Footplate {
                 }
                 body = body.child(flows.child(flow_row));
                 if let Some(flow) = flow {
-                    body = body.child(self.line_track(flow, palette, cx));
+                    body = body.child(self.line_track(flow, pane_width, rem, palette, cx));
                     for (index, warning) in flow.warnings.iter().enumerate() {
                         body = body.child(
                             div()
@@ -714,23 +732,30 @@ impl Footplate {
     /// One flow's stage track: each stage a cell with its name, who
     /// serves it in the flow map's words and its open count, over
     /// the panel's track line, with the buffer stop where entering
-    /// closes the bead. A tap opens the stage's detail below.
+    /// closes the bead. It scrolls sideways past the pane's edge, where
+    /// the track runs on a tie with a › stands at the edge to say so, as
+    /// the panel strip's does. A tap opens the stage's detail below.
     fn line_track(
         &self,
         flow: &LineFlow,
+        pane_width: f32,
+        rem: f32,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let flow_heading = model::line_flow_heading(flow);
         let mut track = div()
-            .id(SharedString::from(format!(
-                "line track {}",
-                model::line_flow_heading(flow)
-            )))
+            .id(SharedString::from(format!("line track {flow_heading}")))
+            .debug_selector({
+                let heading = flow_heading.clone();
+                move || format!("line track {heading}")
+            })
+            .flex_1()
+            .min_w_0()
             .overflow_x_scroll()
             .flex()
             .flex_row();
         track.style().restrict_scroll_to_axis = Some(true);
-        let flow_heading = model::line_flow_heading(flow);
         let selected = flow
             .stages
             .iter()
@@ -752,7 +777,7 @@ impl Footplate {
                     move || format!("line stage {flow} {stage}")
                 })
                 .flex_none()
-                .w(px(132.))
+                .w(px(LINE_TRACK_CELL))
                 .px_2()
                 .py_1()
                 .rounded_md()
@@ -800,7 +825,35 @@ impl Footplate {
             }
             track = track.child(cell);
         }
-        track
+        let marks = line_track_overflows(pane_width, rem, flow.stages.len());
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(track)
+            .when(marks, |el| {
+                el.child(
+                    div()
+                        .debug_selector({
+                            let flow = flow_heading.clone();
+                            move || format!("line track more {flow}")
+                        })
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
+                        .pl_2()
+                        .pr_4()
+                        .child(div().w(px(20.)).h(px(2.)).flex_none().bg(palette.strong))
+                        .child(
+                            div()
+                                .text_size(rems(TYPE_META))
+                                .text_color(palette.faint)
+                                .child("›"),
+                        ),
+                )
+            })
     }
 
     /// One stage's detail under the track: its headline, its Rule

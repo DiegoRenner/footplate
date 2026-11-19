@@ -17717,6 +17717,90 @@ yardr.dev
         }
     }
 
+    /// The Line window at a narrow width: a flow button with a directory
+    /// ends its path in an ellipsis and fits, and the stage track marks
+    /// where it runs past the pane; wide, the path stands whole and the
+    /// track shows no mark.
+    #[gpui::test]
+    fn the_line_window_fits_its_flow_buttons_and_marks_its_cut_track(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer(
+            "Flows",
+            &json!({"result": {"travelling": 1, "depots": [
+                {"name": "yardr", "kind": "git", "travelling": 1, "flows": [
+                    {"name": "default", "type": "", "source": "store", "stages": [
+                        {"stage": "new", "group": "builders", "human": false, "lamp": "none",
+                         "beads": []}]}], "elsewhere": []}], "unassigned": []}})
+            .to_string(),
+        );
+        yard.answer_for(
+            "Line",
+            "depot",
+            "yardr",
+            &json!({"result": {"depot": "yardr", "kind": "git", "flows": [
+                {"name": "default", "type": "", "source": "store", "stages": [
+                    {"stage": "new", "next": ["review"], "terminal": false,
+                     "other_routes": [], "open": 1},
+                    {"stage": "review", "next": ["merged"], "terminal": false,
+                     "other_routes": [], "open": 0},
+                    {"stage": "merged", "next": [], "terminal": true,
+                     "other_routes": [], "open": 0}]},
+                {"name": "dirflow", "type": "", "source": "repo (directory)",
+                 "directory": "/home/jo/notes", "stages": [
+                    {"stage": "inbox", "next": [], "terminal": false,
+                     "other_routes": [], "open": 0}]}],
+              "crew": []}})
+            .to_string(),
+        );
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
+        to_timetable(&view, cx);
+        view.update_in(cx, |v, window, cx| {
+            v.select(Selected::Line("yardr".into()), window, cx)
+        });
+        wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
+        click_on(cx, "line window open yardr");
+        let button = "line flow dirflow repo (directory)";
+        wait(cx, "the line window", |cx| drawn(cx, button));
+        // Wide the path stands whole: the button is its 41 chars with
+        // its padding and border, which the test platform draws at
+        // 0.6 em a char. The track shows no mark.
+        assert!(!drawn(cx, "line track more default"));
+        let wide = bounds_of(cx, button);
+        let words = "dirflow (repo (directory) /home/jo/notes)";
+        let rem = cx.update(|window, _| window.rem_size());
+        let em = rem * 0.875 * 0.6;
+        assert!(
+            (wide.size.width - (em * words.chars().count() as f32 + rem + px(2.))).abs() < px(2.),
+            "the wide button stands {wide:?}, not its words whole"
+        );
+        // Narrow the button ends its path in an ellipsis and fits, and
+        // the track marks where it runs on past the pane: the last cell
+        // genuinely stands past the edge.
+        cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(1600.)));
+        let narrow = bounds_of(cx, button);
+        assert!(
+            narrow.right() <= px(WINDOW_MIN),
+            "the narrow button runs past the pane: {narrow:?}"
+        );
+        assert!(
+            (narrow.size.width - (em * 28. + rem + px(2.))).abs() < px(2.),
+            "the narrow button stands {narrow:?}, not its words with the path cut"
+        );
+        assert!(drawn(cx, "line track more default"));
+        let mark = bounds_now(cx, "line track more default");
+        assert!(
+            mark.right() <= px(WINDOW_MIN),
+            "the mark runs past the pane: {mark:?}"
+        );
+        let last = bounds_now(cx, "line stage default merged");
+        assert!(
+            px(WINDOW_MIN) < last.right(),
+            "the track stands inside the pane, cut nowhere: {last:?}"
+        );
+    }
+
     /// Stage edits from the Line window: on a store flow each files
     /// its flow card by mail, a removal with a bead standing files
     /// nothing and names the bead, and the window approves nothing.

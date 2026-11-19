@@ -307,6 +307,24 @@ pub(crate) fn flow_quiet_path_budget(
     before_ellipsis(path_len, visible)
 }
 
+/// The chars before an ellipsis in a directory flow's path on its Line
+/// window button: the room past the body's padding (a rem either side)
+/// and the button's padding (half a rem either side) and border, less
+/// the label's other words, which stand whole. The button takes its own
+/// wrapped row at most, so the budget is figured from the pane's width,
+/// as the flow list's are; widen the window and the cut path stands
+/// whole again.
+pub(crate) fn line_flow_dir_budget(pane: f32, rem: f32, words_len: usize, dir_len: usize) -> usize {
+    let scale = rem / 16.;
+    let fixed = 3. * rem + 2.;
+    let advance = 8.5 * scale;
+    let visible = ((pane - fixed).max(0.) / advance).floor() as usize;
+    before_ellipsis(
+        dir_len,
+        visible.saturating_sub(words_len.saturating_sub(dir_len)),
+    )
+}
+
 /// The fewest readable chars a track head's flow name keeps: where the
 /// budget with the chip falls below this and the name is cut, the chip
 /// yields and the name is budgeted without it, since the name identifies
@@ -366,6 +384,22 @@ pub(crate) fn flow_strip_overflows(pane: f32, rem: f32, labels: &[usize]) -> boo
         .sum();
     let ties = (labels.len() - 1) as f32 * (20. + 0.75 * rem);
     stations + ties > pane - 2. * rem + 16. * scale
+}
+
+/// One Line window track cell's width in pixels, fixed: the stage's
+/// name, who serves it and its open count, whatever the text.
+pub(crate) const LINE_TRACK_CELL: f32 = 132.;
+
+/// Whether the Line window's stage track runs past the pane's edge: its
+/// cells' fixed widths against the body's inner width. The margin past
+/// the edge is the panel strip's, so the overflow mark stands only where
+/// the track plainly runs on, never for a few pixels.
+pub(crate) fn line_track_overflows(pane: f32, rem: f32, stages: usize) -> bool {
+    if stages == 0 {
+        return false;
+    }
+    let scale = rem / 16.;
+    stages as f32 * LINE_TRACK_CELL > pane - 2. * rem + 16. * scale
 }
 
 fn before_ellipsis(length: usize, visible: usize) -> usize {
@@ -640,6 +674,31 @@ mod tests {
             &default
         ));
         assert!(!flow_strip_overflows(pane_width(px(624.), 16.), 16., &[]));
+        // The Line window: the dirflow button's path ends in an ellipsis
+        // at 624 and stands whole at 960; the three-cell track runs past
+        // the narrow pane and fits the wide one, and one cell, or none,
+        // never marks.
+        let words = "dirflow (repo (directory) /home/jo/notes)";
+        let dir = "/home/jo/notes";
+        let budget = line_flow_dir_budget(
+            pane_width(px(624.), 16.),
+            16.,
+            words.chars().count(),
+            dir.chars().count(),
+        );
+        assert_eq!(budget, 0);
+        assert_eq!(shorten(dir, budget), "…");
+        let budget = line_flow_dir_budget(
+            pane_width(px(960.), 16.),
+            16.,
+            words.chars().count(),
+            dir.chars().count(),
+        );
+        assert_eq!(shorten(dir, budget), dir);
+        assert!(line_track_overflows(pane_width(px(624.), 16.), 16., 3));
+        assert!(!line_track_overflows(pane_width(px(960.), 16.), 16., 3));
+        assert!(!line_track_overflows(pane_width(px(624.), 16.), 16., 1));
+        assert!(!line_track_overflows(pane_width(px(624.), 16.), 16., 0));
     }
 
     #[test]

@@ -7156,7 +7156,14 @@ impl Footplate {
                 )
                 .into_any_element(),
             Some(Selected::LineWindow(depot)) => self
-                .talk_line_window(model, depot, palette, cx)
+                .talk_line_window(
+                    model,
+                    depot,
+                    pane_width(window.viewport_size().width, f32::from(window.rem_size())),
+                    f32::from(window.rem_size()),
+                    palette,
+                    cx,
+                )
                 .into_any_element(),
             Some(Selected::NoLine) => self.talk_no_line(model, palette, cx).into_any_element(),
             Some(Selected::Bead(bead)) => self
