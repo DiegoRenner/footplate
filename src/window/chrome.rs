@@ -2940,7 +2940,8 @@ impl Footplate {
     /// Changes the model of the following `session` as `f` does with the
     /// answer of the read of `read` stamped `stamp`, where that answer is
     /// newer than what the model holds of it: whether it was. An older one
-    /// that answered later says nothing the model does not have.
+    /// that answered later says nothing the model does not have. The read
+    /// is back either way, which the gate is told, so a burst's wait ends.
     pub(crate) fn fresh_in(
         &mut self,
         session: u64,
@@ -2949,9 +2950,10 @@ impl Footplate {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Model) -> Vec<Effect>,
     ) -> bool {
-        let fresh = self
-            .model_in(session)
-            .is_some_and(|m| m.reads().fresh(read, stamp));
+        let fresh = self.model_in(session).is_some_and(|m| {
+            m.gate_arrived(read);
+            m.reads().fresh(read, stamp)
+        });
         if fresh {
             self.change_in(session, cx, f);
         }
@@ -2962,7 +2964,9 @@ impl Footplate {
     /// following `session`: if it is still current, says so and, where
     /// `retryable`, makes it again after the window's retry while the yard
     /// is up. A yard that is down is its follower's: what it reads when it
-    /// is up again has all of it.
+    /// is up again has all of it. The gate is told too, so its wait ends;
+    /// the failure stands as its interval, with the retry shortly after
+    /// where one is made.
     pub(crate) fn read_failed_in(
         &mut self,
         session: u64,
@@ -2979,6 +2983,7 @@ impl Footplate {
         if !accepted {
             return false;
         }
+        model.gate_failed(read);
         if !retry {
             return true;
         }
@@ -3220,8 +3225,7 @@ impl Footplate {
                         move |this, arrivals, cx| match arrivals {
                             Ok(board) => {
                                 this.fresh_in(session, Read::Arrivals, stamp, cx, |m| {
-                                    m.arrivals(board);
-                                    Vec::new()
+                                    m.arrivals(board)
                                 });
                             }
                             Err(err) => {
@@ -3464,6 +3468,19 @@ impl Footplate {
                             }
                         },
                     )
+                }
+                // The trailing read of a gated kind, once its interval is
+                // over: waited out, then made where the kind is still
+                // wanted and none is out.
+                Effect::Reread { read, after } => {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(after).await;
+                        this.update(cx, |this, cx| {
+                            this.change_in(session, cx, |m| m.reread(read));
+                        })
+                        .ok();
+                    })
+                    .detach();
                 }
                 // Made only when the Line window opens or its depot
                 // changes. A new read folds every text until it is

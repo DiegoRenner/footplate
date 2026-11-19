@@ -1902,6 +1902,28 @@ mod tests {
         panic!("the window never showed: {what}");
     }
 
+    /// Waits for `is` as [`wait`] does, advancing the fake clock as it
+    /// goes: the gate's trailing wait is armed by an event still on its
+    /// way down the stream, so a single advance before the event is
+    /// processed fires nothing. Each turn advances a tenth of the gate's
+    /// second; the wait ends on the effect, long before the longer waits
+    /// (a failure's retry, a notice's burst) come due.
+    fn wait_reread(
+        cx: &mut VisualTestContext,
+        what: &str,
+        mut is: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        for _ in 1..=2000 {
+            cx.run_until_parked();
+            if is(cx) {
+                return;
+            }
+            cx.executor().advance_clock(model::READ_INTERVAL / 10);
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the window never showed: {what}");
+    }
+
     fn a_yard_of_jo(yard: &Yard) {
         yard.answer("Head", r#"{"result": 20}"#);
         yard.answer(
@@ -13540,7 +13562,8 @@ yardr.dev
         let secret = ask("yd-keys", 4, "Which key?", true);
         yard.answer("UserAsks", &asks(&[plain.clone(), secret.clone()]));
         yard.emit(&noted(31));
-        wait(cx, "the secret card read", |cx| {
+        // The gate holds this re-read for its second.
+        wait_reread(cx, "the secret card read", |cx| {
             view.read_with(cx, |v, _| {
                 v.model.as_ref().unwrap().secret("yd-keys", 4).is_some()
             })
@@ -13550,7 +13573,8 @@ yardr.dev
             &asks(&[plain, secret, ask("yd-more", 5, "And then?", false)]),
         );
         yard.emit(&noted(32));
-        wait(cx, "the next ask's direction", |_| {
+        // The gate holds this re-read for its second too.
+        wait_reread(cx, "the next ask's direction", |_| {
             live.appends().len() > before
         });
         assert_eq!(live.appends().len(), before + 1);
@@ -18139,7 +18163,8 @@ yardr.dev
             r#"{"error": {"code": "error", "message": "no such method Flows"}}"#,
         );
         yard.emit(r#"{"seq": 22, "kind": "noted", "actor": "yardmaster", "bead": "bead-a", "data": {"note": 2}}"#);
-        wait(cx, "the yard too old for flows", |cx| {
+        // The gate holds this re-read for its second.
+        wait_reread(cx, "the yard too old for flows", |cx| {
             view.read_with(cx, |v, _| {
                 v.model.as_ref().is_some_and(|m| {
                     m.flows_too_old() && m.travelling() == 0 && m.depots().is_empty()
@@ -18157,7 +18182,8 @@ yardr.dev
         // A re-read the yard serves unreadably is a notice, as ever.
         yard.answer_once_status("Flows", 200, r#"{"result": {"travelling": [7]}}"#);
         yard.emit(r#"{"seq": 23, "kind": "noted", "actor": "yardmaster", "bead": "bead-a", "data": {"note": 3}}"#);
-        wait(cx, "why the flows could not be read", |cx| {
+        // The gate holds this re-read for its second too.
+        wait_reread(cx, "why the flows could not be read", |cx| {
             !notice(&view, cx).is_empty()
         });
         assert!(
@@ -24651,7 +24677,8 @@ yardr.dev
         second.answer("Waiting", &waiting_of(&["yd-notes"]));
         second.answer_once_status("Waiting", 500, "{}");
         second.emit(r#"{"seq": 22, "kind": "noted", "actor": "yardmaster", "bead": "bead-s", "data": {"note": 8}, "at": "2026-10-08T09:32:00Z"}"#);
-        wait(cx, "the read of the parked beads that failed", |cx| {
+        // The gate holds this re-read for its second.
+        wait_reread(cx, "the read of the parked beads that failed", |cx| {
             notice(cx).starts_with("the beads to move could not be read")
         });
         assert_eq!(second.asked("Waiting").len(), parked + 1);

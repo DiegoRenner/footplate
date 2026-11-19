@@ -7,6 +7,8 @@
 //! [`Effect`], and the window makes it and hands the answer back.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -1167,6 +1169,10 @@ pub enum Effect {
     Arrivals,
     /// `Flows`; answered to [`Model::flows`].
     Flows,
+    /// The read of `read` again, once its gate's interval is over: the
+    /// window waits `after`, then makes it where the kind is still wanted
+    /// and none is out ([`Model::reread`]).
+    Reread { read: Read, after: Duration },
     /// `Line` with `depot`; answered to [`Model::line_read`] or
     /// [`Model::line_failed`]. `generation` keeps an older answer from
     /// replacing the line most recently opened.
@@ -1303,6 +1309,158 @@ impl Reads {
     fn restarted(&mut self) {
         self.floor = self.made;
         self.again.clear();
+    }
+}
+
+/// How often the stream's events may start each whole-yard read again:
+/// at most once a second per kind. A burst of events costs two reads,
+/// not one an event, and the last state shown is never older than the
+/// last event.
+pub const READ_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What a [`Model`] tells its read gate's time by: the system's in the
+/// window, and a test's handed clock in a test, as the voice session's
+/// gap is told by its own.
+#[derive(Clone, Default)]
+struct Clock(Option<Arc<dyn Fn() -> Instant + Send + Sync>>);
+
+impl std::fmt::Debug for Clock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(_) => write!(f, "Clock(handed)"),
+            None => write!(f, "Clock(system)"),
+        }
+    }
+}
+
+/// One gated whole-yard read: when it last started, whether one is out,
+/// whether the stream asked for another since, and whether its trailing
+/// wait stands armed.
+#[derive(Debug, Clone, Default)]
+struct Gate {
+    started: Option<Instant>,
+    out: bool,
+    wanted: bool,
+    armed: bool,
+}
+
+/// The whole-yard reads the stream's events ask for, each at most once a
+/// [`READ_INTERVAL`]: [`Read::Asks`], [`Read::Waiting`],
+/// [`Read::Arrivals`] and [`Read::Flows`]. The first event reads at once;
+/// while a read of that kind is out, or less than the interval has passed
+/// since the last one started, later events ask for nothing and mark the
+/// kind as wanted; where none is out the trailing wait is armed, and when
+/// the read is back and the interval is over, one more read is made if
+/// the kind is wanted. Reads the person causes (an opened view, an
+/// answered card, a write's settle) never pass through here: they are made
+/// directly, as ever.
+///
+/// `out` counts the gate's own starts, but an answer clears it whichever
+/// read it answers: where a read the person caused answers among gated
+/// ones, an event may start one more read while another is still out.
+/// That over-reads by one, rarely, and the stamps still drop the older
+/// answer; never holding a read back for one already answered matters
+/// more, since a gate left shut shows a stale yard.
+#[derive(Debug, Clone, Default)]
+struct Gates {
+    asks: Gate,
+    waiting: Gate,
+    arrivals: Gate,
+    flows: Gate,
+}
+
+impl Gates {
+    /// The gate of `read`: none where the kind is not gated.
+    fn of(&mut self, read: Read) -> Option<&mut Gate> {
+        match read {
+            Read::Asks => Some(&mut self.asks),
+            Read::Waiting => Some(&mut self.waiting),
+            Read::Arrivals => Some(&mut self.arrivals),
+            Read::Flows => Some(&mut self.flows),
+            _ => None,
+        }
+    }
+
+    /// An event asks for the read of `read`: the read where it starts now,
+    /// the trailing wait where the kind is wanted with none out and the
+    /// interval not over, and nothing where a read is out or a wait stands
+    /// armed already.
+    fn want(&mut self, read: Read, now: Instant) -> Option<Effect> {
+        let Some(gate) = self.of(read) else {
+            return Some(read.effect());
+        };
+        gate.wanted = true;
+        if gate.out {
+            return None;
+        }
+        self.start_or_wait(read, now)
+    }
+
+    /// The read of `read` is back, answered or not: none is out.
+    fn arrived(&mut self, read: Read) {
+        if let Some(gate) = self.of(read) {
+            gate.out = false;
+        }
+    }
+
+    /// The read of `read` failed and was accepted: none is out, and the
+    /// interval counts from the failure, so events do not start the
+    /// failing read again at once.
+    fn failed(&mut self, read: Read, now: Instant) {
+        if let Some(gate) = self.of(read) {
+            gate.out = false;
+            gate.started = Some(now);
+        }
+    }
+
+    /// The kind's answer was applied: the trailing read where the kind is
+    /// wanted, made now or waited for.
+    fn trailing(&mut self, read: Read, now: Instant) -> Option<Effect> {
+        if !self.of(read)?.wanted {
+            return None;
+        }
+        self.start_or_wait(read, now)
+    }
+
+    /// The trailing wait for `read` fired: the wanted read where one still
+    /// is and none is out. The wait already stood out the interval, so the
+    /// read starts on the wait's word alone, with no second look at the
+    /// clock; a stale wait finds nothing wanted and starts nothing.
+    fn reread(&mut self, read: Read, now: Instant) -> Option<Effect> {
+        let gate = self.of(read)?;
+        gate.armed = false;
+        if !gate.wanted || gate.out {
+            return None;
+        }
+        gate.started = Some(now);
+        gate.out = true;
+        gate.wanted = false;
+        Some(read.effect())
+    }
+
+    /// Starts the wanted read of `read` now where the interval is over,
+    /// else arms its trailing wait, once: a wait that stands armed
+    /// already covers it.
+    fn start_or_wait(&mut self, read: Read, now: Instant) -> Option<Effect> {
+        let gate = self.of(read)?;
+        match gate.started {
+            Some(at) if now - at < READ_INTERVAL => {
+                if gate.armed {
+                    return None;
+                }
+                gate.armed = true;
+                Some(Effect::Reread {
+                    read,
+                    after: READ_INTERVAL - (now - at),
+                })
+            }
+            _ => {
+                gate.started = Some(now);
+                gate.out = true;
+                gate.wanted = false;
+                Some(read.effect())
+            }
+        }
     }
 }
 
@@ -1783,6 +1941,12 @@ pub struct Model {
     aside: bool,
     /// The stamps of the reads made of the yard, and what they answered.
     reads: Reads,
+    /// The gate of the whole-yard reads the stream's events ask for:
+    /// each at most once a [`READ_INTERVAL`].
+    gates: Gates,
+    /// What the gate tells time by: the system's, unless a test handed
+    /// its own.
+    clock: Clock,
     /// The writes that are with the yard, by ask: until the yard says what
     /// came of one, its card says it is waiting, and a read of the queue
     /// (of the bead, for a note) settles it ([`Model::settle_writes`]).
@@ -2011,6 +2175,9 @@ impl Model {
         // A read made before the state was read again is older than it.
         m.reads = self.reads.clone();
         m.reads.restarted();
+        // The gate starts over with the state read whole: nothing is out
+        // or wanted. The clock carries over, as the window's time does.
+        m.clock = self.clock.clone();
         // What a refusal taught of the screen stays true: the state read
         // again does not say it, since it is the refusal that teaches it.
         m.screen_on_the_yard |= self.screen_on_the_yard;
@@ -2076,6 +2243,53 @@ impl Model {
     /// The stamps of the reads made of the yard.
     pub fn reads(&mut self) -> &mut Reads {
         &mut self.reads
+    }
+
+    /// The time by the gate's clock: the system's, unless a test handed
+    /// its own.
+    fn now(&self) -> Instant {
+        self.clock
+            .0
+            .as_ref()
+            .map_or_else(Instant::now, |clock| clock())
+    }
+
+    /// The stream's events ask for the whole-yard read of `read`: the
+    /// read where it starts now, the trailing wait where the kind is
+    /// wanted with none out and the interval not over, and nothing where
+    /// a read is out or a wait stands armed already. Reads the person
+    /// causes are made directly, never through here.
+    fn gated(&mut self, read: Read) -> Vec<Effect> {
+        let now = self.now();
+        self.gates.want(read, now).into_iter().collect()
+    }
+
+    /// The read of `read` is back, applied or not: the gate's is no longer
+    /// out. Every answer passes here, through `fresh_in`, so a burst's
+    /// wait always ends.
+    pub fn gate_arrived(&mut self, read: Read) {
+        self.gates.arrived(read);
+    }
+
+    /// The read of `read` failed and was accepted: the gate's is no longer
+    /// out, and the interval counts from the failure.
+    pub fn gate_failed(&mut self, read: Read) {
+        let now = self.now();
+        self.gates.failed(read, now);
+    }
+
+    /// The kind's answer was applied: the trailing read where the kind is
+    /// wanted, made now or waited for.
+    fn trailing(&mut self, read: Read) -> Vec<Effect> {
+        let now = self.now();
+        self.gates.trailing(read, now).into_iter().collect()
+    }
+
+    /// The trailing wait for `read` fired: the wanted read where one
+    /// still is and none is out.
+    pub fn reread(&mut self, read: Read) -> Vec<Effect> {
+        let now = self.now();
+        self.gates.reread(read, now).into_iter().collect()
     }
 
     /// What arrived since the window last took it, oldest first.
@@ -2626,7 +2840,9 @@ impl Model {
     pub fn waiting(&mut self, parked: Vec<Parked>) -> Vec<Effect> {
         self.parked = parked;
         self.waiting_too_old = false;
-        self.reselect()
+        let mut effects = self.reselect();
+        effects.extend(self.trailing(Read::Waiting));
+        effects
     }
 
     /// Whether the yard has no Waiting call as the window makes it: one from
@@ -3037,9 +3253,10 @@ impl Model {
 
     /// The arrivals board as read again. The yard has the call, so it
     /// is not too old for it.
-    pub fn arrivals(&mut self, board: Arrivals) {
+    pub fn arrivals(&mut self, board: Arrivals) -> Vec<Effect> {
         self.arrivals = board.rows;
         self.arrivals_too_old = false;
+        self.trailing(Read::Arrivals)
     }
 
     /// Whether the yard has no Arrivals call: one from before the Lines
@@ -3239,7 +3456,9 @@ impl Model {
     pub fn flows(&mut self, board: Flows) -> Vec<Effect> {
         self.flows = board;
         self.flows_too_old = false;
-        self.reselect()
+        let mut effects = self.reselect();
+        effects.extend(self.trailing(Read::Flows));
+        effects
     }
 
     /// Whether the yard has no Flows call: one from before the Lines
@@ -6966,8 +7185,8 @@ impl Model {
             }
             // A note on a bead: a question asked, answered, put aside or
             // declined, or the asker's next note. It says no more than
-            // that, so the queue is read again.
-            "noted" => vec![Effect::Asks],
+            // that, so the queue is read again, at most once a second.
+            "noted" => self.gated(Read::Asks),
             "crew_status" => {
                 let name = e.text("crew").to_string();
                 if let Some(r) = self
@@ -7103,10 +7322,10 @@ impl Model {
             || e.kind.as_str() == "setting_changed"
                 && matches!(e.text("key"), "max_sessions" | "operator");
         if arrivals {
-            effects.push(Effect::Arrivals);
+            effects.extend(self.gated(Read::Arrivals));
         }
         if arrivals || e.kind.as_str() == "depot_removed" {
-            effects.push(Effect::Flows);
+            effects.extend(self.gated(Read::Flows));
         }
         // The parked queue moves with every event about a bead, `noted`
         // among them (a stage ask another member answered moves the bead),
@@ -7131,7 +7350,7 @@ impl Model {
             )
             || e.kind.as_str() == "setting_changed" && e.text("key") == "operator";
         if parked {
-            effects.push(Effect::Waiting);
+            effects.extend(self.gated(Read::Waiting));
         }
         effects
     }
@@ -7523,6 +7742,7 @@ impl Model {
         // not asked again. None of a yard the window does not show: its
         // rows are not drawn.
         if self.aside {
+            effects.extend(self.trailing(Read::Asks));
             return effects;
         }
         let open_bead = match selected {
@@ -7546,6 +7766,7 @@ impl Model {
                 bead: ask.bead.clone(),
             });
         }
+        effects.extend(self.trailing(Read::Asks));
         effects
     }
 
@@ -10286,6 +10507,28 @@ mod tests {
         serde_json::from_value(json!({"seq": seq, "kind": kind, "actor": "yardmaster", "at": "2026-10-08T09:30:00Z", "bead": bead, "data": data})).unwrap()
     }
 
+    /// Hands `m` a clock the test holds: the gate's time stands still
+    /// until the test moves it.
+    fn hold_clock(m: &mut Model) -> Arc<std::sync::Mutex<Instant>> {
+        let at = Arc::new(std::sync::Mutex::new(Instant::now()));
+        m.clock = Clock(Some(Arc::new({
+            let at = at.clone();
+            move || *at.lock().unwrap()
+        })));
+        at
+    }
+
+    /// The reads the last event started are back, and their second is
+    /// over: the next event reads again, as the first did. What a test of
+    /// the events' mapping says between events, where the window would
+    /// have read the answers.
+    fn reads_back(m: &mut Model, at: &Arc<std::sync::Mutex<Instant>>) {
+        *at.lock().unwrap() += READ_INTERVAL + Duration::from_secs(1);
+        for read in [Read::Asks, Read::Waiting, Read::Arrivals, Read::Flows] {
+            m.gate_arrived(read);
+        }
+    }
+
     /// A yard with the yardmaster and assembly, north linked, and jo with
     /// the unread mail given as (seq, from).
     fn yard(unread: &[(u64, &str)]) -> State {
@@ -12978,6 +13221,7 @@ mod tests {
     #[test]
     fn arrivals_flows_and_parked_beads_are_read_again_on_a_bead_s_events_and_their_other_inputs() {
         let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let at = hold_clock(&mut m);
         // Every event about a bead, whatever its kind: a note re-reads
         // the queue beside the board, the flows view and the parked beads.
         assert_eq!(
@@ -12989,6 +13233,7 @@ mod tests {
                 Effect::Waiting
             ]
         );
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&bead_event(22, "session_ended", "yd-links", json!({}))),
             [Effect::Arrivals, Effect::Flows, Effect::Waiting]
@@ -13010,6 +13255,7 @@ mod tests {
             (31, "flow_pointer_cleared"),
             (32, "depot_updated"),
         ] {
+            reads_back(&mut m, &at);
             assert_eq!(
                 m.event(&event(seq, kind, "", json!({}))),
                 [Effect::Arrivals, Effect::Flows, Effect::Waiting],
@@ -13019,12 +13265,14 @@ mod tests {
         // A removed depot's line leaves the timetable, and only
         // `depot_removed` says so: the flows view moves for it, and so do
         // the parked beads, whose inputs it is.
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&event(33, "depot_removed", "", json!({}))),
             [Effect::Flows, Effect::Waiting]
         );
         // The parked beads' list is the yard's own for the call and not the
         // board's: a session cap moves the board, and not them.
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&event(
                 34,
@@ -13034,6 +13282,7 @@ mod tests {
             )),
             [Effect::Arrivals, Effect::Flows]
         );
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&event(
                 35,
@@ -13066,6 +13315,207 @@ mod tests {
             []
         );
         assert_eq!(m.event(&event(39, "timer", "", json!({}))), []);
+    }
+
+    /// Fifty bead events inside one second read the board, the flows view
+    /// and the parked beads twice: once at the first event, and once more
+    /// after the last, when the answers are back and the second is over.
+    #[test]
+    fn fifty_bead_events_inside_a_second_read_the_board_flows_and_parked_twice() {
+        let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let at = hold_clock(&mut m);
+        let reads = |effects: Vec<Effect>| {
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::Arrivals | Effect::Flows | Effect::Waiting))
+                .count()
+        };
+        // Fifty events, 20ms apart: the first reads, the rest mark wanted.
+        let mut burst = 0;
+        for seq in 21..71 {
+            *at.lock().unwrap() += Duration::from_millis(20);
+            burst += reads(m.event(&bead_event(seq, "advanced", "yd-links", json!({}))));
+        }
+        assert_eq!(burst, 3);
+        // The reads are back after the last event, and the second is over:
+        // one more read of each kind, and none after that.
+        *at.lock().unwrap() += READ_INTERVAL;
+        for read in [Read::Arrivals, Read::Flows, Read::Waiting] {
+            m.gate_arrived(read);
+        }
+        let trailing = reads(m.arrivals(board(vec![])))
+            + reads(m.flows(Flows::default()))
+            + reads(m.waiting(vec![]));
+        assert_eq!(trailing, 3);
+        for read in [Read::Arrivals, Read::Flows, Read::Waiting] {
+            m.gate_arrived(read);
+        }
+        let quiet = reads(m.arrivals(board(vec![])))
+            + reads(m.flows(Flows::default()))
+            + reads(m.waiting(vec![]));
+        assert_eq!(quiet, 0);
+    }
+
+    /// Fifty notes inside one second read the queue twice: once at the
+    /// first, and once more after the last, when the answer is back and
+    /// the second is over.
+    #[test]
+    fn fifty_notes_inside_a_second_read_the_queue_twice() {
+        let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let at = hold_clock(&mut m);
+        let mut burst = 0;
+        for seq in 21..71 {
+            *at.lock().unwrap() += Duration::from_millis(20);
+            burst += m
+                .event(&event(seq, "noted", "yardmaster", json!({"note": seq})))
+                .iter()
+                .filter(|e| **e == Effect::Asks)
+                .count();
+        }
+        assert_eq!(burst, 1);
+        *at.lock().unwrap() += READ_INTERVAL;
+        m.gate_arrived(Read::Asks);
+        let trailing = m
+            .asks(Asks::default())
+            .iter()
+            .filter(|e| **e == Effect::Asks)
+            .count();
+        assert_eq!(trailing, 1);
+        m.gate_arrived(Read::Asks);
+        let quiet = m
+            .asks(Asks::default())
+            .iter()
+            .filter(|e| **e == Effect::Asks)
+            .count();
+        assert_eq!(quiet, 0);
+    }
+
+    /// A wanted read whose answer is back before its second is over waits
+    /// the second out: the window reads again when the wait fires, and
+    /// not before.
+    #[test]
+    fn a_wanted_read_whose_answer_is_early_waits_out_its_second() {
+        let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let _ = hold_clock(&mut m);
+        assert_eq!(
+            m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
+            [Effect::Asks]
+        );
+        assert_eq!(
+            m.event(&event(22, "noted", "yardmaster", json!({"note": 2}))),
+            []
+        );
+        // The answer is back with the second not over: one more read is
+        // wanted, in what is left of the second.
+        m.gate_arrived(Read::Asks);
+        assert_eq!(
+            m.asks(Asks::default())
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::Reread { read, after } => Some((*read, *after)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [(Read::Asks, READ_INTERVAL)]
+        );
+        // The wait fired: the wanted read starts on its word alone.
+        // Nothing is wanted after its answer.
+        assert_eq!(m.reread(Read::Asks), [Effect::Asks]);
+        m.gate_arrived(Read::Asks);
+        assert!(!m.asks(Asks::default()).contains(&Effect::Asks));
+        assert_eq!(m.reread(Read::Asks), []);
+    }
+
+    /// An event past its read's answer, with the second not over, arms
+    /// the wait: one more read follows when the wait fires, armed once no
+    /// matter how many events mark the kind wanted meanwhile.
+    #[test]
+    fn an_event_past_its_answer_arms_the_wait_once() {
+        let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let at = hold_clock(&mut m);
+        assert_eq!(
+            m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
+            [Effect::Asks]
+        );
+        m.gate_arrived(Read::Asks);
+        let _ = m.asks(Asks::default());
+        // A later event with none out and the second not over: no read
+        // now, and the wait armed once for both.
+        *at.lock().unwrap() += Duration::from_millis(100);
+        assert_eq!(
+            m.event(&event(22, "noted", "yardmaster", json!({"note": 2}))),
+            [Effect::Reread {
+                read: Read::Asks,
+                after: READ_INTERVAL - Duration::from_millis(100),
+            }]
+        );
+        assert_eq!(
+            m.event(&event(23, "noted", "yardmaster", json!({"note": 3}))),
+            []
+        );
+        // The wait fired: the wanted read starts, and nothing is wanted
+        // after its answer.
+        assert_eq!(m.reread(Read::Asks), [Effect::Asks]);
+        m.gate_arrived(Read::Asks);
+        assert!(!m.asks(Asks::default()).contains(&Effect::Asks));
+        assert_eq!(m.reread(Read::Asks), []);
+    }
+
+    /// A read the person causes is not held back: answering a card and
+    /// making a move read again at once, with gated reads out and wanted.
+    #[test]
+    fn a_read_the_person_causes_is_not_held_back_by_the_gate() {
+        let mut state = yard(&[]);
+        state.asks.open = evening();
+        state.parked = vec![parked("yd-a", "A", "2026-11-01T09:00:00Z")];
+        let (mut m, _) = Model::new(state, Mode::Decisions, None);
+        let _ = hold_clock(&mut m);
+        // The queue's read is out and wanted: putting an ask aside reads
+        // it again at once all the same.
+        assert_eq!(
+            m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
+            [Effect::Asks]
+        );
+        assert_eq!(
+            m.event(&event(22, "noted", "yardmaster", json!({"note": 2}))),
+            []
+        );
+        assert!(m.deferred("yardr-n8ta", 3).contains(&Effect::Asks));
+        // The parked queue's read is out and wanted: a move made reads it
+        // again at once all the same.
+        assert!(
+            m.event(&bead_event(23, "advanced", "yd-a", json!({})))
+                .contains(&Effect::Waiting)
+        );
+        assert!(
+            !m.event(&bead_event(24, "advanced", "yd-a", json!({})))
+                .contains(&Effect::Waiting)
+        );
+        assert!(m.moved("yd-a").contains(&Effect::Waiting));
+    }
+
+    /// Two yards followed at once do not share one gate: one's burst
+    /// holds back nothing of the other's reads.
+    #[test]
+    fn two_yards_followed_at_once_do_not_share_one_gate() {
+        let (mut a, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let (mut b, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let held = hold_clock(&mut a);
+        let _ = hold_clock(&mut b);
+        for seq in 21..24 {
+            *held.lock().unwrap() += Duration::from_millis(20);
+            let _ = a.event(&bead_event(seq, "advanced", "yd-links", json!({})));
+        }
+        // The burst's yard reads nothing more; the other's first event
+        // reads at once.
+        assert_eq!(
+            a.event(&bead_event(24, "advanced", "yd-links", json!({}))),
+            []
+        );
+        assert_eq!(
+            b.event(&bead_event(21, "advanced", "yd-links", json!({}))),
+            [Effect::Arrivals, Effect::Flows, Effect::Waiting]
+        );
     }
 
     fn arrival(
@@ -19836,6 +20286,7 @@ mod tests {
     #[test]
     fn the_lists_follow_the_stream_and_ask_nothing_in_a_loop() {
         let (mut m, _) = Model::new(yard(&[]), Mode::Chat, None);
+        let at = hold_clock(&mut m);
         // A note on a bead: the queue is read again.
         assert_eq!(
             m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
@@ -19862,6 +20313,7 @@ mod tests {
             []
         );
         // Both at once: a noted event that also notified.
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&event(
                 24,
@@ -22230,6 +22682,7 @@ mod tests {
         let mut state = yard(&[]);
         state.asks.open = evening();
         let (mut m, effects) = Model::new(state, Mode::Decisions, None);
+        let at = hold_clock(&mut m);
         // The oldest decision opens, and its bead is read.
         assert_eq!(
             effects,
@@ -22254,6 +22707,7 @@ mod tests {
         );
         let mut noted = event(22, "noted", "yardmaster", json!({"note": 2}));
         noted.bead = "yardr-n8ta".into();
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&noted),
             [
@@ -22269,6 +22723,7 @@ mod tests {
         // A bead's other events, whose kinds are yardr's own, read it too.
         let mut moved = event(23, "advanced", "yard", json!({}));
         moved.bead = "yardr-n8ta".into();
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&moved),
             [
@@ -22285,6 +22740,7 @@ mod tests {
         // the same.
         let mut elsewhere = event(24, "noted", "yardmaster", json!({"note": 3}));
         elsewhere.bead = "yd-elsewhere".into();
+        reads_back(&mut m, &at);
         assert_eq!(
             m.event(&elsewhere),
             [
