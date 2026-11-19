@@ -17423,6 +17423,15 @@ yardr.dev
         wait(cx, "the picker", |cx| {
             drawn(cx, "line serve new r-1 reviewers")
         });
+        assert_served_by_arrangement(
+            cx,
+            1280.,
+            &[
+                "line serve new r-1 builders",
+                "line serve new r-1 reviewers",
+            ],
+            true,
+        );
         click_on(cx, "line served new r-1 send");
         cx.run_until_parked();
         assert_eq!(yard.asked("Mail"), Vec::<Value>::new());
@@ -17536,6 +17545,17 @@ yardr.dev
         wait(cx, "the depot's line", |cx| drawn(cx, "flow head yardr"));
         click_on(cx, "line window open yardr");
         wait(cx, "the line window", |cx| drawn(cx, "line rule new"));
+        let window_buttons = [
+            "line serve new r-1 builders",
+            "line serve new r-1 reviewers",
+            "line serve new r-1 assembly",
+            "line newgroup open",
+        ];
+        cx.simulate_resize(gpui::size(px(1800.), px(1600.)));
+        assert_served_by_arrangement(cx, 1800., &window_buttons, false);
+        cx.simulate_resize(gpui::size(px(WINDOW_MIN), px(1600.)));
+        assert_served_by_arrangement(cx, WINDOW_MIN, &window_buttons, true);
+        cx.simulate_resize(gpui::size(px(1280.), px(1600.)));
         // A picker stands under the Rule line it edits and under each
         // Other rule, naming its rule first, each with its Send.
         for selector in [
@@ -17649,6 +17669,52 @@ yardr.dev
                 Some("Last change: route_set, 14 Nov, by mckean (was builders, now reviewers)")
             );
         });
+    }
+
+    /// The Served-by picker's arrangement on one surface: its head on
+    /// its own line, every group button below that line, the words
+    /// inside the picker, and Send at the right edge beside or below
+    /// them. Where `wrapped` the words must stand on more than one line, their
+    /// block outgrowing Send's height, so the test fails if the
+    /// fixture ever stops wrapping instead of passing on a row that
+    /// holds.
+    fn assert_served_by_arrangement(
+        cx: &mut VisualTestContext,
+        wide: f32,
+        buttons: &[&str],
+        wrapped: bool,
+    ) {
+        let head = bounds_of(cx, "line served new r-1");
+        for button in buttons {
+            let at = bounds_now(cx, button);
+            assert!(
+                at.top() >= head.bottom(),
+                "at {wide} px {button} stands on the head's line: {at:?} under {head:?}"
+            );
+        }
+        let words = bounds_now(cx, "line served new r-1 words");
+        let send = bounds_now(cx, "line served new r-1 send");
+        assert!(
+            words.left() >= head.left() - px(1.) && words.right() <= head.right() + px(1.),
+            "at {wide} px the words run out of the picker: {words:?} in {head:?}"
+        );
+        if wrapped {
+            assert!(
+                words.bottom() > send.bottom(),
+                "at {wide} px the words stand on one line: {words:?} {send:?}"
+            );
+        }
+        if send.top() >= words.bottom() {
+            assert!(
+                near(send.right(), words.right()),
+                "at {wide} px the wrapped Send drops left: {words:?} {send:?}"
+            );
+        } else {
+            assert!(
+                send.left() >= words.right(),
+                "at {wide} px Send stands left of the words' end: {words:?} {send:?}"
+            );
+        }
     }
 
     /// Stage edits from the Line window: on a store flow each files

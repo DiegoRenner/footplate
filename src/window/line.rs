@@ -1121,22 +1121,20 @@ impl Footplate {
             _ => None,
         };
         let mut picker = div().flex().flex_col().gap_1();
-        let mut row = div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(palette.faint)
-                    .debug_selector({
-                        let (stage, token) = (stage.to_string(), token.clone());
-                        move || format!("line served {stage} {token}")
-                    })
-                    .child(head),
-            );
+        // The head stands on its own line, never sharing a wrapping row
+        // with the buttons: at the drawer's widths the first button would
+        // hang on the label's line and read as a mistake.
+        picker = picker.child(
+            div()
+                .text_sm()
+                .text_color(palette.faint)
+                .debug_selector({
+                    let (stage, token) = (stage.to_string(), token.clone());
+                    move || format!("line served {stage} {token}")
+                })
+                .child(head),
+        );
+        let mut row = div().flex().flex_row().flex_wrap().items_center().gap_2();
         for (name, runner) in groups {
             let label = match runner.is_empty() {
                 true => name.clone(),
@@ -1216,16 +1214,22 @@ impl Footplate {
                 this.file_served_pick(&owned_depot, &owned_stage, rule, marked, cx);
             })
         });
+        // The row justifies its end, so a wrapped Send stands right
+        // as an unwrapped one does, and the words may shrink past
+        // their longest word (`min_w_0`), so they wrap inside the
+        // picker instead of running out of its left edge.
         picker = picker.child(
             div()
                 .flex()
                 .flex_row()
                 .flex_wrap()
+                .justify_end()
                 .items_center()
                 .gap_2()
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
                         .text_sm()
                         .text_color(palette.faint)
                         .debug_selector({
