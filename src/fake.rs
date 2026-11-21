@@ -507,6 +507,15 @@ impl Yard {
     /// reads no stream, so no quiet of its stream runs) holds the call and
     /// waits for [`Yard::calls_held`]. The client's own timeout still ends
     /// the wait, so a call is held for seconds, not for ever.
+    ///
+    /// Hold only what a follower thread calls across a turn of the
+    /// executor: a call the window makes (any `ask_in` effect: UserAsks,
+    /// Bead, ...) held across one stalls `run_until_parked` (and so
+    /// `wait`) until the client's 30 s `CALL_TIMEOUT`, failing slow. To
+    /// stage a slow or out-of-order answer for a window-made call, hold
+    /// it, draw what the window says with `drawn_untick` (no turn of
+    /// the executor), then [`Yard::release_calls`] before any turn — as
+    /// the run-ask approve test does.
     pub fn hold_calls(&self, method: &str) {
         self.shared
             .state
