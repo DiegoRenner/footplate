@@ -289,8 +289,11 @@ pub(crate) fn keys_for(view: KeysView, drawer: bool) -> Vec<(String, String)> {
 }
 
 /// The key that approves a run ask, as its button and its keys name it.
+/// Off macOS it is drawn as the control sign and the return arrow, two
+/// characters as on the Mac: `ctrl+enter` widens the Approve chip by
+/// eight, enough to push Decline off the card's one row at 960px.
 pub(crate) const APPROVE_KEY: &str = if cfg!(target_os = "macos") {
     "\u{2318}\u{21b5}"
 } else {
-    "ctrl+enter"
+    "\u{2303}\u{21b5}"
 };
