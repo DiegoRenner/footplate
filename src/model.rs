@@ -17,8 +17,8 @@ use crate::api::{
     self, AboutBead, Arrival, Arrivals, AskWeight, Asks, Bead, BeadAsk, BeadNote, BlobRef,
     CrewMember, DecidedAsk, DevicePairing, Event, Flow, FlowBead, FlowDepot, Flows, GrantGiven,
     Identity, Letter, Line, LineFilters, LineFlow, LineOutcome, LinePrompt, LineStage, Me,
-    Notification, OpenAsk, Parked, Peer, Ran, Reaction, Run, Secret, Setup, SourceGrant, Teammate,
-    TelemetryPreview, Uninvited, User,
+    Notification, OpenAsk, OpenQueue, Parked, Peer, Ran, Reaction, Run, Secret, Setup, SourceGrant,
+    Teammate, TelemetryPreview, Uninvited, User,
 };
 use crate::markdown;
 use crate::select;
@@ -69,8 +69,11 @@ pub struct State {
     pub notification_cursor: u64,
     /// What the yard reports, oldest first.
     pub notifications: Vec<Notification>,
-    /// The person's open asks with what they dealt with.
-    pub asks: Asks,
+    /// The person's open asks, and with them what they dealt with where
+    /// the read was whole: a yard from before `UserOpenAsks` is read so
+    /// ([`Client::user_open_asks`](crate::api::Client::user_open_asks)),
+    /// and any other is read open alone, its history seeded after.
+    pub asks: OpenQueue,
     /// The beads parked for the person's move, as `Waiting` read them,
     /// longest waiting first.
     pub parked: Vec<Parked>,
@@ -1136,6 +1139,32 @@ pub struct DecidedDetail {
     pub ran: Option<Ran>,
 }
 
+/// How much of the person's queue a read of it asks for. The open asks are
+/// what an event, a return and a state read again need, and the decided
+/// history, which grows with every ask the person ever dealt with, is most
+/// of what the whole queue weighs: only a read whose answer shows it is
+/// made whole, which is the one that seeds it, an opened "Decided", and a
+/// write of the person's, so that a pick lands there at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Width {
+    /// The open asks alone, which leave the history the model holds as it is.
+    Open,
+    /// The open asks and the history with them, which replaces it.
+    Whole,
+}
+
+impl Width {
+    /// The kind of read a read of this width is: the open rows' own, or the
+    /// whole queue's, whose history is judged by a stamp of its own
+    /// ([`Read::Decided`]).
+    pub fn read(self) -> Read {
+        match self {
+            Width::Open => Read::Asks,
+            Width::Whole => Read::Decided,
+        }
+    }
+}
+
 /// A call the yard has to be asked, with what the model does on its answer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -1160,8 +1189,10 @@ pub enum Effect {
     /// `AckUserNotifications` through a seq; answered to
     /// [`Model::notifications_acked`] or [`Model::notifications_ack_failed`].
     AckNotifications { through: u64 },
-    /// `UserAsks`; answered to [`Model::asks`].
-    Asks,
+    /// `UserOpenAsks` or `UserAsks`, as its width says; answered to
+    /// [`Model::asks`], [`Model::open_asks`] or [`Model::decided_asks`], as
+    /// each half of the answer is newer than what the model holds of it.
+    Asks(Width),
     /// `Waiting`; answered to [`Model::waiting`] or
     /// [`Model::waiting_failed`].
     Waiting,
@@ -1204,6 +1235,14 @@ pub enum Effect {
 /// the model holds of it: the effect of that name. Reads of one kind may
 /// answer out of the order they were made in, since each is a connection
 /// of its own and `UserAsks` takes seconds on a large yard.
+///
+/// The queue is two kinds, one for each half of what it answers.
+/// [`Read::Asks`] is the open rows, which every read of the queue brings.
+/// [`Read::Decided`] is the history, which only a whole read brings, and is
+/// judged by its own stamp: a whole read takes seconds and an open one made
+/// after it answers first, so by the open rows' stamp the history would
+/// never be taken. The open rows of the whole read are dropped then, as
+/// older, and its history is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Read {
     Crew,
@@ -1211,6 +1250,7 @@ pub enum Read {
     Users,
     Notifications,
     Asks,
+    Decided,
     Waiting,
     Arrivals,
     Flows,
@@ -1228,7 +1268,8 @@ impl Read {
             Read::Peers => Effect::Peers,
             Read::Users => Effect::Users,
             Read::Notifications => Effect::Notifications,
-            Read::Asks => Effect::Asks,
+            Read::Asks => Effect::Asks(Width::Open),
+            Read::Decided => Effect::Asks(Width::Whole),
             Read::Waiting => Effect::Waiting,
             Read::Arrivals => Effect::Arrivals,
             Read::Flows => Effect::Flows,
@@ -1839,7 +1880,16 @@ pub struct Model {
     notifications: Vec<Notification>,
     /// The open asks, oldest first, with what was dealt with, newest first.
     open: Vec<OpenAsk>,
+    /// What was dealt with, as the last whole read of the queue found it:
+    /// the open reads that follow leave it as it is.
     decided: Vec<DecidedAsk>,
+    /// Whether `decided` was ever read: a whole read answered, or the state
+    /// was read whole by a yard from before `UserOpenAsks`. It stays
+    /// through the yard being lost, as what the model holds does, and is
+    /// what asks for the one whole read that seeds the history
+    /// ([`Model::seed`]), so a state read open alone is followed by it
+    /// until one lands.
+    seeded: bool,
     /// Whether the folded "Decided" stands open.
     decided_expanded: bool,
     /// How many pages past the first the opened history draws: each press
@@ -2045,7 +2095,8 @@ impl Model {
             asked: state.cursor,
             notifications: state.notifications,
             open: state.asks.open,
-            decided: state.asks.decided,
+            seeded: state.asks.decided.is_some(),
+            decided: state.asks.decided.unwrap_or_default(),
             decided_expanded,
             quiet_expanded,
             departures,
@@ -2154,15 +2205,28 @@ impl Model {
     /// The model of a state read again after the yard was lost: what was
     /// open stays open as in [`Model::new`], and the conversation to come
     /// back to from a decision stays that one.
-    pub fn resumed(&self, state: State, mode: Mode) -> (Model, Vec<Effect>) {
+    pub fn resumed(&self, mut state: State, mode: Mode) -> (Model, Vec<Effect>) {
         let head = state.head;
         let unread = state.unread.clone();
+        // A state read open alone says nothing of the history, and the one
+        // the model holds stands in it: a card of the history that was
+        // open stays open, and the return of a put-aside ask stays armed.
+        // Whether it was ever read stays with it, so that a yard lost
+        // before the read that seeds it answered is read for it again
+        // ([`Model::seed`]). A state that carries a history (a yard from
+        // before `UserOpenAsks`) is the newer, and seeds it.
+        let whole = state.asks.decided.is_some();
+        let seeded = whole || self.seeded;
+        if !whole {
+            state.asks.decided = Some(self.decided.clone());
+        }
         // Of a yard the window does not show, no row is open afterwards
         // either.
         let (mut m, mut effects) = match self.aside {
             true => (Model::new_aside(state), Vec::new()),
             false => Model::new(state, mode, self.selected.clone()),
         };
+        m.seeded = seeded;
         if m.back.is_none() {
             m.back = self.back.clone();
         }
@@ -2215,16 +2279,20 @@ impl Model {
         // did (stamp 0 is older than any call's end), since it may predate
         // the call; for what it does not say the queue is read once more,
         // which can, and the bead for a note, which the state does not
-        // hold.
+        // hold. A state read open alone says none of it: what is gone from
+        // the open rows is gone, or dealt with, and only the history tells
+        // which, so the read made once more is the whole queue, which does.
         m.sending = self.sending.clone();
         m.taken = self.taken.clone();
-        m.settle_writes(0);
+        if whole {
+            m.settle_writes(0);
+        }
         let unsure = |held: &Held| matches!(held.sending, Sending::Unsure { .. });
         if m.sending
             .values()
             .any(|held| unsure(held) && !matches!(held.write, Write::Note { .. }))
         {
-            effects.push(Effect::Asks);
+            effects.push(Effect::Asks(Width::Whole));
         }
         let mut noted: Vec<&str> = m
             .sending
@@ -3139,10 +3207,16 @@ impl Model {
     }
 
     /// Opens the folded "Decided", or folds it shut. Either way the history
-    /// starts at its first page when it is opened again.
-    pub fn toggle_decided(&mut self) {
+    /// starts at its first page when it is opened again. Opening it reads
+    /// the queue whole: the open reads that move the rows with every event
+    /// leave the history as it was, so it is read as it is shown.
+    pub fn toggle_decided(&mut self) -> Vec<Effect> {
         self.decided_expanded = !self.decided_expanded;
         self.decided_more = 0;
+        match self.decided_expanded {
+            true => vec![Effect::Asks(Width::Whole)],
+            false => Vec::new(),
+        }
     }
 
     /// Whether the Waiting section's rows are folded away.
@@ -4492,10 +4566,13 @@ impl Model {
     /// Stands the history open on `ask` of `bead`: unfolded, and drawn as
     /// far down as the ask stands, where the chip and the filter find it.
     /// What a mail's chip for an old ask does before it opens the row: an
-    /// ask past the first page has no row until its page is drawn.
-    pub fn show_decided(&mut self, bead: &str, ask: u64) {
+    /// ask past the first page has no row until its page is drawn. The ask
+    /// is looked for in the history held, which is read whole where none is
+    /// held yet ([`Model::seed`]).
+    pub fn show_decided(&mut self, bead: &str, ask: u64) -> Vec<Effect> {
         if !self.decided_expanded {
-            self.toggle_decided();
+            self.decided_expanded = true;
+            self.decided_more = 0;
         }
         let at = self
             .visible_decided()
@@ -4504,6 +4581,7 @@ impl Model {
         if let Some(at) = at {
             self.decided_more = self.decided_more.max(at / DECIDED_PAGE);
         }
+        self.seed()
     }
 
     /// The dealt with asks as the history shows them: matching the chip
@@ -5038,7 +5116,7 @@ impl Model {
         self.chosen.remove(&(bead.to_string(), ask));
         self.account.remove(&(bead.to_string(), ask));
         let mut effects = self.reselect();
-        effects.push(Effect::Asks);
+        effects.push(Effect::Asks(Width::Whole));
         effects.push(Effect::Bead {
             bead: bead.to_string(),
         });
@@ -5147,7 +5225,7 @@ impl Model {
             return Vec::new();
         }
         let mut effects = self.reselect();
-        effects.push(Effect::Asks);
+        effects.push(Effect::Asks(Width::Whole));
         effects.push(Effect::Bead {
             bead: bead.to_string(),
         });
@@ -5236,7 +5314,7 @@ impl Model {
             Write::Note { .. } => Effect::Bead {
                 bead: bead.to_string(),
             },
-            _ => Effect::Asks,
+            _ => Effect::Asks(Width::Whole),
         };
         self.sending.insert(
             at,
@@ -5307,10 +5385,13 @@ impl Model {
         std::mem::take(&mut self.taken)
     }
 
-    /// The queue was read, the read stamped `stamp`: what it says settles
-    /// each write whose call ended with no answer, but a note, which the
-    /// bead's notes settle ([`Model::settle_notes`]). What the queue says
-    /// is the ask's own state:
+    /// The queue was read whole, the read stamped `stamp`: what it says
+    /// settles each write whose call ended with no answer, but a note, which
+    /// the bead's notes settle ([`Model::settle_notes`]). What became of a
+    /// write is in the history as much as in the open rows, so a read of the
+    /// open rows alone, which leaves the history as it was, settles nothing:
+    /// an ask that is gone from them is not known to have gone another way.
+    /// What the queue says is the ask's own state:
     ///
     /// - An ask the yard has where the write put it was taken, and what
     ///   the card kept of it is taken out ([`Model::take_taken`]): decided
@@ -5480,7 +5561,7 @@ impl Model {
             return Vec::new();
         }
         let mut effects = self.reselect();
-        effects.push(Effect::Asks);
+        effects.push(Effect::Asks(Width::Whole));
         effects.push(Effect::Bead {
             bead: bead.to_string(),
         });
@@ -5610,7 +5691,7 @@ impl Model {
         self.chosen.remove(&(bead.to_string(), ask));
         self.account.remove(&(bead.to_string(), ask));
         let mut effects = self.reselect();
-        effects.push(Effect::Asks);
+        effects.push(Effect::Asks(Width::Whole));
         effects.push(Effect::Bead {
             bead: bead.to_string(),
         });
@@ -5695,7 +5776,7 @@ impl Model {
         self.chosen.remove(&(bead.to_string(), ask));
         self.account.remove(&(bead.to_string(), ask));
         let mut effects = self.reselect();
-        effects.push(Effect::Asks);
+        effects.push(Effect::Asks(Width::Whole));
         effects.push(Effect::Bead {
             bead: bead.to_string(),
         });
@@ -5747,7 +5828,7 @@ impl Model {
         self.chosen.remove(&(bead.to_string(), ask));
         self.account.remove(&(bead.to_string(), ask));
         let mut effects = self.reselect();
-        effects.push(Effect::Asks);
+        effects.push(Effect::Asks(Width::Whole));
         effects.push(Effect::Bead {
             bead: bead.to_string(),
         });
@@ -7681,16 +7762,65 @@ impl Model {
         self.notice = format!("your notices could not be marked read: {why}");
     }
 
-    /// The queue as read again. When the open bead or the open dealt with
-    /// is gone the conversation open last is opened, else the first row
-    /// from the top. A bead no longer in
-    /// the queue leaves what the cards kept of it; the open bead is read
-    /// when it is not yet.
+    /// The queue as read again whole: the open rows and the history replace
+    /// what the model holds, and the history is seeded. When the open bead
+    /// or the open dealt with is gone the conversation open last is opened,
+    /// else the first row from the top. A bead no longer in the queue leaves
+    /// what the cards kept of it; the open bead is read when it is not yet.
     pub fn asks(&mut self, asks: Asks) -> Vec<Effect> {
-        let open = std::mem::replace(&mut self.open, asks.open);
-        let decided = std::mem::replace(&mut self.decided, asks.decided);
+        self.queue(Some(asks.open), Some(asks.decided))
+    }
+
+    /// The queue as read open alone: the open rows replace what the model
+    /// holds, as [`Model::asks`] does, and the history stays as the last
+    /// whole read found it. A put-aside ask that came back is open here and
+    /// still put aside there until the next whole read.
+    pub fn open_asks(&mut self, open: Vec<OpenAsk>) -> Vec<Effect> {
+        self.queue(Some(open), None)
+    }
+
+    /// The history of a whole read whose open rows were older than the model's
+    /// (an open read made after it answered first): the history replaces
+    /// what is held, and the open rows stay as the newer read left them.
+    pub fn decided_asks(&mut self, decided: Vec<DecidedAsk>) -> Vec<Effect> {
+        self.queue(None, Some(decided))
+    }
+
+    /// The whole read that seeds the history, where none has: the open reads
+    /// that follow the state leave the history as it is, and a model that was
+    /// never given one asks for it once, in the background, when it is made
+    /// of a state. What it arms follows: the return of a put-aside ask is
+    /// found in the history alone. A model made of a yard that has served
+    /// the whole queue, or one whose history was read, asks for nothing.
+    pub fn seed(&self) -> Vec<Effect> {
+        match self.seeded {
+            true => Vec::new(),
+            false => vec![Effect::Asks(Width::Whole)],
+        }
+    }
+
+    /// The halves of a queue read that are new, each replacing what the
+    /// model holds of it, and what follows from them.
+    fn queue(
+        &mut self,
+        open: Option<Vec<OpenAsk>>,
+        decided: Option<Vec<DecidedAsk>>,
+    ) -> Vec<Effect> {
+        let open_before = open.map(|rows| std::mem::replace(&mut self.open, rows));
+        let decided_before = decided.map(|rows| std::mem::replace(&mut self.decided, rows));
+        self.seeded |= decided_before.is_some();
         let news = self.news.len();
-        self.ask_news(&open, &decided);
+        if let Some(open_before) = open_before.as_deref() {
+            match decided_before.as_deref() {
+                Some(decided_before) => self.ask_news(open_before, decided_before),
+                // The history was not read: what is held is what it was.
+                None => {
+                    let held = std::mem::take(&mut self.decided);
+                    self.ask_news(open_before, &held);
+                    self.decided = held;
+                }
+            }
+        }
         let mut keep = HashSet::new();
         for bead in self
             .open
@@ -7736,6 +7866,10 @@ impl Model {
             {
                 effects.extend(self.open());
             }
+        }
+        // The rest follows from open rows that are new.
+        if open_before.is_none() {
+            return effects;
         }
         // Every bead with open asks is read for its rows' counts, once:
         // the open bead is already asked above, and what the cache has is
@@ -10746,11 +10880,11 @@ mod tests {
     #[test]
     fn a_missing_saved_decided_row_falls_back_as_a_single_yard_does() {
         let mut state = State::default();
-        state.asks.decided.push(DecidedAsk {
+        state.asks.decided = Some(vec![DecidedAsk {
             bead: "another".into(),
             ask: 2,
             ..DecidedAsk::default()
-        });
+        }]);
         let (model, _) = Model::new_returning(
             state,
             Mode::Decisions,
@@ -12365,7 +12499,7 @@ mod tests {
     fn refs_model(texts: &[&str], open: Vec<OpenAsk>, decided: Vec<DecidedAsk>) -> Model {
         let mut state = yard(&[]);
         state.asks.open = open;
-        state.asks.decided = decided;
+        state.asks.decided = Some(decided);
         state.arrivals = board(vec![arrival(
             "yd-zulu", "new", "yardr", "5h–8h", "late", "amber",
         )]);
@@ -13227,7 +13361,7 @@ mod tests {
         assert_eq!(
             m.event(&bead_event(21, "noted", "yd-links", json!({}))),
             [
-                Effect::Asks,
+                Effect::Asks(Width::Open),
                 Effect::Arrivals,
                 Effect::Flows,
                 Effect::Waiting
@@ -13369,7 +13503,7 @@ mod tests {
             burst += m
                 .event(&event(seq, "noted", "yardmaster", json!({"note": seq})))
                 .iter()
-                .filter(|e| **e == Effect::Asks)
+                .filter(|e| **e == Effect::Asks(Width::Open))
                 .count();
         }
         assert_eq!(burst, 1);
@@ -13378,14 +13512,14 @@ mod tests {
         let trailing = m
             .asks(Asks::default())
             .iter()
-            .filter(|e| **e == Effect::Asks)
+            .filter(|e| **e == Effect::Asks(Width::Open))
             .count();
         assert_eq!(trailing, 1);
         m.gate_arrived(Read::Asks);
         let quiet = m
             .asks(Asks::default())
             .iter()
-            .filter(|e| **e == Effect::Asks)
+            .filter(|e| **e == Effect::Asks(Width::Open))
             .count();
         assert_eq!(quiet, 0);
     }
@@ -13399,7 +13533,7 @@ mod tests {
         let _ = hold_clock(&mut m);
         assert_eq!(
             m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
-            [Effect::Asks]
+            [Effect::Asks(Width::Open)]
         );
         assert_eq!(
             m.event(&event(22, "noted", "yardmaster", json!({"note": 2}))),
@@ -13420,9 +13554,9 @@ mod tests {
         );
         // The wait fired: the wanted read starts on its word alone.
         // Nothing is wanted after its answer.
-        assert_eq!(m.reread(Read::Asks), [Effect::Asks]);
+        assert_eq!(m.reread(Read::Asks), [Effect::Asks(Width::Open)]);
         m.gate_arrived(Read::Asks);
-        assert!(!m.asks(Asks::default()).contains(&Effect::Asks));
+        assert!(!m.asks(Asks::default()).contains(&Effect::Asks(Width::Open)));
         assert_eq!(m.reread(Read::Asks), []);
     }
 
@@ -13435,7 +13569,7 @@ mod tests {
         let at = hold_clock(&mut m);
         assert_eq!(
             m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
-            [Effect::Asks]
+            [Effect::Asks(Width::Open)]
         );
         m.gate_arrived(Read::Asks);
         let _ = m.asks(Asks::default());
@@ -13455,9 +13589,9 @@ mod tests {
         );
         // The wait fired: the wanted read starts, and nothing is wanted
         // after its answer.
-        assert_eq!(m.reread(Read::Asks), [Effect::Asks]);
+        assert_eq!(m.reread(Read::Asks), [Effect::Asks(Width::Open)]);
         m.gate_arrived(Read::Asks);
-        assert!(!m.asks(Asks::default()).contains(&Effect::Asks));
+        assert!(!m.asks(Asks::default()).contains(&Effect::Asks(Width::Open)));
         assert_eq!(m.reread(Read::Asks), []);
     }
 
@@ -13474,13 +13608,16 @@ mod tests {
         // it again at once all the same.
         assert_eq!(
             m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
-            [Effect::Asks]
+            [Effect::Asks(Width::Open)]
         );
         assert_eq!(
             m.event(&event(22, "noted", "yardmaster", json!({"note": 2}))),
             []
         );
-        assert!(m.deferred("yardr-n8ta", 3).contains(&Effect::Asks));
+        assert!(
+            m.deferred("yardr-n8ta", 3)
+                .contains(&Effect::Asks(Width::Whole))
+        );
         // The parked queue's read is out and wanted: a move made reads it
         // again at once all the same.
         assert!(
@@ -15432,7 +15569,7 @@ mod tests {
     fn the_images_of_an_expanded_card_s_notes_are_asked_for() {
         let mut state = yard(&[]);
         state.asks.open = evening();
-        state.asks.decided = vec![decided_ask(
+        state.asks.decided = Some(vec![decided_ask(
             "yardr-n8ta",
             3,
             "Move this yard's 64 links to the declared source now?",
@@ -15440,7 +15577,7 @@ mod tests {
             "Move them now",
             "tonight",
             "",
-        )];
+        )]);
         let (mut m, _) = Model::new(state, Mode::Chat, None);
         let mut bead = links_bead();
         bead.notes[0].files = vec![
@@ -15754,9 +15891,9 @@ mod tests {
             "yardmaster",
             "2026-11-04T09:00:00Z",
         )];
-        state.asks.decided = vec![decided_ask(
+        state.asks.decided = Some(vec![decided_ask(
             "yd-done", 7, "Done?", "answered", "Yes", "", "",
-        )];
+        )]);
         let (mut m, _) = Model::new(state, Mode::Decisions, None);
         assert!(!m.waiting_too_old());
         let rows = m.waiting_rows(&now);
@@ -15939,7 +16076,7 @@ mod tests {
             )]
         };
         state.asks.open = open();
-        state.asks.decided = week();
+        state.asks.decided = Some(week());
         let (mut m, _) = Model::new(state, Mode::Decisions, None);
         m.toggle_decided();
         let card = Selected::Decided("yd-cal".into(), 7);
@@ -19208,7 +19345,7 @@ mod tests {
     #[test]
     fn decided_stands_folded_with_the_picks_newest_first() {
         let mut state = yard(&[]);
-        state.asks.decided = vec![
+        state.asks.decided = Some(vec![
             decided_ask(
                 "yd-links",
                 6,
@@ -19237,7 +19374,7 @@ mod tests {
                 "",
                 "2026-10-11T09:30:00Z",
             ),
-        ];
+        ]);
         let (mut m, _) = Model::new(state, Mode::Chat, None);
         assert_eq!(m.decided_count(), 4);
         assert!(!m.decided_expanded());
@@ -19391,7 +19528,7 @@ mod tests {
     #[test]
     fn the_history_groups_by_day_newest_first_with_look_alikes_folded() {
         let mut state = yard(&[]);
-        state.asks.decided = week();
+        state.asks.decided = Some(week());
         let (m, _) = Model::new(state, Mode::Chat, None);
         let groups = m.decided_groups(&noon());
         let days: Vec<&str> = groups.iter().map(|g| g.day.as_str()).collect();
@@ -19442,7 +19579,7 @@ mod tests {
     fn look_alikes_fold_only_consecutive_same_asker_same_outcome_same_day() {
         // Another asker's between them: no fold.
         let mut state = yard(&[]);
-        state.asks.decided = vec![
+        state.asks.decided = Some(vec![
             decided_when(
                 "yd-cal",
                 1,
@@ -19476,7 +19613,7 @@ mod tests {
                 "",
                 "",
             ),
-        ];
+        ]);
         let (m, _) = Model::new(state, Mode::Chat, None);
         let groups = m.decided_groups(&noon());
         assert_eq!(groups.len(), 1);
@@ -19525,7 +19662,7 @@ mod tests {
             "",
             "",
         ));
-        state.asks.decided = asks;
+        state.asks.decided = Some(asks);
         let (m, _) = Model::new(state, Mode::Chat, None);
         let groups = m.decided_groups(&noon());
         assert_eq!(groups.len(), 1);
@@ -19541,7 +19678,7 @@ mod tests {
     #[test]
     fn a_fold_opens_on_a_toggle_and_with_the_open_ask_in_it() {
         let mut state = yard(&[]);
-        state.asks.decided = week();
+        state.asks.decided = Some(week());
         let (mut m, _) = Model::new(state, Mode::Decisions, None);
         let open = |m: &Model| match &m.decided_groups(&noon())[1].rows[0] {
             DecidedEntry::Fold(fold) => fold.open,
@@ -19561,7 +19698,7 @@ mod tests {
     #[test]
     fn the_chips_count_and_choose_an_outcome_with_the_declined_under_all() {
         let mut state = yard(&[]);
-        state.asks.decided = week();
+        state.asks.decided = Some(week());
         let (mut m, _) = Model::new(state, Mode::Chat, None);
         assert_eq!(
             m.decided_chip_counts(),
@@ -19589,7 +19726,7 @@ mod tests {
     #[test]
     fn the_filter_matches_question_asker_and_outcome_in_any_case() {
         let mut state = yard(&[]);
-        state.asks.decided = week();
+        state.asks.decided = Some(week());
         let (mut m, _) = Model::new(state, Mode::Chat, None);
         let asks = |m: &Model| {
             decided_all(m)
@@ -19633,7 +19770,7 @@ mod tests {
     #[test]
     fn the_tab_order_skips_what_the_chip_and_the_filter_hide() {
         let mut state = yard(&[]);
-        state.asks.decided = week();
+        state.asks.decided = Some(week());
         let (mut m, _) = Model::new(state, Mode::Decisions, None);
         m.toggle_decided();
         m.set_decided_chip(Some(Outcome::Approved));
@@ -19680,7 +19817,7 @@ mod tests {
     #[test]
     fn the_history_draws_a_page_at_a_time_and_a_search_reaches_past_it() {
         let mut state = yard(&[]);
-        state.asks.decided = long_history(120);
+        state.asks.decided = Some(long_history(120));
         let (mut m, _) = Model::new(state, Mode::Decisions, None);
         let asks = |m: &Model| {
             decided_all(m)
@@ -19760,6 +19897,21 @@ mod tests {
         // An ask the history does not hold draws no further than it was.
         m.show_decided("yd-gone", 1);
         assert_eq!(asks(&m).len(), 100);
+
+        // Opening the fold reads the queue whole, since the reads that move
+        // the rows leave the history as it was; folding it reads nothing. A
+        // chip finds its ask in the history that is held, and reads nothing
+        // either, but where none was read yet: it reads the history it needs.
+        assert!(m.decided_expanded());
+        assert_eq!(m.toggle_decided(), []);
+        assert_eq!(m.toggle_decided(), [Effect::Asks(Width::Whole)]);
+        assert_eq!(m.show_decided("yd-past", 3), []);
+        let (mut unseeded, _) = Model::new(yard(&[]), Mode::Decisions, None);
+        assert_eq!(
+            unseeded.show_decided("yd-past", 3),
+            [Effect::Asks(Width::Whole)]
+        );
+        assert!(unseeded.decided_expanded());
     }
 
     /// Two reads of the queue answer out of the order they were made in:
@@ -19803,11 +19955,50 @@ mod tests {
         assert_eq!(m.parked_count(), 1);
         assert_eq!(Read::Waiting.effect(), Effect::Waiting);
 
+        // The queue is two kinds, one for each half of what it answers. A
+        // whole read made first answers after an open read made later: its
+        // open rows are older and are dropped, and its history is not, the
+        // only one there is, or the history would never be taken by a yard
+        // whose whole read takes seconds. A whole read older than another
+        // is older in both halves.
+        let (whole, open) = (m.reads().make(), m.reads().make());
+        assert!(m.reads().fresh(Read::Asks, open));
+        m.open_asks(vec![open_ask(
+            "bead-open",
+            "T",
+            "",
+            1,
+            "Q?",
+            "yardmaster",
+            "2026-10-08T09:30:00Z",
+        )]);
+        assert!(!m.reads().fresh(Read::Asks, whole));
+        assert!(m.reads().fresh(Read::Decided, whole));
+        m.decided_asks(vec![decided_ask(
+            "bead-done",
+            2,
+            "Q?",
+            "answered",
+            "Yes",
+            "",
+            "",
+        )]);
+        assert_eq!(
+            (m.open[0].bead.as_str(), m.decided_count()),
+            ("bead-open", 1),
+            "the open rows stay as the newer read left them"
+        );
+        let (older, newer) = (m.reads().make(), m.reads().make());
+        assert!(m.reads().fresh(Read::Decided, newer));
+        assert!(!m.reads().fresh(Read::Decided, older));
+
         // Made before the yard was read again, answered after: older than
         // the state read.
         let before = m.reads().make();
+        let whole_before = m.reads().make();
         let (mut m, _) = m.resumed(yard(&[]), Mode::Decisions);
         assert!(!m.reads().fresh(Read::Flows, before));
+        assert!(!m.reads().fresh(Read::Decided, whole_before));
         let after = m.reads().make();
         assert!(m.reads().fresh(Read::Flows, after));
     }
@@ -19832,6 +20023,29 @@ mod tests {
         assert!(!reads.again(Read::Asks), "a newer one answered");
         // One that fails after a newer answered is not made again either.
         assert!(!reads.failed(Read::Asks, failed));
+
+        // The width of a queue read is its kind: one that failed is made
+        // again as it was, and an open answer says nothing of the history
+        // a whole read failed to bring.
+        assert_eq!(Read::Asks.effect(), Effect::Asks(Width::Open));
+        assert_eq!(Read::Decided.effect(), Effect::Asks(Width::Whole));
+        assert_eq!(
+            [Width::Open, Width::Whole].map(Width::read),
+            [Read::Asks, Read::Decided]
+        );
+        let failed = reads.make();
+        assert!(reads.failed(Read::Decided, failed));
+        let open = reads.make();
+        assert!(reads.fresh(Read::Asks, open));
+        assert!(
+            reads.again(Read::Decided),
+            "an open answer is not the history"
+        );
+        let failed = reads.make();
+        assert!(reads.failed(Read::Decided, failed));
+        let whole = reads.make();
+        assert!(reads.fresh(Read::Decided, whole));
+        assert!(!reads.again(Read::Decided), "a newer whole read answered");
 
         let failed = reads.make();
         assert!(reads.failed(Read::Users, failed));
@@ -19886,11 +20100,11 @@ mod tests {
     #[test]
     fn the_next_put_aside_return_is_the_earliest() {
         let mut state = yard(&[]);
-        state.asks.decided = vec![
+        state.asks.decided = Some(vec![
             decided_ask("a", 1, "Q?", "put aside", "", "", "2026-10-12T09:30:00Z"),
             decided_ask("b", 2, "Q?", "answered", "Go", "", ""),
             decided_ask("c", 3, "Q?", "put aside", "", "", "2026-10-11T09:30:00Z"),
-        ];
+        ]);
         let (m, _) = Model::new(state, Mode::Chat, None);
         let at = |at: &str| {
             DateTime::parse_from_rfc3339(at)
@@ -19907,6 +20121,105 @@ mod tests {
 
         let (m, _) = Model::new(yard(&[]), Mode::Chat, None);
         assert_eq!(m.next_return(None), None);
+    }
+
+    /// A state read open alone has no history, so the model made of it asks
+    /// for one whole read, and asks again where the yard was lost before
+    /// that answered. Once read the model holds the history through the yard
+    /// being lost and read open alone again, and a card of it that was open
+    /// stays open. A state read whole (a yard from before `UserOpenAsks`)
+    /// has the history, asks for nothing, and is the newer one.
+    #[test]
+    fn the_history_is_seeded_once_and_held_through_a_yard_lost_and_found() {
+        let history = || {
+            vec![
+                decided_ask(
+                    "yd-aside",
+                    4,
+                    "Later?",
+                    "put aside",
+                    "",
+                    "",
+                    "2026-10-12T09:30:00Z",
+                ),
+                decided_ask("yd-done", 5, "Build?", "answered", "Yes", "", ""),
+            ]
+        };
+        let at = |at: &str| {
+            DateTime::parse_from_rfc3339(at)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let seeding = vec![Effect::Asks(Width::Whole)];
+
+        // The state has the open rows alone: no history, no return armed
+        // from it, and the whole read is asked for, by the window's Up.
+        let mut state = yard(&[]);
+        state.asks.open = evening()[..1].to_vec();
+        let (mut m, effects) = Model::new(state.clone(), Mode::Decisions, None);
+        assert_eq!((m.decisions_count(), m.decided_count()), (1, 0));
+        assert_eq!(m.seed(), seeding);
+        assert_eq!(m.next_return(None), None);
+        assert!(!effects.contains(&Effect::Asks(Width::Whole)));
+
+        // The yard is lost before the read answered: the model made of the
+        // state read again is still without a history, so it asks again, and
+        // the read that was out is older than it, and dropped.
+        let in_flight = m.reads().make();
+        let (mut lost, effects) = m.resumed(state.clone(), Mode::Decisions);
+        assert_eq!(lost.seed(), seeding);
+        assert!(!effects.contains(&Effect::Asks(Width::Whole)));
+        assert!(!lost.reads().fresh(Read::Decided, in_flight));
+
+        // The read answers: the history is held, nothing is asked for again,
+        // and the put-aside ask's return is found in it.
+        let seed = lost.reads().make();
+        assert!(lost.reads().fresh(Read::Decided, seed));
+        lost.asks(Asks {
+            open: evening()[..1].to_vec(),
+            decided: history(),
+        });
+        assert_eq!((lost.decided_count(), lost.seed()), (2, vec![]));
+        assert_eq!(lost.next_return(None), Some(at("2026-10-12T09:30:00Z")));
+
+        // Lost again, and the state is read open alone again: the history
+        // the model held stands in it and is not asked for again, and its
+        // return stays armed. The open reads that follow leave it, and a
+        // whole one replaces it, empty as it may be: it was read.
+        let (mut back, effects) = lost.resumed(state.clone(), Mode::Decisions);
+        assert_eq!((back.decided_count(), back.seed()), (2, vec![]));
+        assert!(!effects.contains(&Effect::Asks(Width::Whole)));
+        assert_eq!(back.next_return(None), Some(at("2026-10-12T09:30:00Z")));
+        back.open_asks(Vec::new());
+        assert_eq!(back.decided_count(), 2);
+        back.asks(Asks::default());
+        assert_eq!((back.decided_count(), back.seed()), (0, vec![]));
+
+        // A card of the history that was open stays open through it: the
+        // folded history stands for the card only while it holds its ask.
+        let mut whole = yard(&[]);
+        whole.asks.decided = Some(history());
+        let card = Selected::Decided("yd-done".into(), 5);
+        let (m, _) = Model::new_returning(
+            whole.clone(),
+            Mode::Decisions,
+            Some(card.clone()),
+            true,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(m.selected(), Some(&card));
+        assert!(m.seed().is_empty());
+        let (back, _) = m.resumed(yard(&[]), Mode::Decisions);
+        assert_eq!(back.selected(), Some(&card));
+        assert!(!back.decided_expanded());
+
+        // A state read whole has the history, and is the newer.
+        let mut newer = yard(&[]);
+        newer.asks.decided = Some(history()[..1].to_vec());
+        let (back, _) = m.resumed(newer, Mode::Decisions);
+        assert_eq!((back.decided_count(), back.seed()), (1, vec![]));
     }
 
     #[test]
@@ -20290,7 +20603,7 @@ mod tests {
         // A note on a bead: the queue is read again.
         assert_eq!(
             m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
-            [Effect::Asks]
+            [Effect::Asks(Width::Open)]
         );
         // An event that notified the user: the notices are read again.
         assert_eq!(
@@ -20321,7 +20634,7 @@ mod tests {
                 "yardmaster",
                 json!({"note": 2, "notified": {"jo": "all"}})
             )),
-            [Effect::Notifications, Effect::Asks]
+            [Effect::Notifications, Effect::Asks(Width::Open)]
         );
         // A hook delivery's files arrived: no notification, so the notices
         // are not read again, and a delivery never shown is not asked.
@@ -20617,7 +20930,7 @@ mod tests {
             effects,
             [
                 page("yardmaster", 0),
-                Effect::Asks,
+                Effect::Asks(Width::Whole),
                 Effect::Bead {
                     bead: "yardr-n8ta".into()
                 }
@@ -21009,7 +21322,7 @@ mod tests {
         let mut m = evening_with_links();
         assert_eq!(m.decisions_count(), 4);
         let effects = m.picked("yardr-n8ta", 3, 1, "move them tonight");
-        assert!(effects.contains(&Effect::Asks));
+        assert!(effects.contains(&Effect::Asks(Width::Whole)));
         assert!(effects.contains(&Effect::Bead {
             bead: "yardr-n8ta".into()
         }));
@@ -21232,7 +21545,10 @@ mod tests {
     fn a_decided_row_shows_the_question_s_first_line() {
         let question = "Take more?\nwhen you approve, the yard runs this as mckean, and nothing else:\n    yardr peer list";
         let mut m = with_a_run_ask_about(question, &[]);
-        assert!(m.deferred("yd-link", 2710).contains(&Effect::Asks));
+        assert!(
+            m.deferred("yd-link", 2710)
+                .contains(&Effect::Asks(Width::Whole))
+        );
         let rows = decided_all(&m);
         let row = &rows[0];
         assert_eq!(row.head, "Take more?");
@@ -21267,7 +21583,7 @@ mod tests {
         assert_eq!(card.weight, m.open[0].weight);
 
         let effects = m.approved("yd-link", 2710, &approved());
-        assert!(effects.contains(&Effect::Asks));
+        assert!(effects.contains(&Effect::Asks(Width::Whole)));
         assert!(effects.contains(&Effect::Bead {
             bead: "yd-link".into()
         }));
@@ -21366,7 +21682,7 @@ mod tests {
         // It ended with no answer: the queue is read, and the card waits.
         assert_eq!(
             m.write_unanswered("yd-link", 2710, Write::Approval, String::new()),
-            [Effect::Asks]
+            [Effect::Asks(Width::Whole)]
         );
         let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
             panic!("the approval is not unsure");
@@ -21444,7 +21760,7 @@ mod tests {
         let mut state = yard(&[]);
         state.asks.open = m.open.clone();
         let (mut back, effects) = m.resumed(state, Mode::Chat);
-        assert!(effects.contains(&Effect::Asks));
+        assert!(effects.contains(&Effect::Asks(Width::Whole)));
         assert!(matches!(
             back.sending("yd-link", 2710),
             Some(Sending::Unsure { .. })
@@ -21458,15 +21774,42 @@ mod tests {
             [("yd-link".to_string(), 2710, Write::Approval)]
         );
 
+        // A state read open alone that no longer lists the ask says only
+        // that it is not open: whether the yard took the approval or the ask
+        // went another way is in the history, which the model holds as it
+        // was. It is no verdict, then, and the queue is read whole once
+        // more, which is.
+        let mut m = with_a_run_ask(&[]);
+        m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
+        let (mut back, effects) = m.resumed(yard(&[]), Mode::Chat);
+        assert!(effects.contains(&Effect::Asks(Width::Whole)));
+        assert!(matches!(
+            back.sending("yd-link", 2710),
+            Some(Sending::Unsure { .. })
+        ));
+        let mut took = with_a_run_ask(&[]);
+        took.approved("yd-link", 2710, &approved());
+        let after = back.reads().make();
+        back.asks(Asks {
+            open: Vec::new(),
+            decided: took.decided.clone(),
+        });
+        assert!(back.settle_writes(after).is_empty());
+        assert_eq!(back.sending("yd-link", 2710), None);
+        assert_eq!(
+            back.notice,
+            "approved, ran: yardr peer allow airy --mail-limit 300"
+        );
+
         // The state read again lists the ask answered: it is approved, and
         // nothing is read once more.
         let mut m = with_a_run_ask(&[]);
         m.approved("yd-link", 2710, &approved());
         m.write_unanswered("yd-link", 2710, Write::Approval, String::new());
         let mut state = yard(&[]);
-        state.asks.decided = m.decided.clone();
+        state.asks.decided = Some(m.decided.clone());
         let (back, effects) = m.resumed(state, Mode::Chat);
-        assert!(!effects.contains(&Effect::Asks));
+        assert!(!effects.contains(&Effect::Asks(Width::Whole)));
         assert_eq!(back.sending("yd-link", 2710), None);
         assert_eq!(
             back.notice,
@@ -21491,9 +21834,9 @@ mod tests {
             "also".into(),
         );
         let mut state = yard(&[]);
-        state.asks.decided = m.decided.clone();
+        state.asks.decided = Some(m.decided.clone());
         let (mut back, effects) = m.resumed(state, Mode::Chat);
-        assert!(!effects.contains(&Effect::Asks));
+        assert!(!effects.contains(&Effect::Asks(Width::Whole)));
         assert!(effects.contains(&Effect::Bead {
             bead: "yd-link".into()
         }));
@@ -21565,7 +21908,7 @@ mod tests {
             m.write_out("yd-link", 2710, write.clone());
             assert_eq!(m.sending("yd-link", 2710), Some(Sending::Out));
             let read = m.write_unanswered("yd-link", 2710, write.clone(), kept.into());
-            assert_eq!(read, [Effect::Asks]);
+            assert_eq!(read, [Effect::Asks(Width::Whole)]);
             let Some(Sending::Unsure { after }) = m.sending("yd-link", 2710) else {
                 panic!("{write:?} is not unsure");
             };
@@ -21801,7 +22144,10 @@ mod tests {
             "WEIGHTY · code: the first install of pack trojan into depot north makes roles/07.md[31mx.md"
         );
         let mut m = with_a_run_ask(&[]);
-        assert!(m.deferred("yd-link", 2710).contains(&Effect::Asks));
+        assert!(
+            m.deferred("yd-link", 2710)
+                .contains(&Effect::Asks(Width::Whole))
+        );
         assert_eq!(decided_all(&m)[0].outcome, "put aside");
         assert_eq!(m.approving("yd-link", 2710), Some(&more_mail()));
         assert_eq!(m.approved("yd-link", 2710, &approved()).len(), 2);
@@ -21813,7 +22159,7 @@ mod tests {
         assert_eq!(m.declined("yd-link", 2710, ""), Vec::new());
         assert!(
             m.declined("yd-link", 2710, "not this week")
-                .contains(&Effect::Asks)
+                .contains(&Effect::Asks(Width::Whole))
         );
         let detail = m.decided_detail("yd-link", 2710, &chrono::Utc).unwrap();
         assert_eq!(detail.state_line, "you declined: not this week");
@@ -21948,7 +22294,7 @@ mod tests {
         // Given: it is among the decided at once as one that gave the
         // names, and the queue and the bead are read again.
         let effects = m.gave("yd-crm", 18, &["BOOKS_TOKEN".to_string()]);
-        assert!(effects.contains(&Effect::Asks));
+        assert!(effects.contains(&Effect::Asks(Width::Whole)));
         assert!(effects.contains(&Effect::Bead {
             bead: "yd-crm".into()
         }));
@@ -21969,7 +22315,10 @@ mod tests {
     #[test]
     fn a_secret_ask_is_declined_with_no_words_and_takes_none_afterwards() {
         let mut m = with_a_secret_ask();
-        assert!(m.declined("yd-crm", 18, "").contains(&Effect::Asks));
+        assert!(
+            m.declined("yd-crm", 18, "")
+                .contains(&Effect::Asks(Width::Whole))
+        );
         assert_eq!(m.decisions_count(), 0);
         let detail = m.decided_detail("yd-crm", 18, &chrono::Utc).unwrap();
         assert_eq!(detail.state_line, "you declined");
@@ -22187,7 +22536,7 @@ mod tests {
         let mut approved = setup_approved_with(&[]);
         approved.preset = "everything".into();
         let effects = m.setup_approved("yd-crm", 41, 2, &approved);
-        assert!(effects.contains(&Effect::Asks));
+        assert!(effects.contains(&Effect::Asks(Width::Whole)));
         assert!(effects.contains(&Effect::Bead {
             bead: "yd-crm".into()
         }));
@@ -22210,7 +22559,7 @@ mod tests {
         assert_eq!(m.setup_approving("yd-crm", 41), Some(&courier()));
         assert!(
             m.setup_approved("yd-crm", 41, 1, &setup_approved_with(&[]))
-                .contains(&Effect::Asks)
+                .contains(&Effect::Asks(Width::Whole))
         );
         // One declined takes no approval.
         let mut m = with_a_setup_ask();
@@ -22402,7 +22751,7 @@ mod tests {
             "",
         );
         let mut state = yard(&[]);
-        state.asks.decided = vec![taken, foreign];
+        state.asks.decided = Some(vec![taken, foreign]);
         let (mut m, _) = Model::new(state, Mode::Chat, None);
         m.toggle_decided();
         let rows = decided_all(&m);
@@ -22421,7 +22770,7 @@ mod tests {
     #[test]
     fn a_taken_back_secret_ask_takes_no_value() {
         let mut state = yard(&[]);
-        state.asks.decided = vec![DecidedAsk {
+        state.asks.decided = Some(vec![DecidedAsk {
             by: "yardmaster".into(),
             secret: Some(books()),
             ..decided_ask(
@@ -22433,7 +22782,7 @@ mod tests {
                 "the books moved",
                 "",
             )
-        }];
+        }]);
         let (m, _) = Model::new(state, Mode::Chat, None);
         assert_eq!(m.secret("yd-crm", 18), Some(&books()));
         assert_eq!(m.giving("yd-crm", 18), None);
@@ -22531,7 +22880,7 @@ mod tests {
     fn later_leaves_the_list_and_decline_needs_words() {
         let mut m = evening_with_links();
         let effects = m.deferred("yardr-n8ta", 3);
-        assert!(effects.contains(&Effect::Asks));
+        assert!(effects.contains(&Effect::Asks(Width::Whole)));
         assert_eq!(m.decisions_count(), 3);
         assert_eq!(m.decided_count(), 1);
         assert_eq!(decided_all(&m)[0].outcome, "put aside");
@@ -22607,7 +22956,7 @@ mod tests {
         };
         let words = decided_ask("yd-greet", 11, "Who greets?", "answered", "", "warmly", "");
         let mut state = yard(&[]);
-        state.asks.decided = vec![answered, answered_words, aside, declined, left, words];
+        state.asks.decided = Some(vec![answered, answered_words, aside, declined, left, words]);
         let (m, _) = Model::new(state, Mode::Chat, None);
         let line = |ask: u64| {
             m.decided_detail("yd-links", ask, &chrono::Utc)
@@ -22703,7 +23052,7 @@ mod tests {
         // every bead's event.
         assert_eq!(
             m.event(&event(21, "noted", "yardmaster", json!({"note": 1}))),
-            [Effect::Asks]
+            [Effect::Asks(Width::Open)]
         );
         let mut noted = event(22, "noted", "yardmaster", json!({"note": 2}));
         noted.bead = "yardr-n8ta".into();
@@ -22711,7 +23060,7 @@ mod tests {
         assert_eq!(
             m.event(&noted),
             [
-                Effect::Asks,
+                Effect::Asks(Width::Open),
                 Effect::Bead {
                     bead: "yardr-n8ta".into()
                 },
@@ -22744,7 +23093,7 @@ mod tests {
         assert_eq!(
             m.event(&elsewhere),
             [
-                Effect::Asks,
+                Effect::Asks(Width::Open),
                 Effect::Arrivals,
                 Effect::Flows,
                 Effect::Waiting
@@ -22956,41 +23305,56 @@ mod tests {
         )));
     }
 
+    /// By a whole read, which says what was dealt with beside the rows, and
+    /// by an open one, which leaves the history that was held: it is the
+    /// history held that tells an ask that came back from one whose answer
+    /// the yard did not take, so it is what the news is judged by.
     #[test]
     fn an_ask_put_aside_is_news_when_it_comes_back_and_one_answered_is_not() {
-        let mut state = yard(&[]);
-        state.asks.decided = vec![
-            decided_ask(
-                "yardr-7h11",
-                6,
-                "Close sketch PR #3?",
-                "put aside",
-                "",
-                "",
-                "",
-            ),
-            decided_ask("yardr-9f2c", 5, "Build?", "answered", "Yes", "", ""),
-        ];
-        let (mut m, _) = Model::new(state, Mode::Chat, None);
-        // Both are open again: the one put aside came back, and the yard
-        // did not take the answer to the other.
-        let open: Vec<OpenAsk> = evening()
-            .into_iter()
-            .filter(|a| a.bead == "yardr-7h11" || a.bead == "yardr-9f2c")
-            .collect();
-        m.asks(Asks {
-            open,
-            decided: vec![],
-        });
-        let news = m.take_news();
-        assert_eq!(news.len(), 1);
-        assert_eq!(news[0].target, Selected::Decision("yardr-7h11".into()));
-        // The queue had no row before, so the first of it opened.
-        assert_eq!(
-            m.selected(),
-            Some(&Selected::Conversation("yardmaster".into()))
-        );
-        assert!(!news[0].open);
+        for whole in [true, false] {
+            let mut state = yard(&[]);
+            state.asks.decided = Some(vec![
+                decided_ask(
+                    "yardr-7h11",
+                    6,
+                    "Close sketch PR #3?",
+                    "put aside",
+                    "",
+                    "",
+                    "",
+                ),
+                decided_ask("yardr-9f2c", 5, "Build?", "answered", "Yes", "", ""),
+            ]);
+            let (mut m, _) = Model::new(state, Mode::Chat, None);
+            // Both are open again: the one put aside came back, and the yard
+            // did not take the answer to the other.
+            let open: Vec<OpenAsk> = evening()
+                .into_iter()
+                .filter(|a| a.bead == "yardr-7h11" || a.bead == "yardr-9f2c")
+                .collect();
+            match whole {
+                true => {
+                    m.asks(Asks {
+                        open,
+                        decided: vec![],
+                    });
+                    assert_eq!(m.decided_count(), 0);
+                }
+                false => {
+                    m.open_asks(open);
+                    assert_eq!(m.decided_count(), 2, "the history is held");
+                }
+            }
+            let news = m.take_news();
+            assert_eq!(news.len(), 1, "whole: {whole}");
+            assert_eq!(news[0].target, Selected::Decision("yardr-7h11".into()));
+            // The queue had no row before, so the first of it opened.
+            assert_eq!(
+                m.selected(),
+                Some(&Selected::Conversation("yardmaster".into()))
+            );
+            assert!(!news[0].open);
+        }
     }
 
     #[test]

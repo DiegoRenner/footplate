@@ -7272,7 +7272,11 @@ yardr.dev
         view.update(cx, |v, _| v.down = None);
         view.update(cx, |v, cx| {
             let session = v.session;
-            v.run_in(session, vec![crate::model::Effect::Asks], cx);
+            v.run_in(
+                session,
+                vec![crate::model::Effect::Asks(crate::model::Width::Whole)],
+                cx,
+            );
         });
         wait(cx, "that the yard has not recorded it", |cx| {
             refused_of(&view, cx, "bead-a", 5) == model::ANSWER_NOT_TAKEN
@@ -10040,6 +10044,506 @@ yardr.dev
         view.read_with(cx, |v, _| {
             assert_eq!(v.model.as_ref().unwrap().decided_count(), 1);
         });
+        // This yard serves no `UserOpenAsks`: each read of the queue asked
+        // for it first, was refused, and read the whole queue, whose state
+        // already had the history, so no read was made to seed it.
+        assert_eq!(yard.asked("UserOpenAsks").len(), 2);
+    }
+
+    /// A yard that serves `UserOpenAsks`: the open rows of `queue`, a whole
+    /// queue as `UserAsks` answers it, to that call, and the queue to
+    /// `UserAsks`. Every other test scripts `UserAsks` alone, which is a
+    /// yard from before the call.
+    fn serves_open_asks(yard: &Yard, queue: &str) {
+        let queue: Value = serde_json::from_str(queue).unwrap();
+        yard.answer(
+            "UserOpenAsks",
+            &json!({"result": {"open": queue["result"]["open"]}}).to_string(),
+        );
+        yard.answer("UserAsks", &queue.to_string());
+    }
+
+    /// The open asks of one queue with what another has dealt with.
+    fn queue_of(open: &str, dealt_with: &str) -> String {
+        let open: Value = serde_json::from_str(open).unwrap();
+        let dealt: Value = serde_json::from_str(dealt_with).unwrap();
+        json!({"result": {
+            "open": open["result"]["open"],
+            "decided": dealt["result"]["decided"],
+        }})
+        .to_string()
+    }
+
+    /// A `noted` event of bead-a, the event that asks for the queue again.
+    fn noted_on_the_links(seq: u64) -> String {
+        json!({"seq": seq, "kind": "noted", "actor": "yardmaster", "bead": "bead-a",
+               "data": {"note": seq}, "at": "2026-10-10T12:00:00Z"})
+        .to_string()
+    }
+
+    /// With "Decided" never opened, the window reads the queue's open rows
+    /// alone at the state and at every event, and the whole queue once, in
+    /// the background, which seeds the history. What shows is what a whole
+    /// read shows. A refusal of the open read that is no old yard's is shown
+    /// as any refusal is, with no whole read in its place, and the yard read
+    /// again keeps the history it holds and seeds nothing.
+    #[gpui::test]
+    fn the_queue_is_read_open_alone_and_whole_once_to_seed_the_history(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer_for("Bead", "bead", "bead-a", &bead_three());
+        let queue = queue_of(&asks_three(), &asks_decided(1, "Switch to attention"));
+        serves_open_asks(&yard, &queue);
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        // How many asks stand open on bead-a, and how many were dealt with.
+        let (asks, history) = (
+            |cx: &mut VisualTestContext| {
+                view.read_with(cx, |v, _| {
+                    v.model
+                        .as_ref()
+                        .unwrap()
+                        .decision_detail("bead-a", &chrono::Utc::now())
+                        .map_or(0, |detail| detail.asks.len())
+                })
+            },
+            |cx: &mut VisualTestContext| {
+                view.read_with(cx, |v, _| v.model.as_ref().unwrap().decided_count())
+            },
+        );
+
+        // The state had the open rows, and the history came by one read of
+        // the whole queue after it.
+        wait(cx, "the history seeded", |cx| history(cx) == 6);
+        assert_eq!(yard.asked("UserOpenAsks"), [json!({"name": "jo"})]);
+        assert_eq!(yard.asked("UserAsks"), [json!({"name": "jo"})]);
+        // What it shows is what a whole read shows: the same cards, counts
+        // and badge as the window on a yard from before the call.
+        assert_eq!(asks(cx), 3);
+        let counts = view.read_with(cx, |v, _| Counts::of(v.model.as_ref().unwrap()));
+        assert_eq!(counts.decisions, 1);
+        assert_eq!(
+            counts.rail(Mode::Decisions),
+            Some((Some("1".to_string()), "1 decision".to_string()))
+        );
+        view.read_with(cx, |v, _| {
+            assert!(!v.model.as_ref().unwrap().decided_expanded());
+        });
+        let old = Yard::start();
+        a_yard_of_jo(&old);
+        old.answer("UserAsks", &queue);
+        old.answer_for("Bead", "bead", "bead-a", &bead_three());
+        let (whole, cx) = cx.add_window_view(|window, cx| {
+            let view = Footplate::new(old.client(), "jo".into(), window, cx);
+            window.focus(&view.line.focus_handle(cx));
+            view
+        });
+        wait(cx, "the history of the old yard", |cx| {
+            whole.read_with(cx, |v, _| {
+                v.model.as_ref().is_some_and(|m| m.decided_count() == 6)
+            })
+        });
+        let whole_counts = whole.read_with(cx, |v, _| Counts::of(v.model.as_ref().unwrap()));
+        assert_eq!(counts, whole_counts);
+        assert_eq!(
+            counts.rail(Mode::Decisions),
+            whole_counts.rail(Mode::Decisions)
+        );
+        // That yard was asked for the open rows, refused, and read whole,
+        // once for the state: it had its history with it.
+        assert_eq!(old.asked("UserOpenAsks").len(), 1);
+        assert_eq!(old.asked("UserAsks").len(), 1);
+
+        // An event reads the open rows alone: an ask that was answered
+        // elsewhere is gone, and the history is as it was.
+        let rows: Value = serde_json::from_str(&queue).unwrap();
+        let open = rows["result"]["open"].as_array().unwrap();
+        yard.answer(
+            "UserOpenAsks",
+            &json!({"result": {"open": open[..2]}}).to_string(),
+        );
+        yard.emit(&noted_on_the_links(21));
+        wait(cx, "the ask that is gone", |cx| asks(cx) == 2);
+        assert_eq!(yard.asked("UserOpenAsks").len(), 2);
+        assert_eq!(yard.asked("UserAsks").len(), 1);
+        assert_eq!(history(cx), 6);
+
+        // A refusal that is no old yard's: shown as ever, and the whole
+        // queue is not read in its place.
+        yard.answer_once_status(
+            "UserOpenAsks",
+            200,
+            r#"{"error": {"code": "error", "message": "the queue is being rebuilt"}}"#,
+        );
+        yard.emit(&noted_on_the_links(22));
+        wait_reread(cx, "the refusal", |cx| !notice(&view, cx).is_empty());
+        assert_eq!(
+            notice(&view, cx),
+            "the decisions could not be read: the queue is being rebuilt"
+        );
+        assert_eq!(yard.asked("UserOpenAsks").len(), 3);
+        assert_eq!(yard.asked("UserAsks").len(), 1);
+
+        // The yard is lost and read again: the state has the open rows
+        // alone, the history the window holds stands in it, and nothing
+        // seeds it again.
+        let state = session::load(&yard.client(), "jo").unwrap();
+        assert_eq!(state.asks.decided, None);
+        view.update(cx, |v, cx| v.told(Update::Up(Box::new(state)), cx));
+        for _ in 0..20 {
+            cx.run_until_parked();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(yard.asked("UserAsks").len(), 1);
+        assert_eq!((history(cx), asks(cx)), (6, 2));
+    }
+
+    /// A put-aside ask comes back on its time with "Decided" never opened:
+    /// the read that follows the state seeds the history, which arms the
+    /// return, and the read at its time is open alone, which lists the ask
+    /// open. Nothing is read for it before its time.
+    #[gpui::test]
+    fn a_put_aside_ask_returns_on_its_time_with_the_history_never_opened(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer_for("Bead", "bead", "bead-a", &bead_three());
+        // Ask 3 is put aside for an hour: the state lists no ask open.
+        let back = chrono::Utc::now() + chrono::TimeDelta::hours(1);
+        let ask = json!({"bead": "bead-a", "bead_title": "Move the links",
+            "topic": "topic:linear-out", "ask": 3, "question": "Move them now?",
+            "asker": "yardmaster", "since": "2026-10-10T10:00:00Z"});
+        let mut aside = ask.clone();
+        aside["state"] = json!("put aside");
+        aside["return_at"] = json!(back.to_rfc3339());
+        yard.answer("UserOpenAsks", r#"{"result": {"open": []}}"#);
+        yard.answer(
+            "UserAsks",
+            &json!({"result": {"open": [], "decided": [aside]}}).to_string(),
+        );
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        let asks = |cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, _| {
+                let model = v.model.as_ref().unwrap();
+                (model.decisions_count(), model.decided_count())
+            })
+        };
+        wait(cx, "the history seeded", |cx| asks(cx) == (0, 1));
+        for _ in 0..20 {
+            cx.run_until_parked();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(yard.asked("UserOpenAsks").len(), 1);
+        assert_eq!(yard.asked("UserAsks").len(), 1);
+
+        // Its time comes, and the yard lists it open: the queue is read
+        // open alone, and the ask shows, as the history stands unopened.
+        yard.answer(
+            "UserOpenAsks",
+            &json!({"result": {"open": [ask]}}).to_string(),
+        );
+        cx.executor()
+            .advance_clock(Duration::from_secs(60 * 60 + 5));
+        wait(cx, "the ask that came back", |cx| asks(cx).0 == 1);
+        assert_eq!(yard.asked("UserOpenAsks").len(), 2);
+        assert_eq!(yard.asked("UserAsks").len(), 1);
+        view.read_with(cx, |v, _| {
+            assert!(!v.model.as_ref().unwrap().decided_expanded());
+        });
+    }
+
+    /// The halves of an answer of the queue are judged by their own stamps.
+    /// A whole read takes seconds, and an open read made after it answers
+    /// first: the whole read's open rows are older and are dropped, and its
+    /// history, the only one there is, is taken all the same. A whole read
+    /// older than another is older in both halves, and so is an open one.
+    /// Only an answer with the history settles a write that got no answer,
+    /// since what became of it is in the history: an open answer that no
+    /// longer lists the ask does not call it gone. (The answers are handed
+    /// over in the order that makes the race, since a call held in the
+    /// stand-in would hold the executor with it.)
+    #[gpui::test]
+    fn the_halves_of_a_queue_answer_are_judged_by_their_own_stamps_and_only_a_whole_one_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        a_yard_of_two_beads(&yard);
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        let (asks, history) = (
+            |cx: &mut VisualTestContext| {
+                view.read_with(cx, |v, _| {
+                    v.model
+                        .as_ref()
+                        .unwrap()
+                        .decision_detail("bead-a", &chrono::Utc::now())
+                        .map_or(0, |detail| detail.asks.len())
+                })
+            },
+            |cx: &mut VisualTestContext| {
+                view.read_with(cx, |v, _| v.model.as_ref().unwrap().decided_count())
+            },
+        );
+        wait(cx, "the three asks", |cx| asks(cx) == 3);
+        let queue: Value = serde_json::from_str(&queue_of(
+            &asks_three(),
+            &asks_decided(1, "Switch to attention"),
+        ))
+        .unwrap();
+        let open = |which: &[u64]| -> Vec<crate::api::OpenAsk> {
+            let rows = queue["result"]["open"].as_array().unwrap();
+            rows.iter()
+                .filter(|ask| which.contains(&ask["ask"].as_u64().unwrap()))
+                .map(|ask| serde_json::from_value(ask.clone()).unwrap())
+                .collect()
+        };
+        let dealt: Vec<crate::api::DecidedAsk> =
+            serde_json::from_value(queue["result"]["decided"].clone()).unwrap();
+        let session = view.read_with(cx, |v, _| v.session);
+        let stamp = |cx: &mut VisualTestContext| view.update(cx, |v, _| v.stamp_in(session));
+        let answer = |cx: &mut VisualTestContext, stamp: u64, queue: crate::api::OpenQueue| {
+            view.update(cx, |v, cx| v.queue_in(session, stamp, queue, cx))
+        };
+        let open_only = |rows: Vec<crate::api::OpenAsk>| crate::api::OpenQueue {
+            open: rows,
+            decided: None,
+        };
+        let whole = |rows: Vec<crate::api::OpenAsk>, history: &[crate::api::DecidedAsk]| {
+            crate::api::OpenQueue {
+                open: rows,
+                decided: Some(history.to_vec()),
+            }
+        };
+
+        // The whole read was made first and answers last: the open read
+        // made after it has the rows, and the history is the whole read's.
+        let (first, second) = (stamp(cx), stamp(cx));
+        assert!(answer(cx, second, open_only(open(&[3, 4]))));
+        assert_eq!((asks(cx), history(cx)), (2, 0));
+        assert!(answer(cx, first, whole(open(&[3, 4, 5]), &dealt)));
+        assert_eq!((asks(cx), history(cx)), (2, 6), "older rows, newer history");
+
+        // One older than a whole read applied changes nothing, in either
+        // half, whatever its width.
+        let (older, newer) = (stamp(cx), stamp(cx));
+        assert!(answer(cx, newer, whole(open(&[3, 4]), &dealt[..1])));
+        assert_eq!((asks(cx), history(cx)), (2, 1));
+        assert!(!answer(cx, older, whole(open(&[3, 4, 5]), &dealt)));
+        assert!(!answer(cx, older, open_only(open(&[3, 4, 5]))));
+        assert_eq!((asks(cx), history(cx)), (2, 1));
+
+        // An answer to a write that got no answer waits for the history:
+        // the open rows that no longer list the ask do not say it went
+        // another way.
+        view.update(cx, |v, _| {
+            let model = v.model.as_mut().unwrap();
+            model.write_unanswered(
+                "bead-a",
+                3,
+                crate::model::Write::Answer { option: 1 },
+                String::new(),
+            );
+        });
+        assert!(matches!(
+            sending_of(&view, cx, "bead-a", 3),
+            Some(crate::model::Sending::Unsure { .. })
+        ));
+        let fresh = stamp(cx);
+        assert!(answer(cx, fresh, open_only(open(&[4, 5]))));
+        assert_eq!(asks(cx), 2);
+        assert!(
+            matches!(
+                sending_of(&view, cx, "bead-a", 3),
+                Some(crate::model::Sending::Unsure { .. })
+            ),
+            "an open answer settles nothing"
+        );
+        // The whole answer says the yard took it.
+        let after: Value = serde_json::from_str(&links_queue_after(
+            3,
+            json!({"state": "answered", "option": 1, "option_label": "Move them now"}),
+        ))
+        .unwrap();
+        let took: Vec<crate::api::DecidedAsk> =
+            serde_json::from_value(after["result"]["decided"].clone()).unwrap();
+        let newest = stamp(cx);
+        assert!(answer(cx, newest, whole(open(&[4, 5]), &took)));
+        assert_eq!(sending_of(&view, cx, "bead-a", 3), None);
+        assert_eq!(refused_of(&view, cx, "bead-a", 3), "");
+        assert!(decided_in_queue(&view, cx, "bead-a", 3));
+    }
+
+    /// A seed that failed is read again after a while, whole as it was made
+    /// and not open alone, which would leave the history unread, and one
+    /// the yard found again does not see is read by the state that is read
+    /// again, which asks for it once more.
+    #[gpui::test]
+    fn a_seed_that_failed_is_read_again_whole_and_by_a_yard_found_again(cx: &mut TestAppContext) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        yard.answer_for("Bead", "bead", "bead-a", &bead_three());
+        let queue = queue_of(&asks_three(), &asks_decided(1, "Switch to attention"));
+        serves_open_asks(&yard, &queue);
+        // The yard goes away over the whole read.
+        yard.answer_nothing("UserAsks");
+        let (view, cx) = opened(&yard, &["Shall I land it?"], cx);
+        let history = |cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, _| v.model.as_ref().unwrap().decided_count())
+        };
+        wait(cx, "the read that failed", |cx| {
+            notice(&view, cx).starts_with("the decisions could not be read")
+        });
+        assert_eq!(history(cx), 0);
+        assert_eq!(yard.asked("UserAsks").len(), 1);
+
+        // After a while it is made again, as the whole read it was.
+        cx.executor().advance_clock(session::RETRY);
+        wait(cx, "the read made again", |_| {
+            yard.asked("UserAsks").len() == 2
+        });
+        assert_eq!(yard.asked("UserOpenAsks").len(), 1);
+
+        // The yard is found again before it answered: the state read has
+        // the open rows alone, and asks for the history once more.
+        serves_open_asks(&yard, &queue);
+        let state = session::load(&yard.client(), "jo").unwrap();
+        view.update(cx, |v, cx| v.told(Update::Up(Box::new(state)), cx));
+        wait(cx, "the history seeded", |cx| history(cx) == 6);
+        assert_eq!(yard.asked("UserAsks").len(), 3);
+        // The read that waited to be made again was the state's before it
+        // was read again: it is made no more.
+        cx.executor().advance_clock(session::RETRY + session::RETRY);
+        cx.run_until_parked();
+        assert_eq!(yard.asked("UserAsks").len(), 3);
+    }
+
+    /// Opening "Decided" reads the whole queue, once, and lists the history
+    /// it brings; the open reads that move the rows leave it as it was. A
+    /// pick with it open puts the ask among the decided at once, by the
+    /// whole read the pick settles with, and not by one more open of the
+    /// fold.
+    #[gpui::test]
+    fn opening_decided_reads_the_whole_queue_once_and_a_pick_with_it_open_lands_in_it(
+        cx: &mut TestAppContext,
+    ) {
+        let yard = Yard::start();
+        a_yard_of_jo(&yard);
+        serves_open_asks(
+            &yard,
+            &queue_of(&asks_three(), &asks_decided(1, "Switch to attention")),
+        );
+        yard.answer_for("Bead", "bead", "bead-a", &bead_three());
+        yard.answer_for("Bead", "bead", "bead-d", &bead_decided());
+        yard.answer("AnswerAsk", "{}");
+        cx.update(|cx| {
+            input::bind_keys(cx);
+            bind_keys(cx);
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let view = Footplate::new(yard.client(), "jo".into(), window, cx);
+            window.focus(&view.line.focus_handle(cx));
+            view
+        });
+        cx.simulate_resize(gpui::size(px(1280.), px(2000.)));
+        wait(cx, "the decision", |cx| {
+            to_decisions(&view, cx);
+            view.read_with(cx, |v, _| {
+                v.model
+                    .as_ref()
+                    .is_some_and(|m| m.selected() == Some(&Selected::Decision("bead-a".into())))
+            })
+        });
+        wait(cx, "the history seeded", |cx| {
+            view.read_with(cx, |v, _| {
+                v.model.as_ref().is_some_and(|m| m.decided_count() == 6)
+            })
+        });
+        wait(cx, "the bead", |cx| has_bead(&view, cx, "bead-a"));
+        assert_eq!(yard.asked("UserAsks").len(), 1);
+
+        // The history is folded, and opening it reads the queue whole: once.
+        click_on(cx, "decided toggle");
+        wait(cx, "the whole queue read for it", |_| {
+            yard.asked("UserAsks").len() == 2
+        });
+        wait(cx, "the history listed", |cx| {
+            decided_all(&view, cx).len() == 6
+        });
+        view.read_with(cx, |v, _| {
+            assert!(v.model.as_ref().unwrap().decided_expanded());
+        });
+        assert_eq!(yard.asked("UserOpenAsks").len(), 1);
+
+        // A pick with it open: the whole read the pick settles with lists
+        // the ask among the decided beside the history, which stays open.
+        let mut after: Value = serde_json::from_str(&links_queue_after(
+            3,
+            json!({"state": "answered", "option": 1, "option_label": "Move them now"}),
+        ))
+        .unwrap();
+        let history: Value = serde_json::from_str(&asks_decided(1, "Switch to attention")).unwrap();
+        after["result"]["decided"].as_array_mut().unwrap().extend(
+            history["result"]["decided"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+        yard.answer("UserAsks", &after.to_string());
+        cx.simulate_keystrokes("escape 1");
+        view.update_in(cx, |v, _, cx| v.decide(cx));
+        wait(cx, "the pick", |_| yard.asked("AnswerAsk").len() == 1);
+        wait(cx, "the queue read whole for it", |_| {
+            yard.asked("UserAsks").len() == 3
+        });
+        wait(cx, "the ask among the decided", |cx| {
+            decided_in_queue(&view, cx, "bead-a", 3)
+        });
+        assert_eq!(decided_all(&view, cx).len(), 7);
+        view.read_with(cx, |v, _| {
+            assert!(v.model.as_ref().unwrap().decided_expanded());
+        });
+        assert_eq!(yard.asked("UserOpenAsks").len(), 1);
+    }
+
+    /// A yard that is held seeds its history on its first state too, and
+    /// the return of a put-aside ask is armed from it: the queue is read
+    /// open alone at the ask's time, and the switcher counts the ask.
+    #[gpui::test]
+    fn a_held_yard_seeds_its_history_and_reads_a_return_open_alone(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let near = Yard::start();
+        a_yard_of_jo(&near);
+        let second = Yard::start();
+        a_second_yard_of_jo(&second);
+        second.answer("Bead", &bead_run());
+        // The ask is put aside, and its return is past: the state lists none
+        // open, and the history says when it comes back.
+        let mut aside = queued_run("put aside", false);
+        aside["return_at"] = json!("2000-01-02T09:30:00Z");
+        second.answer(
+            "UserAsks",
+            &json!({"result": {"open": [], "decided": [aside]}}).to_string(),
+        );
+        second.answer_once_status("UserOpenAsks", 200, r#"{"result": {"open": []}}"#);
+        second.answer(
+            "UserOpenAsks",
+            &json!({"result": {"open": [queued_run("", false)]}}).to_string(),
+        );
+        let file = two_yards(dir.path(), &second);
+        let (view, cx) = watched(&near, &file, session::WATCH, cx);
+        wait(
+            cx,
+            "the ask that came back, counted in the second home",
+            |cx| state_of(&view, cx, "second home") == "2 mail, 1 decision",
+        );
+        // The state, and the read for the return; the whole queue once.
+        assert_eq!(second.asked("UserOpenAsks").len(), 2);
+        assert_eq!(second.asked("UserAsks").len(), 1);
+        view.read_with(cx, |v, _| {
+            let model = v.held["second home"].model.as_ref().unwrap();
+            assert!(!model.decided_expanded());
+        });
+        // This machine's yard is from before the call: the whole queue as
+        // its state, and no read to seed what it holds.
+        assert_eq!(near.asked("UserAsks").len(), 1);
     }
 
     #[gpui::test]
@@ -16549,6 +17053,7 @@ yardr.dev
                     | "UserNotifications"
                     | "AckUserNotifications"
                     | "UserAsks"
+                    | "UserOpenAsks"
                     | "Waiting"
                     | "Arrivals"
                     | "Flows"
@@ -16827,6 +17332,7 @@ yardr.dev
                     | "UserNotifications"
                     | "AckUserNotifications"
                     | "UserAsks"
+                    | "UserOpenAsks"
                     | "Waiting"
                     | "Arrivals"
                     | "Flows"
@@ -33015,7 +33521,11 @@ yardr.dev
         yard.answer("UserAsks", &queue_after_the_weighty_run_ran());
         view.update(cx, |v, cx| {
             let session = v.session;
-            v.run_in(session, vec![crate::model::Effect::Asks], cx);
+            v.run_in(
+                session,
+                vec![crate::model::Effect::Asks(crate::model::Width::Whole)],
+                cx,
+            );
         });
         wait(cx, "the stale wait warning cleared", |cx| {
             refused_of(&view, cx, "bead-s", 7).is_empty()
@@ -36706,7 +37216,11 @@ yardr.dev
         view.update(cx, |v, _| v.down = None);
         view.update(cx, |v, cx| {
             let session = v.session;
-            v.run_in(session, vec![crate::model::Effect::Asks], cx);
+            v.run_in(
+                session,
+                vec![crate::model::Effect::Asks(crate::model::Width::Whole)],
+                cx,
+            );
         });
         wait(cx, "that the yard has not recorded it", |cx| {
             refused_of(&view, cx, "bead-s", 7) == model::GIVE_NOT_TAKEN

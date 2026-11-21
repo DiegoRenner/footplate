@@ -39,7 +39,7 @@ use crate::draft::{self, Attachment};
 use crate::input::Line;
 use crate::model::{
     self, AnswerAction, DecidedEntry, DecidedFold, DecidedRow, DecisionAsk, DecisionDetail,
-    DecisionRow, Effect, Mode, Model, Outcome, Selected, Sending, Taken, Target, Write,
+    DecisionRow, Effect, Mode, Model, Outcome, Selected, Sending, Taken, Target, Width, Write,
 };
 use crate::select::{self};
 use crate::theme::{
@@ -376,7 +376,10 @@ impl Footplate {
     /// put-aside ask comes back, which arrives with no event: of a yard
     /// that is held as of the open one, since what waits in it is told of
     /// and counted. One timer waits at a time for a yard; a queue read
-    /// since replaces it. The queue is read once for a return: a yard that
+    /// since replaces it. The return is found in the history the model
+    /// holds (seeded by the read that follows the state), and read open
+    /// alone: an ask that is back is open, so the history is not asked for
+    /// again. The queue is read once for a return: a yard that
     /// still lists the ask as put aside after its time is not asked again
     /// for it, and what the stream brings says when it is back. The parked
     /// beads are read with it: an ask that is back takes its bead out of
@@ -406,7 +409,9 @@ impl Footplate {
         if wait <= 0 {
             // Every return up to now is read by this one read.
             *read = Some(at.max(now));
-            self.change_in(session, cx, |_| vec![Effect::Asks, Effect::Waiting]);
+            self.change_in(session, cx, |_| {
+                vec![Effect::Asks(Width::Open), Effect::Waiting]
+            });
             return;
         }
         let wait = std::time::Duration::from_secs(wait as u64);
@@ -421,7 +426,9 @@ impl Footplate {
                 };
                 if asked == generation {
                     *read = Some(at);
-                    this.change_in(session, cx, |_| vec![Effect::Asks, Effect::Waiting]);
+                    this.change_in(session, cx, |_| {
+                        vec![Effect::Asks(Width::Open), Effect::Waiting]
+                    });
                 }
             })
             .ok();
@@ -1116,7 +1123,7 @@ impl Footplate {
         self.refused_in(session, at, refusal, cx);
     }
 
-    /// The queue of the following `session`'s yard was read, stamped
+    /// The queue of the following `session`'s yard was read whole, stamped
     /// `stamp`: the writes whose call ended without an answer are settled
     /// by it ([`Model::settle_writes`]), and each the yard still lists as
     /// it was says so on its card.
@@ -1365,8 +1372,9 @@ impl Footplate {
         };
         self.approval_pairing = Some(shown);
         self.change_in(session, cx, |m| {
-            m.show_decided(&bead, ask);
-            m.select(Selected::Decided(bead.clone(), ask))
+            let mut effects = m.show_decided(&bead, ask);
+            effects.extend(m.select(Selected::Decided(bead.clone(), ask)));
+            effects
         });
         self.schedule_approval_pairing_end_in(session, cx);
     }
@@ -1564,7 +1572,7 @@ impl Footplate {
                         let reread = model::filing_unknown(&err);
                         this.notice_in(session, model::not_filed(&err), cx);
                         if reread {
-                            this.run_in(session, vec![Effect::Asks], cx);
+                            this.run_in(session, vec![Effect::Asks(Width::Open)], cx);
                         }
                     }
                 }
@@ -2619,11 +2627,9 @@ impl Footplate {
         {
             return;
         }
-        self.change(cx, |m| {
-            if !m.decided_expanded() {
-                m.toggle_decided();
-            }
-            Vec::new()
+        self.change(cx, |m| match m.decided_expanded() {
+            false => m.toggle_decided(),
+            true => Vec::new(),
         });
         window.focus(&self.filter.focus_handle(cx));
     }
@@ -2841,10 +2847,7 @@ impl Footplate {
     }
 
     pub(crate) fn toggle_decided(&mut self, cx: &mut Context<Self>) {
-        self.change(cx, |m| {
-            m.toggle_decided();
-            Vec::new()
-        });
+        self.change(cx, |m| m.toggle_decided());
     }
 
     pub(crate) fn toggle_waiting(&mut self, cx: &mut Context<Self>) {

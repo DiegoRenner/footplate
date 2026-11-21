@@ -36,7 +36,14 @@ section: where it would stand, one quiet line says the yard's yardr is older
 than the beads-to-move view and the date it needs (9 Nov 2026 or later), in no
 red and with none of the yard's own words. Under them, folded, "Decided" with
 the answered, declined and put-aside asks and the ones taken back, newest
-first. Open, the history stands grouped by the day it was asked, with the
+first. The window reads the open questions alone when it starts and on every
+event, so that it fills at once, and reads the history whole once beside
+them, in the background: until that has come in there is no "Decided" to
+open and `/` has nothing to search. It reads it whole again when "Decided" is
+opened, and when you answer, give, approve, put aside or decline, so that the
+ask lands in it at once; in between it stands as that read left it, and a
+question dealt with from another device joins it at the next. Open, the
+history stands grouped by the day it was asked, with the
 outcome's icon first on every row, and look-alikes folded into one row with
 their count. It draws the newest fifty asks, and under them one quiet row,
 "Show more", with how many are left (`106 left`); a click on it draws the

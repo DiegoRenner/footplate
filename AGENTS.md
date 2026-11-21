@@ -53,18 +53,20 @@ The window, its state and the yard:
     may have taken it), by ask and with the `Write` it is, so the card says
     so, in no word of failure, and takes no second write of any kind (its
     buttons and keys are off). `write_failed_in` starts that wait (or says
-    the yard's refusal), and `Model::settle_writes` ends it from each queue
-    read (the `Asks` arm of `Footplate::run_in` calls `settled_in`) and
-    `Model::settle_notes` from each bead read, since a note leaves the ask
-    open and only the bead's notes say; `settled` says on the card what the
-    read found, and `taken_in` takes back out what the window kept of a write
-    the yard took (the words that came back to the line, a note's files, a
-    give's value). `Model::resumed` settles from the state of a yard found
-    again. The words of the four that have words come back to the line as
-    for any refusal and stay while the yard is not known to have taken
-    them; a give's value is kept in the secret field and `secret_typed`
-    alone (the call hands it back, `give_kept`), never the line, and leaving
-    the card forgets it.
+    the yard's refusal), and `Model::settle_writes` ends it from each whole
+    queue read (`Footplate::queue_in`, where the `Asks` arm of
+    `Footplate::run_in` ends, calls `settled_in` for an answer that carries
+    the history, since what became of a write is there, and an open answer
+    settles nothing) and `Model::settle_notes` from each bead read, since a
+    note leaves the ask open and only the bead's notes say; `settled` says
+    on the card what the read found, and `taken_in` takes back out what the
+    window kept of a write the yard took (the words that came back to the
+    line, a note's files, a give's value). `Model::resumed` settles from the
+    state of a yard found again, where that state was read whole. The words
+    of the four that have words come back to the line as for any refusal and
+    stay while the yard is not known to have taken them; a give's value is
+    kept in the secret field and `secret_typed` alone (the call hands it
+    back, `give_kept`), never the line, and leaving the card forgets it.
   - `src/window/bead.rs`: one bead's views: the bead whole (in the reading
     pane it ends with `waiting.rs`'s moves where the bead is parked), the
     conversation thread with its mail, and the pictures and attachments of
@@ -192,12 +194,23 @@ The window, its state and the yard:
   letters alone (`Model::mail_rows`, asked again only when `Model::mail_key`
   says a mail was put in), and each mail's `Entry` is made when its row is in
   view (`Model::entry`), since it depends on the crew's state, the beads and
-  the time, which change with no mail.
+  the time, which change with no mail. The person's queue is read in two
+  widths (`Width`, which `Effect::Asks` carries): the open asks alone, which
+  the state, every event's reread and the return timer make, and the whole
+  queue, whose decided history is seeded by one read in the background after
+  a yard's first state (`Model::seed`, which both Up arms in
+  `src/window/chrome.rs` append) and read again where it shows (an opened
+  "Decided") and by the person's own writes. The history stands as the last
+  whole read left it, through a yard lost and found (`Model::resumed`), and
+  is judged by a stamp of its own (`Read::Decided`): a whole read takes
+  seconds, and an open read made after it answers first.
 - `src/api.rs`: the yard's socket API (calls, event stream, their JSON), by
   socket (unix alone) or at an address over TCP+TLS; HTTP hand-written, no
-  client library.
-- `src/session.rs`: follows one yard on a thread: login, initial state,
-  stream, retry.
+  client library. `Client::user_open_asks` reads the open asks alone and
+  reads `UserAsks` instead on the yard's whole words `no such method
+  UserOpenAsks`, nothing kept of the yard being old.
+- `src/session.rs`: follows one yard on a thread: login, initial state
+  (the queue open alone), stream, retry.
 - `src/e2e.rs`: the channel between a paired device and its yard, as bytes
   only: the Noise_IK handshake a sealed pairing and a yard's opening run
   (by snow, no Noise construction of its own), and a session's sealed

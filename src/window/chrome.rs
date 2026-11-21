@@ -21,13 +21,13 @@ use gpui::{
     Stateful, Task, Window, div, img, prelude::*, px, relative, rems, rgba,
 };
 
-use crate::api::{self, Address, Client, Reach};
+use crate::api::{self, Address, Asks, Client, OpenQueue, Reach};
 use crate::draft;
 use crate::fetch::Seen;
 use crate::input;
 use crate::model::{
     self, Effect, Kind, MailPart, MailRows, Mode, Model, News, Read, Route, Row, Selected, Target,
-    Top,
+    Top, Width,
 };
 use crate::notify::{self, Permission};
 use crate::select;
@@ -1090,6 +1090,10 @@ impl Footplate {
                     Some(before) => before.resumed(state, self.settings.mode_of(&yard)),
                     None => (Model::new_aside(state), Vec::new()),
                 };
+                // The state was read open alone: the history is read whole,
+                // in the background, where it was not yet, and arms the
+                // return timer below once it is in.
+                effects.extend(model.seed());
                 let notices: Vec<String> = [
                     parked_notice,
                     arrivals_notice,
@@ -1226,6 +1230,10 @@ impl Footplate {
                         kept.flow_board,
                     ),
                 };
+                // As of a held yard: the history is read whole, in the
+                // background, where it was not yet. A fold that stands open
+                // from the start shows it once it is in.
+                effects.extend(model.seed());
                 model.fold_waiting(kept.waiting_folded);
                 // The departures shot opens the arrivals pane under the
                 // toggle: a debug build's alone, as the row above.
@@ -1482,7 +1490,10 @@ impl Footplate {
                         std::env::var("FOOTPLATE_SHOT").as_deref(),
                         Ok("decisions") | Ok("decisions-filtered") | Ok("decisions-more")
                     ) {
-                        model.toggle_decided();
+                        // The shot's yard serves no `UserOpenAsks`, so its
+                        // state came whole: the history is held, and what
+                        // opening it would read is not read.
+                        let _ = model.toggle_decided();
                         if std::env::var("FOOTPLATE_SHOT").as_deref() == Ok("decisions-filtered") {
                             model.set_decided_filter("docs");
                             self.filter.update(cx, |line, cx| line.set_text("docs", cx));
@@ -1499,7 +1510,7 @@ impl Footplate {
                         std::env::var("FOOTPLATE_SHOT").as_deref(),
                         Ok("pair-qr") | Ok("pair-ended")
                     ) {
-                        model.show_decided("bead-s", 7);
+                        effects.extend(model.show_decided("bead-s", 7));
                         effects.extend(model.select(Selected::Decided("bead-s".into(), 7)));
                         let ends = chrono::Utc::now() + chrono::TimeDelta::minutes(10);
                         let posed = match std::env::var("FOOTPLATE_SHOT").as_deref() {
@@ -2960,6 +2971,56 @@ impl Footplate {
         fresh
     }
 
+    /// The answer of a read of the queue of the yard of the following
+    /// `session`, stamped `stamp`: each half of it is applied where it is
+    /// newer than what the model holds of that half. The open rows and the
+    /// history are judged apart ([`Read::Decided`]): a whole read that an
+    /// open read made after it overtook has open rows that are older, and a
+    /// history that is not, which is the only one there is. The read is back
+    /// either way, which the gate is told. A whole answer settles the
+    /// writes whose call got no answer, since it is the history that says
+    /// what became of one ([`Model::settle_writes`]); an open one does no
+    /// more than take back a warning for an ask that is no longer open.
+    /// Whether any of it was applied.
+    pub(crate) fn queue_in(
+        &mut self,
+        session: u64,
+        stamp: u64,
+        queue: OpenQueue,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((open, history)) = self.model_in(session).map(|m| {
+            m.gate_arrived(Read::Asks);
+            let open = m.reads().fresh(Read::Asks, stamp);
+            let history = queue.decided.is_some() && m.reads().fresh(Read::Decided, stamp);
+            (open, history)
+        }) else {
+            return false;
+        };
+        let OpenQueue {
+            open: rows,
+            decided,
+        } = queue;
+        let decided = decided.filter(|_| history);
+        match (open, decided) {
+            (true, Some(decided)) => self.change_in(session, cx, |m| {
+                m.asks(Asks {
+                    open: rows,
+                    decided,
+                })
+            }),
+            (true, None) => self.change_in(session, cx, |m| m.open_asks(rows)),
+            (false, Some(decided)) => self.change_in(session, cx, |m| m.decided_asks(decided)),
+            (false, None) => return false,
+        }
+        match history {
+            true => self.settled_in(session, stamp, cx),
+            false => self.settled(session, Vec::new(), cx),
+        }
+        self.schedule_return_in(session, cx);
+        true
+    }
+
     /// The read of `read` stamped `stamp` failed, in the yard of the
     /// following `session`: if it is still current, says so and, where
     /// `retryable`, makes it again after the window's retry while the yard
@@ -3415,23 +3476,24 @@ impl Footplate {
                         ),
                     },
                 ),
-                Effect::Asks => {
+                Effect::Asks(width) => {
                     let stamp = self.stamp_in(session);
+                    // A read made again after a failure is made as it was,
+                    // in its own width.
+                    let read = width.read();
                     self.ask_in(
                         session,
                         cx,
-                        |client, me| client.user_asks(me),
-                        move |this, asks, cx| match asks {
-                            Ok(asks) => {
-                                if this.fresh_in(session, Read::Asks, stamp, cx, |m| m.asks(asks)) {
-                                    // What the queue says settles the
-                                    // approvals that got no answer.
-                                    this.settled_in(session, stamp, cx);
-                                    this.schedule_return_in(session, cx);
-                                }
+                        move |client, me| match width {
+                            Width::Open => client.user_open_asks(me),
+                            Width::Whole => client.user_asks(me).map(OpenQueue::whole),
+                        },
+                        move |this, queue, cx| match queue {
+                            Ok(queue) => {
+                                this.queue_in(session, stamp, queue, cx);
                             }
                             Err(err) => {
-                                if this.read_failed_in(session, Read::Asks, stamp, true, cx) {
+                                if this.read_failed_in(session, read, stamp, true, cx) {
                                     this.notice_in(
                                         session,
                                         format!("the decisions could not be read: {err}"),
@@ -3704,10 +3766,7 @@ impl Footplate {
                 // A folded "Decided" has no row to select: unfold it, as
                 // opening the row from the list does. So has an ask past
                 // the page the history draws: draw down to it.
-                self.change(cx, |m| {
-                    m.show_decided(&bead, ask);
-                    Vec::new()
-                });
+                self.change(cx, |m| m.show_decided(&bead, ask));
                 self.select(Selected::Decided(bead, ask), window, cx);
             }
             select::RefTarget::Bead { bead } => {

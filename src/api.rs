@@ -214,6 +214,19 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Whether the yard refused `UserOpenAsks` as a method it does not have: a
+/// yardr from before the call. The yard's words are matched whole, with
+/// their code, as the edge matches them for this call. It is one call's
+/// fallback and no flag of the yard being old, so no prefix of "no such
+/// method" is read: another call's refusal, or a refusal of this one for
+/// other reasons, is not it. The message is read here, as the helpers of
+/// `model` read the others', and when the words change the refusal shows
+/// as any refusal does.
+fn no_open_asks(err: &Error) -> bool {
+    matches!(err, Error::Refused { code, message }
+        if code == "error" && message == "no such method UserOpenAsks")
+}
+
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Error::Down(err)
@@ -1703,6 +1716,28 @@ pub struct Asks {
     pub open: Vec<OpenAsk>,
     #[serde(default, deserialize_with = "or_default")]
     pub decided: Vec<DecidedAsk>,
+}
+
+/// The person's queue as one read of it answers: the open asks always, and
+/// the decided ones only where the read was whole. `UserOpenAsks` sends no
+/// history, which is `None` here and not an empty one, so that a caller
+/// applies exactly what the yard sent and never takes a history it was not
+/// given for one that is empty. A yard from before that call is read whole
+/// instead ([`Client::user_open_asks`]) and says the history with it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OpenQueue {
+    pub open: Vec<OpenAsk>,
+    pub decided: Option<Vec<DecidedAsk>>,
+}
+
+impl OpenQueue {
+    /// What a whole read says: both halves.
+    pub fn whole(asks: Asks) -> OpenQueue {
+        OpenQueue {
+            open: asks.open,
+            decided: Some(asks.decided),
+        }
+    }
 }
 
 /// One move a parked bead is offered, in the yard's words: an outcome its
@@ -4512,6 +4547,30 @@ impl Client {
         self.answer("UserAsks", json!({ "name": name }))
     }
 
+    /// The person's open asks alone, oldest first: what the state, an event
+    /// and a return need, with none of the decided history, which grows with
+    /// every ask the person ever dealt with and is nearly all of
+    /// [`Client::user_asks`]'s answer on a long-lived yard. A yard from
+    /// before the call refuses it as a method it does not have, and then the
+    /// queue is read whole instead, once for this read: its answer carries
+    /// the history. Nothing is kept of a yard being old, so one pays a small
+    /// refused round trip with each read, as the edge's own read does. Any
+    /// other refusal comes back as it stands and the read is not made
+    /// again: it is no missing method.
+    pub fn user_open_asks(&self, name: &str) -> Result<OpenQueue> {
+        // The type is the call's own, so that the call's name stands beside
+        // its helper where the table of calls is checked against it.
+        let open: Result<Asks> = self.answer("UserOpenAsks", json!({ "name": name }));
+        match open {
+            Ok(asks) => Ok(OpenQueue {
+                open: asks.open,
+                decided: None,
+            }),
+            Err(err) if no_open_asks(&err) => self.user_asks(name).map(OpenQueue::whole),
+            Err(err) => Err(err),
+        }
+    }
+
     /// The beads parked for the person, longest waiting first, each with the
     /// moves it is offered and the revision a move is made from. A yard from
     /// before the call says it has no such method.
@@ -5535,6 +5594,7 @@ const READS: &[&str] = &[
     "UserNotifications",
     "DeliveryFiles",
     "UserAsks",
+    "UserOpenAsks",
     "Waiting",
     "Arrivals",
     "Flows",
@@ -10128,6 +10188,119 @@ mod tests {
             yard.asked("AckUserNotifications"),
             vec![json!({"name": "jo", "through": 10})]
         );
+    }
+
+    /// `UserOpenAsks` answers the open rows and no history, which is none
+    /// and not an empty one. A yard from before it refuses it as a method it
+    /// has not, and the queue is read whole there, for that call alone: the
+    /// words are matched whole with their code, as the edge matches them,
+    /// so any other refusal comes back as it stands with no second read.
+    #[test]
+    fn user_open_asks_reads_the_open_rows_and_falls_back_on_the_yards_whole_words_only() {
+        let yard = Yard::start();
+        let open = r#"[{"bead": "yd-links", "bead_title": "Move the links", "topic": "topic:linear-out",
+            "ask": 3, "question": "Move the links now?", "asker": "yardmaster",
+            "since": "2026-10-08T09:30:00Z"}]"#;
+        let decided = r#"[{"bead": "yd-links", "bead_title": "Move the links", "topic": "",
+            "ask": 6, "question": "Send them to build?", "asker": "yardmaster",
+            "since": "2026-10-07T09:30:00Z", "state": "answered", "option": 1}]"#;
+
+        // The open rows, by the name: a history sent beside them, which the
+        // call does not promise, is not taken for one asked for.
+        yard.answer(
+            "UserOpenAsks",
+            &format!(r#"{{"result": {{"open": {open}, "decided": {decided}}}}}"#),
+        );
+        let queue = yard.client().user_open_asks("jo").unwrap();
+        assert_eq!(yard.asked("UserOpenAsks"), vec![json!({"name": "jo"})]);
+        assert_eq!(queue.open.len(), 1);
+        assert_eq!(queue.open[0].question, "Move the links now?");
+        assert_eq!(queue.decided, None);
+        assert!(yard.asked("UserAsks").is_empty());
+        // No open ask at all is an empty queue, with no history still.
+        yard.answer("UserOpenAsks", r#"{"result": {"open": null}}"#);
+        assert_eq!(
+            yard.client().user_open_asks("jo").unwrap(),
+            OpenQueue::default()
+        );
+        assert!(yard.asked("UserAsks").is_empty());
+
+        // A yard from before the call: its words and its code, whole. The
+        // queue is read whole instead and says its history, empty or not;
+        // nothing is kept of the yard being old, so the next read asks again.
+        yard.answer(
+            "UserOpenAsks",
+            r#"{"error": {"code": "error", "message": "no such method UserOpenAsks"}}"#,
+        );
+        yard.answer(
+            "UserAsks",
+            &format!(r#"{{"result": {{"open": {open}, "decided": {decided}}}}}"#),
+        );
+        for read in 1..=2 {
+            let queue = yard.client().user_open_asks("jo").unwrap();
+            assert_eq!(queue.open.len(), 1);
+            assert_eq!(queue.decided.as_ref().map(Vec::len), Some(1));
+            assert_eq!(queue.decided.unwrap()[0].state, "answered");
+            assert_eq!(yard.asked("UserAsks").len(), read);
+        }
+        assert_eq!(yard.asked("UserAsks")[0], json!({"name": "jo"}));
+        yard.answer("UserAsks", r#"{"result": {"open": [], "decided": []}}"#);
+        let queue = yard.client().user_open_asks("jo").unwrap();
+        assert_eq!(
+            queue.decided,
+            Some(Vec::new()),
+            "whole, and nothing decided"
+        );
+
+        // Any other refusal is the read's own: it comes back as the yard
+        // said it, and the whole queue is not read in its place.
+        let whole = yard.asked("UserAsks").len();
+        for (code, message) in [
+            ("error", "no such method UserOpenAsks: gone"),
+            ("error", "no such method UserOpenAsksX"),
+            ("error", "no such method UserAsks"),
+            (
+                "error",
+                "this device calls as jo: \"name\" is jo or left out, not kim",
+            ),
+            ("not-found", "no such method UserOpenAsks"),
+            ("not-found", "user: not found"),
+        ] {
+            yard.answer(
+                "UserOpenAsks",
+                &json!({"error": {"code": code, "message": message}}).to_string(),
+            );
+            let Err(Error::Refused {
+                code: said,
+                message: words,
+            }) = yard.client().user_open_asks("jo")
+            else {
+                panic!("{code} {message}: not a refusal");
+            };
+            assert_eq!((said.as_str(), words.as_str()), (code, message));
+            assert_eq!(yard.asked("UserAsks").len(), whole, "{message}");
+        }
+        // Nor does an answer that cannot be read.
+        yard.answer("UserOpenAsks", r#"{"result": [7]}"#);
+        assert!(matches!(
+            yard.client().user_open_asks("jo"),
+            Err(Error::Protocol(_))
+        ));
+        assert_eq!(yard.asked("UserAsks").len(), whole);
+        // The whole read of an old yard is itself refused: that refusal is
+        // what comes back.
+        yard.answer(
+            "UserOpenAsks",
+            r#"{"error": {"code": "error", "message": "no such method UserOpenAsks"}}"#,
+        );
+        yard.answer(
+            "UserAsks",
+            r#"{"error": {"code": "error", "message": "queue: unreadable"}}"#,
+        );
+        assert!(matches!(
+            yard.client().user_open_asks("jo"),
+            Err(Error::Refused { message, .. }) if message == "queue: unreadable"
+        ));
     }
 
     #[test]

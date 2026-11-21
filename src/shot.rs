@@ -4128,6 +4128,18 @@ mod tests {
     use crate::session;
     use std::os::unix::fs::PermissionsExt;
 
+    /// The history a state was loaded with. The shots' yards serve no
+    /// `UserOpenAsks`, so each state is read whole, and the window starts
+    /// from the history as the screen shows it; a yard that served the call
+    /// would load none, and this says so.
+    fn history(state: &crate::model::State) -> &[crate::api::DecidedAsk] {
+        state
+            .asks
+            .decided
+            .as_deref()
+            .expect("a shot's yard serves no UserOpenAsks, so its state is read whole")
+    }
+
     /// Every state reads as the window reads it: the login name is no user
     /// of the yard, so the window is for its operator, jo, and the state
     /// opens where the shot says. A state added to [`STATES`] lands in the
@@ -4188,17 +4200,17 @@ mod tests {
             assert_eq!(loaded.me, "jo", "{state}");
             match *state {
                 "decisions" | "decisions-filtered" | "decisions-more" => {
-                    assert_eq!(loaded.asks.decided.len(), 156, "{state}")
+                    assert_eq!(history(&loaded).len(), 156, "{state}")
                 }
                 "waiting" | "waiting-folded" | "waiting-end" | "old-waiting" | "lines-waiting"
                 | "lines-waiting-end" | "lines-help" | "lines-panel" | "lines-departures"
                 | "frame" | "decide" => {
-                    assert_eq!(loaded.asks.decided.len(), 12, "{state}")
+                    assert_eq!(history(&loaded).len(), 12, "{state}")
                 }
                 "pair-qr" | "pair-ended" => {
-                    assert_eq!(loaded.asks.decided.len(), 1, "{state}")
+                    assert_eq!(history(&loaded).len(), 1, "{state}")
                 }
-                _ => assert_eq!(loaded.asks.decided.len(), 0, "{state}"),
+                _ => assert_eq!(history(&loaded).len(), 0, "{state}"),
             }
             match *state {
                 "yardmaster"
@@ -4824,9 +4836,9 @@ mod tests {
                     // The pairing ask decided, with what its approval
                     // ran: the screen stands on it.
                     assert!(loaded.asks.open.is_empty(), "{state}");
-                    assert_eq!(loaded.asks.decided.len(), 1, "{state}");
-                    assert!(loaded.asks.decided[0].run.is_some(), "{state}");
-                    assert!(loaded.asks.decided[0].ran.is_some(), "{state}");
+                    assert_eq!(history(&loaded).len(), 1, "{state}");
+                    assert!(history(&loaded)[0].run.is_some(), "{state}");
+                    assert!(history(&loaded)[0].ran.is_some(), "{state}");
                     let bead = yard.client().bead("bead-s").unwrap();
                     assert_eq!(bead.asks.len(), 1, "{state}");
                     assert!(bead.asks[0].run.is_some(), "{state}");
@@ -5209,14 +5221,15 @@ mod tests {
                     assert_eq!(bead.asks[0].recommend, 1, "{state}");
                     // Three outcomes asked today, then yesterday's folded
                     // run of four, newest first.
-                    let asked: Vec<u64> = loaded.asks.decided.iter().map(|ask| ask.ask).collect();
+                    let asked: Vec<u64> = history(&loaded).iter().map(|ask| ask.ask).collect();
                     assert_eq!(
                         &asked[..10],
                         &[101, 102, 103, 107, 106, 105, 104, 108, 109, 110],
                         "{state}"
                     );
                     assert_eq!(
-                        loaded.asks.decided[0].question, "Let me edit Google Docs in place",
+                        history(&loaded)[0].question,
+                        "Let me edit Google Docs in place",
                         "{state}"
                     );
                     // The history the window draws from it: a Today and a

@@ -350,7 +350,12 @@ pub fn load(client: &Client, name: &str) -> Result<State, Trouble> {
     }
     let unread = inbox.mail.into_iter().filter(|l| !l.read).collect();
     let notifications = client.user_notifications(&user.name, 0)?.notifications;
-    let asks = client.user_asks(&user.name)?;
+    // The open asks alone, so that the window fills at once: the decided
+    // history is most of the whole queue, and a person who never opens it
+    // never needs it. The window reads it whole once in the background
+    // after this ([`Model::seed`](crate::model::Model::seed)), unless the
+    // yard is one from before the call, whose answer here is whole.
+    let asks = client.user_open_asks(&user.name)?;
     // The beads parked for the person's move are read beside the asks, and
     // fail as the Lines calls below do: an unreadable queue reads as empty,
     // with why for the window to say, and a yard from before the call has
@@ -873,7 +878,11 @@ mod tests {
             yard.asked("UserNotifications"),
             vec![json!({"name": "jo", "limit": 0})]
         );
+        // This yard serves no `UserOpenAsks`: the state read it first and
+        // was refused, and read the whole queue, which says its history.
+        assert_eq!(yard.asked("UserOpenAsks"), vec![json!({"name": "jo"})]);
         assert_eq!(yard.asked("UserAsks"), vec![json!({"name": "jo"})]);
+        assert_eq!(state.asks.decided, Some(Vec::new()));
         // The beads parked for the user's move are read beside the asks,
         // by the same name.
         assert_eq!(state.parked.len(), 1);
@@ -882,6 +891,26 @@ mod tests {
         assert_eq!(state.parked_notice, None);
         assert!(!state.waiting_too_old);
         assert_eq!(yard.asked("Waiting"), vec![json!({"name": "jo"})]);
+
+        // A yard that serves the call: the open rows alone, and no history
+        // in the state, so that the window fills at once; the whole queue
+        // is not asked for.
+        yard.answer(
+            "UserOpenAsks",
+            r#"{"result": {"open": [
+                {"bead": "yd-links", "bead_title": "Move the links", "topic": "topic:linear-out",
+                 "ask": 3, "question": "Move them now?", "asker": "yardmaster",
+                 "since": "2026-10-08T09:30:00Z"},
+                {"bead": "yd-greet", "bead_title": "The greeting", "topic": "",
+                 "ask": 5, "question": "What tone?", "asker": "yardmaster",
+                 "since": "2026-10-09T09:30:00Z"}
+            ]}}"#,
+        );
+        let open = load(&yard.client(), "jo").unwrap();
+        assert_eq!(open.asks.open.len(), 2);
+        assert_eq!(open.asks.decided, None);
+        assert_eq!(yard.asked("UserOpenAsks").len(), 2);
+        assert_eq!(yard.asked("UserAsks").len(), 1);
     }
 
     /// A parked queue the yard serves unreadably does not fail the state
